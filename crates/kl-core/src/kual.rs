@@ -3,7 +3,9 @@
 //! with submenus, ordered by `priority` then name. An item with an `action` runs
 //! `sh <extension>/<action> <params>` in the extension folder.
 //!
-//! Not used: `exitmenu`, `status`, `checked`, `model` and `if` checks. Those depend on KUAL's own runtime.
+//! The menu file is the one the extension's `config.xml` names (`<menu type="json">…</menu>`), else `menu.json`.
+//! `exitmenu: false` runs the item in the background: the launcher stays in front and shows its last output
+//! line. Not used: `status`, `checked`, `model` and `if` checks. Those depend on KUAL's own runtime.
 
 use crate::apps::{App, IconSource, Launch};
 use serde_json::Value;
@@ -21,6 +23,8 @@ pub struct MenuItem {
     /// The extension folder: the command's working directory.
     pub dir: String,
     pub priority: i64,
+    /// KUAL `exitmenu: false`: run without leaving the launcher.
+    pub background: bool,
     pub children: Vec<MenuItem>,
 }
 
@@ -40,6 +44,7 @@ impl MenuItem {
             dir: self.dir.clone(),
             order: None,
             hidden: false,
+            background: self.background,
         })
     }
 }
@@ -77,7 +82,8 @@ fn items(list: &[Value], dir: &Path) -> Vec<MenuItem> {
         if children.is_empty() && command.is_none() {
             continue;
         }
-        out.push(MenuItem { name: name.trim().to_string(), command, dir: dir.to_string_lossy().into_owned(), priority, children });
+        let background = item.get("exitmenu").and_then(Value::as_bool) == Some(false);
+        out.push(MenuItem { name: name.trim().to_string(), command, dir: dir.to_string_lossy().into_owned(), priority, background, children });
     }
     sort(&mut out);
     out
@@ -92,6 +98,29 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+/// The JSON menu an extension declares in its `config.xml` (`<menu type="json">name</menu>`), else `menu.json`.
+fn menu_file(dir: &Path) -> PathBuf {
+    if let Ok(xml) = fs::read_to_string(dir.join("config.xml")) {
+        let mut rest = xml.as_str();
+        while let Some(start) = rest.find("<menu") {
+            let after = &rest[start + 5..];
+            let Some(close) = after.find('>') else { break };
+            let (tag, body) = (&after[..close], &after[close + 1..]);
+            // `<menus>` is the list around the entries: skip it.
+            if !tag.starts_with('s') && tag.contains("json") {
+                if let Some(end) = body.find("</menu>") {
+                    let name = body[..end].trim();
+                    if !name.is_empty() && !name.contains("..") {
+                        return dir.join(name);
+                    }
+                }
+            }
+            rest = body;
+        }
+    }
+    dir.join("menu.json")
+}
+
 /// The top level of the Extensions list: the items of every extension under `root` with a `menu.json`, in
 /// one list. Problems (unreadable or invalid files) are returned as text; the other extensions still load.
 pub fn discover_root(root: &Path) -> (Vec<MenuItem>, Vec<String>) {
@@ -101,7 +130,7 @@ pub fn discover_root(root: &Path) -> (Vec<MenuItem>, Vec<String>) {
     let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
     dirs.sort();
     for dir in dirs {
-        let file = dir.join("menu.json");
+        let file = menu_file(&dir);
         if !file.is_file() {
             continue;
         }
@@ -180,6 +209,25 @@ mod tests {
         assert_eq!(names, ["Alpha", "Quoted", "Wi-Fi tools"]);
         assert_eq!(problems.len(), 1);
         assert!(problems[0].starts_with("bad/menu.json"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_xml_names_the_menu_file_and_exitmenu_false_runs_in_the_background() {
+        let root = std::env::temp_dir().join(format!("kl-kual-xml-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("ext")).unwrap();
+        fs::write(
+            root.join("ext/config.xml"),
+            r#"<?xml version="1.0"?><extension><menus><menu type="json" dynamic="true">custom.json</menu></menus></extension>"#,
+        )
+        .unwrap();
+        fs::write(root.join("ext/custom.json"), r#"{"items":[{"name":"Quiet","action":"q.sh","exitmenu":false},{"name":"Loud","action":"l.sh"}]}"#).unwrap();
+        let (menu, problems) = discover_root(&root);
+        assert!(problems.is_empty(), "{problems:?}");
+        let names: Vec<_> = menu.iter().map(|i| (i.name.as_str(), i.background)).collect();
+        assert_eq!(names, [("Loud", false), ("Quiet", true)]);
+        assert!(menu[1].app().unwrap().background);
         let _ = fs::remove_dir_all(&root);
     }
 

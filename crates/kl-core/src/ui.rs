@@ -68,6 +68,8 @@ pub enum Action {
     SetOrder(Vec<(String, i64)>),
     /// Set (`Some`) or clear (`None`) an app's icon file. Written to apps.toml; the driver reloads the tile.
     SetIcon { id: String, icon: Option<String> },
+    /// Run an app while the launcher stays in front (background mode); the driver shows its last output line.
+    RunBackground(App),
 }
 
 /// What the status strip and Settings show. Filled by the driver.
@@ -197,6 +199,12 @@ impl Ui {
         self.layout.list_pages(self.ext_items().len())
     }
 
+    /// Background mode: say it started; the driver runs it and shows its last line when it ends.
+    fn run_background(&mut self, app: App) -> Action {
+        self.notice = Some(format!("Running {}…", app.name));
+        Action::RunBackground(app)
+    }
+
     /// The Extensions tile: open the list at the top.
     pub fn open_extensions(&mut self) -> Action {
         self.ext_path.clear();
@@ -239,6 +247,7 @@ impl Ui {
                     return Action::Redraw { full: false };
                 }
                 match item.app() {
+                    Some(app) if app.background => self.run_background(app),
                     Some(app) => Action::Launch(app),
                     None => Action::None,
                 }
@@ -480,6 +489,7 @@ impl Ui {
                     Launch::Settings => self.go(Screen::Settings),
                     Launch::KindleMode => self.go(Screen::ConfirmKindle),
                     Launch::Extensions => self.open_extensions(),
+                    _ if app.background => self.run_background(app),
                     _ => {
                         self.pressed = Some(slot);
                         Action::Launch(app)
@@ -537,7 +547,7 @@ mod tests {
     use crate::apps::IconSource;
 
     fn app(id: &str, launch: Launch) -> App {
-        App { id: id.into(), name: id.into(), icon: IconSource::None, launch, dir: "/".into(), order: None, hidden: false }
+        App { id: id.into(), name: id.into(), icon: IconSource::None, launch, dir: "/".into(), order: None, hidden: false, background: false }
     }
 
     fn script(id: &str) -> App {
@@ -634,12 +644,12 @@ mod tests {
         let mut u = ui(1);
         assert!(!u.set_battery(Some(90), false));
         assert_eq!(u.battery_message(), None);
-        assert!(u.set_battery(Some(12), false));
-        assert_eq!(u.battery_message().as_deref(), Some("Battery low 12%. Connect the charger soon."));
-        assert!(!u.set_battery(Some(11), false)); // still low: no change to redraw for
+        assert!(u.set_battery(Some(9), false));
+        assert_eq!(u.battery_message().as_deref(), Some("Battery low 9%. Connect the charger soon."));
+        assert!(!u.set_battery(Some(8), false)); // still low: no change to redraw for
         u.handle(Input::Tap(5.0, 1400.0));
         assert!(u.battery_message().is_some()); // not a notice: the next input does not clear it
-        assert!(u.set_battery(Some(12), true)); // charger connected
+        assert!(u.set_battery(Some(9), true)); // charger connected
         assert_eq!(u.battery_message(), None);
     }
 
@@ -732,10 +742,10 @@ mod tests {
     }
 
     fn menu_items() -> Vec<MenuItem> {
-        let leaf = |name: &str| MenuItem { name: name.into(), command: Some(format!("sh '/e/{name}.sh'")), dir: "/e".into(), priority: 0, children: vec![] };
+        let leaf = |name: &str| MenuItem { name: name.into(), command: Some(format!("sh '/e/{name}.sh'")), dir: "/e".into(), priority: 0, background: name == "Sync", children: vec![] };
         vec![
             leaf("Alpha"),
-            MenuItem { name: "Tools".into(), command: None, dir: "/e".into(), priority: 0, children: vec![leaf("Reset"), leaf("Sync")] },
+            MenuItem { name: "Tools".into(), command: None, dir: "/e".into(), priority: 0, background: false, children: vec![leaf("Reset"), leaf("Sync")] },
         ]
     }
 
@@ -764,10 +774,15 @@ mod tests {
         assert_eq!(tap(&mut u, tools), Action::Redraw { full: false });
         assert_eq!(u.ext_title(), "Tools");
         assert_eq!(u.ext_depth(), 1);
-        // Run "Sync".
+        // "Reset" leaves the launcher; "Sync" (exitmenu: false) runs in the background.
+        let reset = u.layout.list_row(0);
+        let Action::Launch(app) = tap(&mut u, reset) else { panic!("no launch") };
+        assert_eq!(app.launch, Launch::Shell { command: "sh '/e/Reset.sh'".into() });
         let sync = u.layout.list_row(1);
-        let Action::Launch(app) = tap(&mut u, sync) else { panic!("no launch") };
-        assert_eq!(app.launch, Launch::Shell { command: "sh '/e/Sync.sh'".into() });
+        let Action::RunBackground(app) = tap(&mut u, sync) else { panic!("not in the background") };
+        assert_eq!(app.name, "Sync");
+        assert_eq!(u.notice.as_deref(), Some("Running Sync…"));
+        assert_eq!(u.screen, Screen::Extensions);
         // Back goes up a level, then to the grid.
         let back = u.layout.done_button();
         assert_eq!(tap(&mut u, back), Action::Redraw { full: false });

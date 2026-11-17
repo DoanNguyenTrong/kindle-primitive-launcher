@@ -42,6 +42,9 @@ pub struct App {
     /// Explicit position from `apps.toml`; apps without one follow, by name.
     pub order: Option<i64>,
     pub hidden: bool,
+    /// Runs while the launcher stays in front (apps.toml `mode = "background"`, KUAL `exitmenu: false`); its
+    /// last output line is shown when it ends.
+    pub background: bool,
 }
 
 impl App {
@@ -83,6 +86,7 @@ fn builtins() -> Vec<App> {
             dir: "/".into(),
             order: Some(9_000),
             hidden: false,
+            background: false,
         },
         App {
             id: "kindle".into(),
@@ -92,6 +96,7 @@ fn builtins() -> Vec<App> {
             dir: "/".into(),
             order: Some(9_001),
             hidden: false,
+            background: false,
         },
     ]
 }
@@ -124,6 +129,7 @@ pub fn scriptlets(documents: &Path) -> Vec<App> {
             dir: documents.to_string_lossy().into_owned(),
             order: None,
             hidden: false,
+            background: false,
         });
     }
     apps
@@ -167,6 +173,9 @@ pub fn merge(discovered: Vec<App>, config: &Config) -> (Vec<App>, Vec<String>) {
             if let Some(hidden) = entry.hidden {
                 app.hidden = hidden;
             }
+            if let Some(background) = entry.background {
+                app.background = background;
+            }
         } else if let Some(command) = &entry.command {
             apps.push(App {
                 id: entry.id.clone(),
@@ -176,6 +185,7 @@ pub fn merge(discovered: Vec<App>, config: &Config) -> (Vec<App>, Vec<String>) {
                 dir: entry.dir.clone().unwrap_or_else(|| "/mnt/us".into()),
                 order: entry.order,
                 hidden: entry.hidden.unwrap_or(false),
+                background: entry.background.unwrap_or(false),
             });
         } else {
             problems.push(format!("apps.toml: no app \"{}\" found and no command given", entry.id));
@@ -203,6 +213,7 @@ pub fn extensions_app() -> App {
         dir: "/".into(),
         order: Some(9_000),
         hidden: false,
+        background: false,
     }
 }
 
@@ -245,6 +256,7 @@ mod tests {
             dir: "/mnt/us/documents".into(),
             order: None,
             hidden: false,
+            background: false,
         }
     }
 

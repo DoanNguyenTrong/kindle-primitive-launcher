@@ -36,6 +36,8 @@ pub struct AppEntry {
     pub dir: Option<String>,
     pub order: Option<i64>,
     pub hidden: Option<bool>,
+    /// `mode = "background"` (true) or `"screen"` (false).
+    pub background: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +111,9 @@ impl Config {
             if let Some(v) = a.hidden {
                 out.push_str(&format!("hidden = {v}\n"));
             }
+            if let Some(v) = a.background {
+                out.push_str(if v { "mode = \"background\"\n" } else { "mode = \"screen\"\n" });
+            }
         }
         out
     }
@@ -142,6 +147,15 @@ impl Config {
                     continue;
                 };
                 let text = |key: &str| t.get(key).and_then(Value::as_str).map(str::to_string);
+                let background = match t.get("mode").and_then(Value::as_str) {
+                    Some("background") => Some(true),
+                    Some("screen") => Some(false),
+                    Some(other) => {
+                        problems.push(format!("apps.toml: {}: mode \"{other}\" is not \"screen\" or \"background\"", id.trim()));
+                        None
+                    }
+                    None => None,
+                };
                 config.apps.push(AppEntry {
                     id: id.trim().to_string(),
                     name: text("name"),
@@ -150,6 +164,7 @@ impl Config {
                     dir: text("dir"),
                     order: t.get("order").and_then(Value::as_integer),
                     hidden: t.get("hidden").and_then(Value::as_bool),
+                    background,
                 });
             }
         }
@@ -259,5 +274,16 @@ mod tests {
         config.set_icon("a.sh", None);
         let (back, _) = Config::parse(&config.to_toml());
         assert_eq!(back.apps[0].icon, None);
+    }
+
+    #[test]
+    fn mode_is_read_written_and_checked() {
+        let (config, problems) = Config::parse("[[app]]\nid = \"a\"\nmode = \"background\"\n[[app]]\nid = \"b\"\nmode = \"later\"\n");
+        assert_eq!(config.apps[0].background, Some(true));
+        assert_eq!(config.apps[1].background, None);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("mode"), "{problems:?}");
+        let (back, _) = Config::parse(&config.to_toml());
+        assert_eq!(back.apps[0].background, Some(true));
     }
 }

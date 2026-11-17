@@ -98,7 +98,7 @@ fn main() {
     }
     // Low battery: the footer message and the status strip must agree.
     let mut low = demo_status();
-    low.battery = Some(12);
+    low.battery = Some(9);
     ui.set_battery(low.battery, low.charging);
     let gray = renderer.draw(&ui, &low);
     write_png(&out.join("home-low-battery.png"), W, H, &gray);

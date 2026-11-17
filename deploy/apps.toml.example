@@ -24,6 +24,13 @@ rows = 3
 # id = "Primitive Browser.sh"
 # order = 1
 
+# A program that runs while the launcher stays in front; its last output line is shown when it ends:
+# [[app]]
+# id = "sync"
+# name = "Sync notes"
+# command = "/mnt/us/scripts/sync.sh"
+# mode = "background"
+
 # Hide an app:
 # [[app]]
 # id = "kindle"

@@ -11,12 +11,16 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{atomic::Ordering, mpsc::channel},
+    process::{Command, Stdio},
+    sync::{
+        atomic::Ordering,
+        mpsc::{channel, Sender},
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use kl_core::{discover, Action, Config, DeviceCmd, Input, Layout, Rotation, Screen, Settings, Status, Ui};
+use kl_core::{discover, Action, App, Config, DeviceCmd, Input, Launch, Layout, Rotation, Screen, Settings, Status, Ui};
 use kl_render::Renderer;
 
 mod device;
@@ -36,6 +40,8 @@ pub enum Ev {
     Tick,
     /// The device was turned (auto-rotation, after the debouncer).
     Turn(Rotation),
+    /// A background app ended: its name, last output line and whether it succeeded.
+    Background { name: String, line: String, ok: bool },
 }
 
 pub fn log(msg: &str) {
@@ -207,6 +213,9 @@ fn main() {
     let mut ui = Ui::new(apps, layout);
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_extensions(extensions);
+    for app in ui.apps() {
+        log(&format!("app {}: {}", app.id, app.name));
+    }
     ui.notice = problems.first().cloned();
     let mut display = Display::open();
     let mut status = device::status(&settings);
@@ -253,6 +262,16 @@ fn main() {
 
     while let Ok(ev) = rx.recv() {
         let action = match ev {
+            Ev::Background { name, line, ok } => {
+                log(&format!("background end {name}: ok={ok} {line}"));
+                let state = if ok { "done" } else { "failed" };
+                ui.notice = Some(if line.is_empty() { format!("{name}: {state}") } else { format!("{name}: {line}") });
+                if ui.screen == Screen::Sleep {
+                    Action::None
+                } else {
+                    Action::Redraw { full: false }
+                }
+            }
             Ev::Turn(rotation) => {
                 if settings.auto_rotation && rotation != settings.rotation {
                     settings.rotation = rotation;
@@ -335,6 +354,10 @@ fn main() {
                 });
                 display.show(renderer.draw(&ui, &status), &settings, false);
             }
+            Action::RunBackground(app) => {
+                run_background(app, tx.clone());
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
             Action::SetOrder(order) => {
                 save_apps_toml(&dir, &mut ui, "order", |c| {
                     for (id, place) in &order {
@@ -387,6 +410,36 @@ fn wait_screen(dir: &Path, run: &Path, settings: &Settings) {
         step += 1;
         display.show(renderer.waiting(TITLE, BODY, step), settings, false);
     }
+}
+
+/// Run an app without leaving the launcher (apps.toml `mode = "background"`, KUAL `exitmenu: false`), with the
+/// same environment the supervisor gives apps. Its output is collected and the last line sent back when it ends.
+fn run_background(app: App, tx: Sender<Ev>) {
+    let args: Vec<String> = match &app.launch {
+        Launch::Script { path, hooks: false } => vec![path.clone()],
+        Launch::Script { path, hooks: true } => vec!["-c".into(), ". \"$1\"; on_run".into(), "sh".into(), path.clone()],
+        Launch::Shell { command } => vec!["-c".into(), command.clone()],
+        _ => return,
+    };
+    log(&format!("background start {} ({})", app.name, app.id));
+    thread::spawn(move || {
+        let result = Command::new("/bin/sh")
+            .args(&args)
+            .current_dir(&app.dir)
+            .env("PRIMITIVE_LAUNCHER", "1")
+            .env("PRIMITIVE_FRAMEWORK", "stopped")
+            .stdin(Stdio::null())
+            .output();
+        let (ok, line) = match result {
+            Ok(out) => {
+                let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+                let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+                (out.status.success(), last)
+            }
+            Err(e) => (false, e.to_string()),
+        };
+        let _ = tx.send(Ev::Background { name: app.name, line, ok });
+    });
 }
 
 /// Apply `change` to apps.toml and write it back. A file that is not valid TOML is never overwritten.
@@ -463,4 +516,44 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         }
     }
     *status = device::status(settings);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kl_core::IconSource;
+
+    fn shell(name: &str, command: &str) -> App {
+        App {
+            id: name.into(),
+            name: name.into(),
+            icon: IconSource::None,
+            launch: Launch::Shell { command: command.into() },
+            dir: "/".into(),
+            order: None,
+            hidden: false,
+            background: true,
+        }
+    }
+
+    fn finished(rx: &std::sync::mpsc::Receiver<Ev>) -> (String, String, bool) {
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Ev::Background { name, line, ok }) => (name, line, ok),
+            _ => panic!("no background result"),
+        }
+    }
+
+    #[test]
+    fn a_background_app_reports_its_last_output_line() {
+        let (tx, rx) = channel();
+        run_background(shell("Echo", "echo one; echo two; echo; echo \"$PRIMITIVE_LAUNCHER\""), tx);
+        assert_eq!(finished(&rx), ("Echo".into(), "1".into(), true));
+    }
+
+    #[test]
+    fn a_failing_background_app_is_reported_as_failed() {
+        let (tx, rx) = channel();
+        run_background(shell("Fail", "echo trouble >&2; exit 3"), tx);
+        assert_eq!(finished(&rx), ("Fail".into(), "trouble".into(), false));
+    }
 }

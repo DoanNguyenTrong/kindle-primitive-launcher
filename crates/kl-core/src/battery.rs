@@ -1,5 +1,5 @@
-//! Low and critical battery warnings. Thresholds have hysteresis: a warning starts at the threshold and
-//! clears only after the level climbs back above a higher line, so the footer does not flicker around 15%.
+//! Low and critical battery warnings (FR-10: 10 % and 5 %). Thresholds have hysteresis: a warning starts at the
+//! threshold and clears only after the level climbs back above a higher line, so the footer does not flicker.
 //! Charging clears every warning.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -11,11 +11,11 @@ pub enum Warning {
 }
 
 /// Warning starts at or below these levels (percent).
-pub const LOW_AT: u32 = 15;
+pub const LOW_AT: u32 = 10;
 pub const CRITICAL_AT: u32 = 5;
 /// A warning clears only above these levels.
-pub const LOW_CLEAR_AT: u32 = 20;
-pub const CRITICAL_CLEAR_AT: u32 = 10;
+pub const LOW_CLEAR_AT: u32 = 15;
+pub const CRITICAL_CLEAR_AT: u32 = 8;
 
 /// The warning for a new reading, given the previous one.
 pub fn assess(level: Option<u32>, charging: bool, previous: Warning) -> Warning {
@@ -48,19 +48,19 @@ mod tests {
 
     #[test]
     fn a_warning_starts_at_its_threshold() {
-        assert_eq!(assess(Some(16), false, Warning::None), Warning::None);
-        assert_eq!(assess(Some(15), false, Warning::None), Warning::Low);
+        assert_eq!(assess(Some(11), false, Warning::None), Warning::None);
+        assert_eq!(assess(Some(10), false, Warning::None), Warning::Low);
         assert_eq!(assess(Some(5), false, Warning::Low), Warning::Critical);
     }
 
     #[test]
     fn a_warning_clears_only_above_the_higher_line() {
-        // Low: stays until 20%, not 16%.
-        assert_eq!(assess(Some(17), false, Warning::Low), Warning::Low);
-        assert_eq!(assess(Some(20), false, Warning::Low), Warning::None);
-        // Critical: falls back to Low at 10%, clears at 20%.
-        assert_eq!(assess(Some(12), false, Warning::Critical), Warning::Low);
-        assert_eq!(assess(Some(9), false, Warning::Critical), Warning::Critical);
+        // Low: stays until 15%, not 11%.
+        assert_eq!(assess(Some(12), false, Warning::Low), Warning::Low);
+        assert_eq!(assess(Some(15), false, Warning::Low), Warning::None);
+        // Critical: falls back to Low at 8%, clears at 15%.
+        assert_eq!(assess(Some(9), false, Warning::Critical), Warning::Low);
+        assert_eq!(assess(Some(7), false, Warning::Critical), Warning::Critical);
     }
 
     #[test]
@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn messages_name_the_level() {
         assert_eq!(message(Warning::None, Some(50)), None);
-        assert_eq!(message(Warning::Low, Some(12)).as_deref(), Some("Battery low 12%. Connect the charger soon."));
+        assert_eq!(message(Warning::Low, Some(9)).as_deref(), Some("Battery low 9%. Connect the charger soon."));
         assert_eq!(message(Warning::Critical, None).as_deref(), Some("Battery critical. Connect the charger now."));
     }
 }
