@@ -186,6 +186,9 @@ fn main() {
     };
     let (apps, more) = discover(&documents, &config);
     problems.extend(more);
+    let extensions_root = documents.parent().unwrap_or(Path::new("/mnt/us")).join("extensions");
+    let (extensions, more) = kl_core::kual::discover_root(&extensions_root);
+    problems.extend(more);
     let layout = Layout::new(W, H, config.columns, config.rows);
 
     let mut renderer = match Renderer::new(W, H, &font_paths(&dir, &run)) {
@@ -202,6 +205,8 @@ fn main() {
     log(&format!("{} apps; ready in {} ms", apps.len(), started.elapsed().as_millis()));
 
     let mut ui = Ui::new(apps, layout);
+    ui.set_icon_choices(png_files(&dir.join("icons")));
+    ui.set_extensions(extensions);
     ui.notice = problems.first().cloned();
     let mut display = Display::open();
     let mut status = device::status(&settings);
@@ -244,6 +249,7 @@ fn main() {
     display.show(renderer.draw(&ui, &status), &settings, true);
     log(&format!("first screen after {} ms", started.elapsed().as_millis()));
     let mut minute = device::local_time().2;
+    let mut sleep_picture = 0usize;
 
     while let Ok(ev) = rx.recv() {
         let action = match ev {
@@ -275,6 +281,24 @@ fn main() {
                 if !matches!(input, Input::Sleep | Input::Wake) {
                     log(&format!("input {input:?}"));
                 }
+                // The launcher's own sleep screen: the next picture from the screensavers folder, if any.
+                if input == Input::Sleep && settings.sleep_screen_launcher && ui.screen != Screen::Sleep {
+                    let pictures = png_files(&dir.join("screensavers"));
+                    let picture = if pictures.is_empty() {
+                        None
+                    } else {
+                        let path = &pictures[sleep_picture % pictures.len()];
+                        sleep_picture += 1;
+                        match kl_render::sleep_image(Path::new(path), W, H) {
+                            Ok(picture) => Some(picture),
+                            Err(e) => {
+                                log(&format!("sleep picture: {e}"));
+                                None
+                            }
+                        }
+                    };
+                    renderer.set_sleep_image(picture);
+                }
                 ui.handle(input)
             }
         };
@@ -304,21 +328,29 @@ fn main() {
                 std::process::exit(EXIT_LAUNCH);
             }
             Action::SetHidden(changes) => {
-                let path = dir.join("apps.toml");
-                let text = fs::read_to_string(&path).unwrap_or_default();
-                match Config::load(&text) {
-                    Ok(mut config) => {
-                        for (id, hidden) in &changes {
-                            config.set_hidden(id, *hidden);
-                        }
-                        match write_atomic(&path, &config.to_toml()) {
-                            Ok(()) => log(&format!("apps.toml: {} change(s) saved", changes.len())),
-                            Err(e) => ui.notice = Some(format!("cannot save apps.toml: {e}")),
-                        }
+                save_apps_toml(&dir, &mut ui, "hidden apps", |c| {
+                    for (id, hidden) in &changes {
+                        c.set_hidden(id, *hidden);
                     }
-                    Err(e) => {
-                        log(&format!("apps.toml is not valid TOML; not saved: {e}"));
-                        ui.notice = Some("apps.toml has an error, so the change was not saved".into());
+                });
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::SetOrder(order) => {
+                save_apps_toml(&dir, &mut ui, "order", |c| {
+                    for (id, place) in &order {
+                        c.set_order(id, *place);
+                    }
+                });
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::SetIcon { id, icon } => {
+                save_apps_toml(&dir, &mut ui, "icon", |c| c.set_icon(&id, icon.clone()));
+                renderer.forget_icon(&id);
+                if let Some(app) = ui.apps().iter().find(|a| a.id == id).cloned() {
+                    let layout = ui.layout;
+                    for problem in kl_render::load_icons(&mut renderer, &[app], &layout, Some(&dir.join("cache"))) {
+                        log(&format!("icon: {problem}"));
+                        ui.notice = Some(problem);
                     }
                 }
                 display.show(renderer.draw(&ui, &status), &settings, false);
@@ -355,6 +387,39 @@ fn wait_screen(dir: &Path, run: &Path, settings: &Settings) {
         step += 1;
         display.show(renderer.waiting(TITLE, BODY, step), settings, false);
     }
+}
+
+/// Apply `change` to apps.toml and write it back. A file that is not valid TOML is never overwritten.
+fn save_apps_toml(dir: &Path, ui: &mut Ui, what: &str, change: impl FnOnce(&mut Config)) {
+    let path = dir.join("apps.toml");
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    match Config::load(&text) {
+        Ok(mut config) => {
+            change(&mut config);
+            match write_atomic(&path, &config.to_toml()) {
+                Ok(()) => log(&format!("apps.toml: {what} saved")),
+                Err(e) => ui.notice = Some(format!("cannot save apps.toml: {e}")),
+            }
+        }
+        Err(e) => {
+            log(&format!("apps.toml is not valid TOML; not saved: {e}"));
+            ui.notice = Some("apps.toml has an error, so the change was not saved".into());
+        }
+    }
+}
+
+/// The PNG files in a folder, sorted: icons for the app menu, pictures for the sleep screen.
+fn png_files(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let mut files: Vec<String> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")))
+        .filter(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("._")))
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    files
 }
 
 fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir: &Path, run: &Path, settings_path: &Path) {

@@ -39,7 +39,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "connecting to root@$HOST:$PORT"
-$SSH 'mkdir -p /mnt/us/launcher/fonts /mnt/us/launcher/cache /mnt/us/documents'
+$SSH 'mkdir -p /mnt/us/launcher/fonts /mnt/us/launcher/cache /mnt/us/launcher/icons /mnt/us/launcher/screensavers /mnt/us/documents'
 
 upload() {
     $SSH "cat > '$2.new' && sync && mv '$2.new' '$2'" < "$1"

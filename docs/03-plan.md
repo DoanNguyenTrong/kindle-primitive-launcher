@@ -11,16 +11,16 @@ clean. Device findings and fixes are in device-notes.md.
 |---|---|
 | Phase 1 steps 1–6 (launcher, supervisor, install, sleep, manual rotation) | Done on the Mac |
 | Phase 1 step 7: Browser.sh patch (`PRIMITIVE_LAUNCHER=1`) and the orientation fallback | Done in `doannt-kindle-browser` (uncommitted, branch `feature/diagnostics-ssh`). Shell syntax checked; the Rust change is not compiled yet |
-| Phase 2 status strip, quick settings, low battery | Done (footer warning with hysteresis; critical battery goes to the sleep screen with the warning) |
+| Phase 2 status strip, quick settings, low battery | Done; Wi-Fi and battery icons ported from Primitive Browser (Mac-tested, not yet on the device) (footer warning with hysteresis; critical battery goes to the sleep screen with the warning) |
 | Phase 2 autostart item in quick settings | Done (creates or removes `DISABLE`; clears the boot count when turned on) |
 | Phase 2 auto-rotation | Debouncer done and tested (800 ms hold). **Not wired**: the accelerometer decoding waits for S4 on the Kindle |
 | Phase 2 USB "Connect to computer" | **Not implemented.** Waits for S5. A wrong guess here could leave `/mnt/us` in use by the PC, so it is left out on purpose |
 | Phase 2 network time (optional, S8) | **Not implemented.** The device clock is correct (S8); optional |
 | Phase 3 boot job | Written: `deploy/primitive-launcher.conf`, `deploy/boot.sh`, `install-autostart.sh`, `remove-autostart.sh`; 15 guard checks. Not installed. The start event waits for S6 on the device |
-| Phase 4 KUAL extensions | Subset: `extensions/*/menu.json` items with actions appear as launcher tiles (nested names joined with ": "). Not used: `exitmenu`, `status`, `checked`, `model`, `if`. No separate "Extensions" screen |
+| Phase 4 KUAL extensions | Done (Mac): an Extensions tile (shown when extensions are installed) opens a list with submenus, ordered by `priority` then name; items run `sh <extension>/<action> <params>`. Not used: `exitmenu`, `status`, `checked`, `model`, `if` |
 | Phase 4 edit mode: hide | Done. Long-press an app to hide it (written to `apps.toml`); Settings > Hidden apps > Show all. The Kindle UI and Settings tiles cannot be hidden. The launcher rewrites `apps.toml` for this and drops comments |
-| Phase 4 edit mode: move and choose icon | **Not implemented.** Ordering and icon choice are left to `apps.toml` for now |
-| Phase 4 screensaver choices | Done, default off. Settings > Sleep screen: "The launcher's own" unloads the stock screensaver (`lipc-set-prop com.lab126.blanket unload screensaver`, as KOReader does). Switching back takes effect after Kindle mode or a reboot. **Device-unverified** |
+| Phase 4 edit mode: move and choose icon | Done (Mac): long-press opens an app menu (Move earlier, Move later, Change icon from `/mnt/us/launcher/icons/*.png`, Hide), saved to `apps.toml` |
+| Phase 4 screensaver choices | Done, default off. Pictures: PNG files in `/mnt/us/launcher/screensavers`, one per sleep, when the launcher's own sleep screen is on (Mac-tested, not yet on the device). Settings > Sleep screen: "The launcher's own" unloads the stock screensaver (`lipc-set-prop com.lab126.blanket unload screensaver`, as KOReader does). Switching back takes effect after Kindle mode or a reboot. **Device-unverified** |
 | Phase 4 Wi-Fi network picker | **Not implemented.** Needs S3 (scan and profile properties) and a keyboard, which the launcher does not have |
 | Phase 4 M6c (framework never starts at boot) | Research only, after Phase 3 is stable for weeks. Nothing to build |
 

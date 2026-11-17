@@ -1,12 +1,9 @@
 //! KUAL extensions: `menu.json` files under the extensions folder (`/mnt/us/extensions/<name>/menu.json`,
-//! beside the documents folder). A subset of KUAL's format, enough for launching:
+//! beside the documents folder). The launcher shows them behind one "Extensions" tile, as KUAL does: a list
+//! with submenus, ordered by `priority` then name. An item with an `action` runs
+//! `sh <extension>/<action> <params>` in the extension folder.
 //!
-//! - nested `items` are flattened into the grid as "Parent: Child";
-//! - each item with an `action` becomes an app that runs `sh <extension>/<action> <params>` in the extension
-//!   folder, ordered by `priority`.
-//!
-//! Not used: `exitmenu`, `status`, `checked`, `model` and `if` checks. Those need KUAL's own menu, which the
-//! launcher does not have.
+//! Not used: `exitmenu`, `status`, `checked`, `model` and `if` checks. Those depend on KUAL's own runtime.
 
 use crate::apps::{App, IconSource, Launch};
 use serde_json::Value;
@@ -15,43 +12,79 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// The apps in one `menu.json`. `ext_id` is the extension's folder name, used in the app ids.
-pub fn parse(json: &str, ext_dir: &Path, ext_id: &str) -> Result<Vec<App>, String> {
+/// One entry of an extension menu: a submenu (`children`) or a command.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuItem {
+    pub name: String,
+    /// The shell command for an item that runs something.
+    pub command: Option<String>,
+    /// The extension folder: the command's working directory.
+    pub dir: String,
+    pub priority: i64,
+    pub children: Vec<MenuItem>,
+}
+
+impl MenuItem {
+    pub fn is_submenu(&self) -> bool {
+        !self.children.is_empty()
+    }
+
+    /// The app the launcher hands to the supervisor to run this item.
+    pub fn app(&self) -> Option<App> {
+        let command = self.command.clone()?;
+        Some(App {
+            id: format!("kual:{}:{}", self.dir, self.name),
+            name: self.name.clone(),
+            icon: IconSource::None,
+            launch: Launch::Shell { command },
+            dir: self.dir.clone(),
+            order: None,
+            hidden: false,
+        })
+    }
+}
+
+/// The items of one `menu.json`. `ext_id` (the folder name) only labels problems.
+pub fn parse(json: &str, ext_dir: &Path, ext_id: &str) -> Result<Vec<MenuItem>, String> {
     let value: Value = serde_json::from_str(json).map_err(|e| format!("{ext_id}/menu.json: {e}"))?;
-    let items = value
+    let list = value
         .get("items")
         .and_then(Value::as_array)
         .ok_or_else(|| format!("{ext_id}/menu.json: no items list"))?;
-    let mut apps = Vec::new();
-    flatten(items, "", ext_dir, ext_id, &mut apps);
-    Ok(apps)
+    Ok(items(list, ext_dir))
 }
 
-fn flatten(items: &[Value], prefix: &str, dir: &Path, ext_id: &str, out: &mut Vec<App>) {
-    for item in items {
-        let Some(name) = item.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()) else { continue };
-        let full = if prefix.is_empty() { name.to_string() } else { format!("{prefix}: {name}") };
-        if let Some(children) = item.get("items").and_then(Value::as_array) {
-            flatten(children, &full, dir, ext_id, out);
+fn items(list: &[Value], dir: &Path) -> Vec<MenuItem> {
+    let mut out = Vec::new();
+    for item in list {
+        let Some(name) = item.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty()) else { continue };
+        let priority = item.get("priority").and_then(Value::as_i64).unwrap_or(0);
+        let children = item.get("items").and_then(Value::as_array).map(|c| items(c, dir)).unwrap_or_default();
+        let command = if children.is_empty() {
+            item.get("action").and_then(Value::as_str).filter(|a| !a.is_empty()).map(|action| {
+                let mut command = format!("sh {}", shell_quote(&dir.join(action).to_string_lossy()));
+                let params = item.get("params").and_then(Value::as_str).unwrap_or("").trim();
+                if !params.is_empty() {
+                    command.push(' ');
+                    command.push_str(params);
+                }
+                command
+            })
+        } else {
+            None
+        };
+        // An entry with neither a submenu nor a command does nothing: leave it out.
+        if children.is_empty() && command.is_none() {
+            continue;
         }
-        let Some(action) = item.get("action").and_then(Value::as_str).filter(|a| !a.is_empty()) else { continue };
-        let params = item.get("params").and_then(Value::as_str).unwrap_or("");
-        let script = dir.join(action);
-        let mut command = format!("sh {}", shell_quote(&script.to_string_lossy()));
-        if !params.trim().is_empty() {
-            command.push(' ');
-            command.push_str(params.trim());
-        }
-        out.push(App {
-            id: format!("kual:{ext_id}:{full}"),
-            name: full,
-            icon: IconSource::None,
-            launch: Launch::Shell { command },
-            dir: dir.to_string_lossy().into_owned(),
-            order: item.get("priority").and_then(Value::as_i64),
-            hidden: false,
-        });
+        out.push(MenuItem { name: name.trim().to_string(), command, dir: dir.to_string_lossy().into_owned(), priority, children });
     }
+    sort(&mut out);
+    out
+}
+
+fn sort(items: &mut [MenuItem]) {
+    items.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
 }
 
 /// Single-quote a path for `sh -c`.
@@ -59,29 +92,30 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// Every extension under `root` with a `menu.json`. Problems (unreadable or invalid files) are returned as
-/// text for the notice; the other extensions still load.
-pub fn discover_root(root: &Path) -> (Vec<App>, Vec<String>) {
-    let mut apps = Vec::new();
+/// The top level of the Extensions list: the items of every extension under `root` with a `menu.json`, in
+/// one list. Problems (unreadable or invalid files) are returned as text; the other extensions still load.
+pub fn discover_root(root: &Path) -> (Vec<MenuItem>, Vec<String>) {
+    let mut menu = Vec::new();
     let mut problems = Vec::new();
-    let Ok(entries) = fs::read_dir(root) else { return (apps, problems) };
+    let Ok(entries) = fs::read_dir(root) else { return (menu, problems) };
     let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
     dirs.sort();
     for dir in dirs {
-        let menu = dir.join("menu.json");
-        if !menu.is_file() {
+        let file = dir.join("menu.json");
+        if !file.is_file() {
             continue;
         }
         let ext_id = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        match fs::read_to_string(&menu) {
+        match fs::read_to_string(&file) {
             Ok(text) => match parse(&text, &dir, &ext_id) {
-                Ok(found) => apps.extend(found),
+                Ok(found) => menu.extend(found),
                 Err(e) => problems.push(e),
             },
             Err(e) => problems.push(format!("{ext_id}/menu.json: {e}")),
         }
     }
-    (apps, problems)
+    sort(&mut menu);
+    (menu, problems)
 }
 
 #[cfg(test)]
@@ -90,35 +124,38 @@ mod tests {
 
     const MENU: &str = r#"{
         "items": [
-            { "name": "Wi-Fi tools", "items": [
-                { "name": "Reset", "action": "bin/reset.sh", "priority": 2 },
-                { "name": "Say hi", "action": "bin/hi.sh", "params": "--loud" }
+            { "name": "Wi-Fi tools", "priority": 5, "items": [
+                { "name": "Say hi", "action": "bin/hi.sh", "params": "--loud" },
+                { "name": "Reset", "action": "bin/reset.sh", "priority": -1 }
             ]},
             { "name": "Just a menu", "items": [] },
-            { "name": "Nameless", "action": "x.sh" },
-            { "name": "Quoted", "action": "it's.sh", "priority": 1 }
+            { "name": "Quoted", "action": "it's.sh", "priority": 1 },
+            { "name": "", "action": "x.sh" },
+            { "name": "No action" }
         ]
     }"#;
 
     #[test]
-    fn nested_items_are_flattened_with_their_actions() {
-        let apps = parse(MENU, Path::new("/mnt/us/extensions/tools"), "tools").unwrap();
-        let names: Vec<_> = apps.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["Wi-Fi tools: Reset", "Wi-Fi tools: Say hi", "Nameless", "Quoted"]);
-        assert_eq!(apps[0].id, "kual:tools:Wi-Fi tools: Reset");
-        assert_eq!(apps[0].dir, "/mnt/us/extensions/tools");
-        assert_eq!(apps[0].order, Some(2));
-        assert_eq!(
-            apps[0].launch,
-            Launch::Shell { command: "sh '/mnt/us/extensions/tools/bin/reset.sh'".into() }
-        );
+    fn submenus_keep_their_items_in_priority_order() {
+        let menu = parse(MENU, Path::new("/mnt/us/extensions/tools"), "tools").unwrap();
+        let names: Vec<_> = menu.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["Quoted", "Wi-Fi tools"]);
+        let tools = &menu[1];
+        assert!(tools.is_submenu());
+        assert_eq!(tools.command, None);
+        let inner: Vec<_> = tools.children.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(inner, ["Reset", "Say hi"]);
     }
 
     #[test]
-    fn params_are_passed_and_quotes_in_paths_survive() {
-        let apps = parse(MENU, Path::new("/e"), "e").unwrap();
-        assert_eq!(apps[1].launch, Launch::Shell { command: "sh '/e/bin/hi.sh' --loud".into() });
-        assert_eq!(apps[3].launch, Launch::Shell { command: "sh '/e/it'\\''s.sh'".into() });
+    fn commands_quote_paths_and_pass_params() {
+        let menu = parse(MENU, Path::new("/e"), "e").unwrap();
+        assert_eq!(menu[0].command.as_deref(), Some("sh '/e/it'\\''s.sh'"));
+        assert_eq!(menu[1].children[1].command.as_deref(), Some("sh '/e/bin/hi.sh' --loud"));
+        let app = menu[1].children[0].app().unwrap();
+        assert_eq!(app.launch, Launch::Shell { command: "sh '/e/bin/reset.sh'".into() });
+        assert_eq!(app.dir, "/e");
+        assert_eq!(menu[1].app(), None);
     }
 
     #[test]
@@ -129,17 +166,18 @@ mod tests {
     }
 
     #[test]
-    fn discover_root_loads_good_extensions_and_reports_bad_ones() {
+    fn discover_root_merges_extensions_and_reports_bad_ones() {
         let root = std::env::temp_dir().join(format!("kl-kual-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("good")).unwrap();
-        fs::create_dir_all(root.join("bad")).unwrap();
-        fs::create_dir_all(root.join("no-menu")).unwrap();
+        for d in ["good", "other", "bad", "no-menu"] {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
         fs::write(root.join("good/menu.json"), MENU).unwrap();
+        fs::write(root.join("other/menu.json"), r#"{"items":[{"name":"Alpha","action":"a.sh","priority":1}]}"#).unwrap();
         fs::write(root.join("bad/menu.json"), "[]").unwrap();
-        let (apps, problems) = discover_root(&root);
-        assert_eq!(apps.len(), 4);
-        assert!(apps.iter().all(|a| a.id.starts_with("kual:good:")));
+        let (menu, problems) = discover_root(&root);
+        let names: Vec<_> = menu.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "Quoted", "Wi-Fi tools"]);
         assert_eq!(problems.len(), 1);
         assert!(problems[0].starts_with("bad/menu.json"));
         let _ = fs::remove_dir_all(&root);
@@ -147,7 +185,7 @@ mod tests {
 
     #[test]
     fn a_missing_root_is_not_a_problem() {
-        let (apps, problems) = discover_root(Path::new("/definitely/not/here"));
-        assert!(apps.is_empty() && problems.is_empty());
+        let (menu, problems) = discover_root(Path::new("/definitely/not/here"));
+        assert!(menu.is_empty() && problems.is_empty());
     }
 }

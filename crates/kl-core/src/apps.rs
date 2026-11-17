@@ -16,6 +16,8 @@ pub enum Launch {
     KindleMode,
     /// Built-in: the Settings screen.
     Settings,
+    /// Built-in: the Extensions list (KUAL menus).
+    Extensions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +52,7 @@ impl App {
             Launch::Script { path, hooks: false } => ("script", path.as_str()),
             Launch::Script { path, hooks: true } => ("hooks", path.as_str()),
             Launch::Shell { command } => ("shell", command.as_str()),
-            Launch::KindleMode | Launch::Settings => return None,
+            Launch::KindleMode | Launch::Settings | Launch::Extensions => return None,
         };
         // One value per line: a newline inside a value would shift the others.
         if arg.contains('\n') || self.dir.contains('\n') {
@@ -152,7 +154,7 @@ pub fn merge(discovered: Vec<App>, config: &Config) -> (Vec<App>, Vec<String>) {
                 app.icon = icon_from(Some(icon));
             }
             if let Some(command) = &entry.command {
-                if !matches!(app.launch, Launch::KindleMode | Launch::Settings) {
+                if !matches!(app.launch, Launch::KindleMode | Launch::Settings | Launch::Extensions) {
                     app.launch = Launch::Shell { command: command.clone() };
                 }
             }
@@ -185,19 +187,23 @@ pub fn merge(discovered: Vec<App>, config: &Config) -> (Vec<App>, Vec<String>) {
 }
 
 /// Discover scriptlets in `documents` and merge them with `config`.
-/// Every app the launcher shows: scriptlets in the documents folder, KUAL extensions beside it
-/// (`extensions/*/menu.json`), then the `apps.toml` overrides.
+/// Every app the launcher shows in the grid: scriptlets in the documents folder, then the `apps.toml`
+/// overrides. KUAL extensions are listed behind the Extensions tile (`kual::discover_root`).
 pub fn discover(documents: &Path, config: &Config) -> (Vec<App>, Vec<String>) {
-    let mut found = scriptlets(documents);
-    let mut problems = Vec::new();
-    if let Some(root) = documents.parent().map(|p| p.join("extensions")) {
-        let (apps, errors) = crate::kual::discover_root(&root);
-        found.extend(apps);
-        problems.extend(errors);
+    merge(scriptlets(documents), config)
+}
+
+/// The built-in Extensions tile, shown when KUAL extensions are installed. It sorts with the other built-ins.
+pub fn extensions_app() -> App {
+    App {
+        id: "extensions".into(),
+        name: "Extensions".into(),
+        icon: IconSource::None,
+        launch: Launch::Extensions,
+        dir: "/".into(),
+        order: Some(9_000),
+        hidden: false,
     }
-    let (apps, more) = merge(found, config);
-    problems.extend(more);
-    (apps, problems)
 }
 
 #[cfg(test)]

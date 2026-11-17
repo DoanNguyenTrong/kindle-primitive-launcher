@@ -58,12 +58,31 @@ impl Config {
         Ok(Config::parse(text).0)
     }
 
-    /// Hide or show an app by id, adding its entry when there is none.
+    /// The entry for `id`, added when there is none.
+    fn entry(&mut self, id: &str) -> &mut AppEntry {
+        let index = match self.apps.iter().position(|a| a.id == id) {
+            Some(i) => i,
+            None => {
+                self.apps.push(AppEntry { id: id.into(), ..Default::default() });
+                self.apps.len() - 1
+            }
+        };
+        &mut self.apps[index]
+    }
+
+    /// Hide or show an app by id.
     pub fn set_hidden(&mut self, id: &str, hidden: bool) {
-        match self.apps.iter_mut().find(|a| a.id == id) {
-            Some(entry) => entry.hidden = Some(hidden),
-            None => self.apps.push(AppEntry { id: id.into(), hidden: Some(hidden), ..Default::default() }),
-        }
+        self.entry(id).hidden = Some(hidden);
+    }
+
+    /// Set an app's position in the grid (edit mode: Move earlier / later).
+    pub fn set_order(&mut self, id: &str, order: i64) {
+        self.entry(id).order = Some(order);
+    }
+
+    /// Set an app's icon file, or clear it (`None`) to go back to the app's own icon.
+    pub fn set_icon(&mut self, id: &str, icon: Option<String>) {
+        self.entry(id).icon = icon;
     }
 
     /// The file text for this config: the grid size, then each entry with the fields that are set.
@@ -224,5 +243,21 @@ mod tests {
         assert!(Config::load("columns = [").is_err());
         assert!(Config::load("").is_ok());
         assert!(Config::load("columns = 3\n").is_ok());
+    }
+
+    #[test]
+    fn order_and_icon_are_saved_and_an_icon_can_be_cleared() {
+        let (mut config, _) = Config::parse("[[app]]\nid = \"a.sh\"\nicon = \"/old.png\"\n");
+        config.set_order("a.sh", 2);
+        config.set_order("b.sh", 1);
+        config.set_icon("b.sh", Some("/mnt/us/launcher/icons/b.png".into()));
+        let (back, problems) = Config::parse(&config.to_toml());
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(back.apps[0].order, Some(2));
+        assert_eq!(back.apps[0].icon.as_deref(), Some("/old.png"));
+        assert_eq!(back.apps[1].icon.as_deref(), Some("/mnt/us/launcher/icons/b.png"));
+        config.set_icon("a.sh", None);
+        let (back, _) = Config::parse(&config.to_toml());
+        assert_eq!(back.apps[0].icon, None);
     }
 }

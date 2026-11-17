@@ -48,6 +48,10 @@ pub enum Button {
     ShowHidden,
     SleepScreen,
     KindleUi,
+    MenuEarlier,
+    MenuLater,
+    MenuIcon,
+    MenuHide,
     ConfirmCancel,
     ConfirmOpen,
 }
@@ -116,6 +120,8 @@ pub const LABEL_SIZE: f32 = 34.0;
 pub const LABEL_LINE: i32 = 44;
 const LABEL_H: i32 = LABEL_LINE * 2 + 4;
 const TITLE_H: i32 = 130;
+/// One row of the Extensions list.
+const LIST_ROW_H: i32 = 120;
 const ROW_H: i32 = 140;
 const BUTTON_W: i32 = 150;
 const WIDE_W: i32 = 300;
@@ -225,6 +231,47 @@ impl Layout {
     pub fn about(&self) -> Rect {
         let top = TITLE_H + 30 + Row::ALL.len() as i32 * ROW_H + 30;
         Rect::new(MARGIN, top, self.width - 2 * MARGIN, self.height - top - MARGIN)
+    }
+
+    /// The app menu (long press on a tile): four wide buttons under the title.
+    pub fn app_menu_buttons(&self) -> [(Button, Rect); 4] {
+        let top = TITLE_H + 40;
+        let w = self.width - 2 * MARGIN;
+        let at = |i: i32| Rect::new(MARGIN, top + i * (BUTTON_H + 28), w, BUTTON_H);
+        [(Button::MenuEarlier, at(0)), (Button::MenuLater, at(1)), (Button::MenuIcon, at(2)), (Button::MenuHide, at(3))]
+    }
+
+    /// Where the app menu shows the app's tile, under its buttons.
+    pub fn app_menu_preview(&self) -> Rect {
+        let icon = self.icon(0);
+        let top = TITLE_H + 40 + 4 * (BUTTON_H + 28) + 40;
+        Rect::new((self.width - icon.w) / 2, top, icon.w, icon.h)
+    }
+
+    pub fn app_menu_button_at(&self, x: f32, y: f32) -> Option<Button> {
+        if self.done_button().inset(-20).contains(x, y) {
+            return Some(Button::Done);
+        }
+        self.app_menu_buttons().into_iter().find(|(_, r)| r.inset(-8).contains(x, y)).map(|(b, _)| b)
+    }
+
+    /// Rows of the Extensions list on one page (between the title and the footer).
+    pub fn list_rows_per_page(&self) -> usize {
+        ((self.footer().y - TITLE_H - 20) / LIST_ROW_H).max(1) as usize
+    }
+
+    /// Row `i` of the Extensions list on the current page.
+    pub fn list_row(&self, i: usize) -> Rect {
+        Rect::new(MARGIN, TITLE_H + 20 + i as i32 * LIST_ROW_H, self.width - 2 * MARGIN, LIST_ROW_H)
+    }
+
+    pub fn list_row_at(&self, x: f32, y: f32) -> Option<usize> {
+        (0..self.list_rows_per_page()).find(|&i| self.list_row(i).contains(x, y))
+    }
+
+    /// Pages of the Extensions list for `n` items (at least one).
+    pub fn list_pages(&self, n: usize) -> usize {
+        n.div_ceil(self.list_rows_per_page()).max(1)
     }
 
     pub fn settings_button_at(&self, x: f32, y: f32) -> Option<Button> {

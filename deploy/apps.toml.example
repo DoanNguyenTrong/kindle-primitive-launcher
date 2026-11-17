@@ -1,4 +1,9 @@
 # Primitive Launcher: copy this file to apps.toml (same folder) and edit it.
+# Most of this can also be done on the Kindle: long-press an app to move it, change its icon (PNG files in
+# /mnt/us/launcher/icons) or hide it; Settings > Hidden apps shows them again. The launcher then rewrites
+# this file (comments are not kept). KUAL extensions (/mnt/us/extensions/*/menu.json) appear behind the
+# Extensions tile. Sleep pictures: PNG files in /mnt/us/launcher/screensavers, with Settings > Sleep screen
+# set to the launcher's own.
 # Scriptlets in /mnt/us/documents appear without any entry here. Use entries to add other programs,
 # rename, reorder, hide, or set an icon (a PNG; portrait 2:3 looks best).
 

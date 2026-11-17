@@ -24,6 +24,12 @@ pub use image::GrayImage;
 const BLACK: u8 = 0;
 const WHITE: u8 = 255;
 
+// Icon paths copied from Primitive Browser (`crates/kb-app/src/ui.rs`, the `icon` set and `battery_icon`).
+const WIFI_ARC_OUTER: &str = "M2.5 9 A14 14 0 0 1 21.5 9";
+const WIFI_ARC_MIDDLE: &str = "M5.5 12.5 A9.5 9.5 0 0 1 18.5 12.5";
+const WIFI_ARC_INNER: &str = "M8.5 16 A5 5 0 0 1 15.5 16";
+const BOLT: &str = "M8 0 L1 12 H6 L4 22 L13 9 H8 Z";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Align {
     Start,
@@ -52,6 +58,8 @@ pub struct Renderer {
     fonts: FontContext,
     layout_cx: LayoutContext<()>,
     icons: HashMap<String, GrayImage>,
+    /// The launcher's own sleep screen picture, when one is set (screensavers folder).
+    sleep_image: Option<GrayImage>,
 }
 
 fn gray(v: u8) -> Color {
@@ -85,12 +93,23 @@ impl Renderer {
             fonts,
             layout_cx: LayoutContext::new(),
             icons: HashMap::new(),
+            sleep_image: None,
         })
     }
 
     /// Set the dithered icon tile for an app id (sized to the layout's icon box).
     pub fn set_icon(&mut self, id: &str, tile: GrayImage) {
         self.icons.insert(id.to_string(), tile);
+    }
+
+    /// The picture for the next sleep screen (`None`: the text sleep screen).
+    pub fn set_sleep_image(&mut self, image: Option<GrayImage>) {
+        self.sleep_image = image;
+    }
+
+    /// Drop an app's tile (its icon was changed; the driver loads the new one).
+    pub fn forget_icon(&mut self, id: &str) {
+        self.icons.remove(id);
     }
 
     pub fn has_icon(&self, id: &str) -> bool {
@@ -117,6 +136,74 @@ impl Renderer {
         self.ctx.set_paint(gray(v));
         let path = kurbo::RoundedRect::from_rect(krect(r), radius).to_path(0.1);
         self.ctx.fill_path(&path);
+    }
+
+    /// Stroke an SVG path drawn on the browser's 24-unit icon grid, scaled to `size` pixels at (`x`, `y`).
+    fn stroke_icon(&mut self, d: &str, x: f64, y: f64, size: f64, width: f64, v: u8) {
+        let Ok(path) = kurbo::BezPath::from_svg(d) else { return };
+        self.ctx.set_transform(Affine::translate((x, y)) * Affine::scale(size / 24.0));
+        self.ctx.set_stroke(kurbo::Stroke::new(width).with_caps(kurbo::Cap::Round).with_join(kurbo::Join::Round));
+        self.ctx.set_paint(gray(v));
+        self.ctx.stroke_path(&path);
+        self.ctx.set_transform(Affine::IDENTITY);
+    }
+
+    /// Fill an SVG path at (`x`, `y`) with `scale` (path units to pixels).
+    fn fill_svg(&mut self, d: &str, x: f64, y: f64, scale: f64, v: u8) {
+        let Ok(path) = kurbo::BezPath::from_svg(d) else { return };
+        self.ctx.set_transform(Affine::translate((x, y)) * Affine::scale(scale));
+        self.ctx.set_paint(gray(v));
+        self.ctx.fill_path(&path);
+        self.ctx.set_transform(Affine::IDENTITY);
+    }
+
+    /// The Wi-Fi icon from Primitive Browser (`kb-app/src/ui.rs`, "wifi" and "wifi-off"): three arcs and a dot
+    /// on a 24-unit grid, stroke 2, with a slash when Wi-Fi is off.
+    fn wifi_icon(&mut self, x: f64, y: f64, size: f64, on: bool) {
+        for arc in [WIFI_ARC_OUTER, WIFI_ARC_MIDDLE, WIFI_ARC_INNER] {
+            self.stroke_icon(arc, x, y, size, 2.0, BLACK);
+        }
+        let k = size / 24.0;
+        self.ctx.set_paint(gray(BLACK));
+        let dot = kurbo::Circle::new((x + 12.0 * k, y + 19.5 * k), 1.6 * k).to_path(0.1);
+        self.ctx.fill_path(&dot);
+        if !on {
+            // A white gap under the slash keeps it readable over the arcs.
+            self.stroke_icon("M3 3 L21 21", x, y, size, 5.0, WHITE);
+            self.stroke_icon("M3 3 L21 21", x, y, size, 2.4, BLACK);
+        }
+    }
+
+    /// The battery icon from Primitive Browser (`kb-app/src/ui.rs`, `battery_icon`): a 128 × 56 battery filled
+    /// to the level in black, the number in its middle, black on the empty part and white on the filled part
+    /// (split at the level's edge), and a bolt while charging.
+    fn battery_icon(&mut self, x: i32, y: i32, level: u32, charging: bool) {
+        let pct = level.min(100);
+        let fill = (104.0 * pct as f32 / 100.0).round() as i32;
+        self.rounded_frame(Rect::new(x + 2, y + 4, 116, 48), 12.0, 3, BLACK, WHITE);
+        self.rounded(Rect::new(x + 122, y + 18, 5, 20), 2.0, BLACK);
+        if fill > 0 {
+            self.rounded(Rect::new(x + 8, y + 10, fill, 36), 6.0f64.min(fill as f64 / 2.0), BLACK);
+        }
+        let edge = (x + 8 + fill) as f64;
+        let number = pct.to_string();
+        let draw_number = |r: &mut Renderer, v: u8| {
+            let w = r.text_width(&number, 28.0, true);
+            let bolt_w = if charging { 18.0 } else { 0.0 };
+            let left = x as f32 + (128.0 - w - bolt_w) / 2.0;
+            if charging {
+                r.fill_svg(BOLT, (left - 2.0) as f64, (y + 17) as f64, 1.0, v);
+            }
+            r.text(Text { text: &number, x: left + bolt_w, y: (y + 11) as f32, w: w + 4.0, size: 28.0, bold: true, align: Align::Start, lines: 1, gray: v });
+        };
+        draw_number(self, BLACK);
+        if fill > 0 {
+            let clip = kurbo::Rect::new(x as f64, y as f64, edge, (y + 56) as f64).to_path(0.1);
+            self.ctx.set_transform(Affine::IDENTITY);
+            self.ctx.push_clip_layer(&clip);
+            draw_number(self, WHITE);
+            self.ctx.pop_layer();
+        }
     }
 
     /// A rounded outline: an outer fill in `line`, an inner fill in `inside`.
@@ -215,12 +302,26 @@ impl Renderer {
                 self.status_strip(&l, status);
                 self.confirm(&l);
             }
-            Screen::Sleep => self.sleep(&l, ui.battery_message()),
+            // A sleep picture replaces the text, except for a battery warning, which matters more.
+            Screen::Sleep => {
+                if self.sleep_image.is_none() || ui.battery_message().is_some() {
+                    self.sleep(&l, ui.battery_message());
+                }
+            }
+            Screen::AppMenu => self.app_menu(ui, &mut icon_blits),
+            Screen::Extensions => self.extensions(ui),
         }
         let mut out = self.finish_gray();
         for (rect, id) in icon_blits {
             if let Some(tile) = self.icons.get(&id) {
                 blit(&mut out, self.width as usize, rect, tile);
+            }
+        }
+        if ui.screen == Screen::Sleep && ui.battery_message().is_none() {
+            if let Some(picture) = &self.sleep_image {
+                let s = l.screen();
+                let r = Rect::new((s.w - picture.width as i32) / 2, (s.h - picture.height as i32) / 2, picture.width as i32, picture.height as i32);
+                blit(&mut out, self.width as usize, r, picture);
             }
         }
         if let (Screen::Home, Some(slot)) = (ui.screen, ui.pressed) {
@@ -236,33 +337,24 @@ impl Renderer {
         if !s.date.is_empty() {
             self.text(Text { text: &s.date, x: 210.0, y: 38.0, w: 360.0, size: 34.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
         }
-        // Battery: outline, fill by level, number beside it.
-        let bw = 70;
-        let bx = r.right() - 40 - bw - 8;
-        let body = Rect::new(bx, 38, bw, 36);
-        self.frame(body, 4, BLACK);
-        self.fill(Rect::new(body.right(), 48, 8, 16), BLACK);
+        // Battery and Wi-Fi icons as in Primitive Browser, at the right of the strip.
+        let bx = r.right() - 40 - 128;
         if let Some(level) = s.battery {
-            let inner = body.inset(8);
-            let fw = (inner.w * level.min(100) as i32) / 100;
-            self.fill(Rect::new(inner.x, inner.y, fw.max(2), inner.h), BLACK);
+            self.battery_icon(bx, (r.h - 56) / 2, level, s.charging);
         }
-        let label = match (s.battery, s.charging) {
-            (Some(b), true) => format!("Charging {b}%"),
-            (Some(b), false) => format!("{b}%"),
-            (None, _) => String::new(),
-        };
-        let lw = 340.0;
-        self.text(Text { text: &label, x: bx as f32 - 16.0 - lw, y: 36.0, w: lw, size: 34.0, bold: false, align: Align::End, lines: 1, gray: BLACK });
-        let wifi = match (s.wifi_on, s.wifi_state.as_str()) {
-            (false, _) => "Wi-Fi off".to_string(),
-            (true, "connected") => "Wi-Fi".to_string(),
+        let wifi_size = 48.0;
+        let wx = bx as f64 - 28.0 - wifi_size;
+        self.wifi_icon(wx, (r.h as f64 - wifi_size) / 2.0, wifi_size, s.wifi_on);
+        // While Wi-Fi is on but not connected, say so beside the icon.
+        let note = match (s.wifi_on, s.wifi_state.as_str()) {
+            (true, "connected") | (false, _) => String::new(),
             (true, "") => "Wi-Fi …".to_string(),
-            (true, other) => format!("Wi-Fi {other}"),
+            (true, other) => capitalise(other),
         };
-        let ww = 330.0;
-        let label_w = if label.is_empty() { 0.0 } else { self.text_width(&label, 34.0, false) + 36.0 };
-        self.text(Text { text: &wifi, x: bx as f32 - 16.0 - label_w - ww, y: 36.0, w: ww, size: 34.0, bold: false, align: Align::End, lines: 1, gray: BLACK });
+        if !note.is_empty() {
+            let nw = 320.0;
+            self.text(Text { text: &note, x: (wx - 16.0) as f32 - nw, y: 38.0, w: nw, size: 30.0, bold: false, align: Align::End, lines: 1, gray: BLACK });
+        }
         self.fill(Rect::new(0, r.bottom() - 4, r.w, 4), BLACK);
     }
 
@@ -298,7 +390,7 @@ impl Renderer {
 
     /// An app without an icon: its initials on a card. Built-ins are drawn inverted.
     fn monogram(&mut self, r: Rect, app: &App) {
-        let builtin = matches!(app.launch, kl_core::Launch::Settings | kl_core::Launch::KindleMode);
+        let builtin = matches!(app.launch, kl_core::Launch::Settings | kl_core::Launch::KindleMode | kl_core::Launch::Extensions);
         let (bg, fg) = if builtin { (BLACK, WHITE) } else { (WHITE, BLACK) };
         self.rounded_frame(r, 22.0, 5, BLACK, bg);
         let initials: String = app
@@ -353,6 +445,79 @@ impl Renderer {
         self.rounded_frame(r, 16.0, 4, BLACK, bg);
         let size = 36.0;
         self.text(Text { text: label, x: r.x as f32, y: r.y as f32 + (r.h as f32 - size * 1.25) / 2.0, w: r.w as f32, size, bold: true, align: Align::Center, lines: 1, gray: fg });
+    }
+
+    /// The Extensions list: one row per item, "›" on submenus, Back (or Done at the top), and pages.
+    fn extensions(&mut self, ui: &Ui) {
+        let l = ui.layout;
+        let title = l.title();
+        let heading = ui.ext_title();
+        let name_w = (l.done_button().x - 80) as f32;
+        self.text(Text { text: &heading, x: 40.0, y: 38.0, w: name_w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), if ui.ext_depth() == 0 { "Done" } else { "Back" }, true);
+        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
+        let per = l.list_rows_per_page();
+        let items: Vec<_> = ui.ext_items().iter().skip(ui.ext_page * per).take(per).cloned().collect();
+        if items.is_empty() {
+            self.text(Text { text: "Nothing here", x: 0.0, y: (title.bottom() + 80) as f32, w: title.w as f32, size: 38.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
+        }
+        for (i, item) in items.iter().enumerate() {
+            let r = l.list_row(i);
+            let chevron_w = if item.is_submenu() { 60.0 } else { 0.0 };
+            self.text(Text { text: &item.name, x: r.x as f32 + 8.0, y: r.y as f32 + 36.0, w: r.w as f32 - 16.0 - chevron_w, size: 40.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            if item.is_submenu() {
+                self.text(Text { text: "›", x: (r.right() - 60) as f32, y: r.y as f32 + 26.0, w: 52.0, size: 56.0, bold: true, align: Align::End, lines: 1, gray: BLACK });
+            }
+            self.fill(Rect::new(r.x, r.bottom() - 2, r.w, 2), BLACK);
+        }
+        let f = l.footer();
+        self.fill(Rect::new(0, f.y, f.w, 3), BLACK);
+        let pages = ui.ext_pages();
+        if pages > 1 {
+            let label = format!("{} / {}", ui.ext_page + 1, pages);
+            self.text(Text { text: &label, x: 0.0, y: f.y as f32 + 22.0, w: f.w as f32, size: 38.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+            if ui.ext_page > 0 {
+                self.text(Text { text: "‹  Previous", x: 40.0, y: f.y as f32 + 26.0, w: 240.0, size: 34.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            }
+            if ui.ext_page + 1 < pages {
+                self.text(Text { text: "Next  ›", x: f.w as f32 - 280.0, y: f.y as f32 + 26.0, w: 240.0, size: 34.0, bold: false, align: Align::End, lines: 1, gray: BLACK });
+            }
+        }
+    }
+
+    /// The app menu: the app's name, four buttons and its tile as it looks now.
+    fn app_menu(&mut self, ui: &Ui, icon_blits: &mut Vec<(Rect, String)>) {
+        let l = ui.layout;
+        let Some(app) = ui.menu_app().cloned() else { return };
+        let title = l.title();
+        let name_w = (l.done_button().x - 80) as f32;
+        self.text(Text { text: &app.name, x: 40.0, y: 38.0, w: name_w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), "Done", true);
+        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
+        let icon_label = match &app.icon {
+            IconSource::File(path) => format!("Change icon: {}", path.rsplit('/').next().unwrap_or(path)),
+            _ => "Change icon".to_string(),
+        };
+        for (b, r) in l.app_menu_buttons() {
+            let label = match b {
+                Button::MenuEarlier => "Move earlier".to_string(),
+                Button::MenuLater => "Move later".to_string(),
+                Button::MenuIcon => icon_label.clone(),
+                Button::MenuHide => "Hide".to_string(),
+                _ => String::new(),
+            };
+            self.button(r, &label, false);
+        }
+        let preview = l.app_menu_preview();
+        if !matches!(app.icon, IconSource::None) && self.icons.contains_key(&app.id) {
+            self.frame(preview.inset(-3), 3, BLACK);
+            icon_blits.push((preview, app.id.clone()));
+        } else {
+            self.monogram(preview, &app);
+        }
+        let position = format!("Place {} of {}", ui.menu + 1, ui.apps().len());
+        self.text(Text { text: &position, x: 0.0, y: (preview.bottom() + 24) as f32, w: title.w as f32, size: 34.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
+        self.footer(ui);
     }
 
     fn settings(&mut self, ui: &Ui, s: &Status) {
@@ -570,6 +735,13 @@ pub fn is_black_and_white(pixels: &[u8]) -> bool {
     pixels.iter().all(|&p| p == 0 || p == 255)
 }
 
+
+/// A sleep screen picture from a PNG file: fitted to `w` × `h` (centred, white around it) and dithered to the
+/// panel's 16 grays.
+pub fn sleep_image(path: &std::path::Path, w: u32, h: u32) -> Result<GrayImage, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    image::icon_tile(&bytes, w, h)
+}
 
 /// The dithered icon tile for `app`, sized `w` × `h`, from its `# Icon:` data or file. With `cache`, tiles
 /// are read from and written to that folder (keyed by the source bytes and size). `Ok(None)` when the app

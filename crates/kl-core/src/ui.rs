@@ -2,8 +2,11 @@
 //! for the rotation); the result is an `Action` for the driver: redraw, launch an app, change a device
 //! setting, or leave for the Kindle UI.
 
+use std::collections::HashMap;
+
 use crate::{
-    apps::{sort_key, App, Launch},
+    apps::{extensions_app, sort_key, App, IconSource, Launch},
+    kual::MenuItem,
     battery::{self, Warning},
     layout::{Button, Layout},
     settings::Rotation,
@@ -16,6 +19,10 @@ pub enum Screen {
     /// "Open the Kindle UI?" over the previous screen.
     ConfirmKindle,
     Sleep,
+    /// Edit one app (long press): move, change icon, hide. The app is `Ui::menu`.
+    AppMenu,
+    /// The KUAL extensions list, with submenus.
+    Extensions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -57,6 +64,10 @@ pub enum Action {
     Device(DeviceCmd),
     /// Hide (true) or show (false) apps by id: written to apps.toml, then redraw.
     SetHidden(Vec<(String, bool)>),
+    /// Save the grid order: (id, position) for every app the user can move. Written to apps.toml.
+    SetOrder(Vec<(String, i64)>),
+    /// Set (`Some`) or clear (`None`) an app's icon file. Written to apps.toml; the driver reloads the tile.
+    SetIcon { id: String, icon: Option<String> },
 }
 
 /// What the status strip and Settings show. Filled by the driver.
@@ -101,11 +112,22 @@ pub struct Ui {
     /// Low or critical battery, shown in the footer until the level recovers or the charger is connected.
     pub battery: Warning,
     battery_level: Option<u32>,
+    /// The app the app menu edits (index into the visible apps).
+    pub menu: usize,
+    /// Icon files the app menu offers (PNGs in the launcher's icons folder), set by the driver.
+    icon_choices: Vec<String>,
+    /// Each app's own icon, for "Change icon" to come back to.
+    original_icons: HashMap<String, IconSource>,
+    /// KUAL extension menus (the Extensions tile), the open submenu path, and the list page.
+    extensions: Vec<MenuItem>,
+    ext_path: Vec<usize>,
+    pub ext_page: usize,
 }
 
 impl Ui {
     /// `apps` is the merged list; hidden apps are dropped here.
     pub fn new(apps: Vec<App>, layout: Layout) -> Ui {
+        let original_icons = apps.iter().map(|a| (a.id.clone(), a.icon.clone())).collect();
         let (hidden_apps, apps): (Vec<App>, Vec<App>) = apps.into_iter().partition(|a| a.hidden);
         Ui {
             apps,
@@ -118,7 +140,121 @@ impl Ui {
             notice: None,
             battery: Warning::None,
             battery_level: None,
+            menu: 0,
+            icon_choices: Vec::new(),
+            original_icons,
+            extensions: Vec::new(),
+            ext_path: Vec::new(),
+            ext_page: 0,
         }
+    }
+
+    /// KUAL extension menus. When there are any, the Extensions tile joins the grid (with the built-ins).
+    pub fn set_extensions(&mut self, menu: Vec<MenuItem>) {
+        self.extensions = menu;
+        self.ext_path.clear();
+        self.ext_page = 0;
+        let present = self.apps.iter().any(|a| a.launch == Launch::Extensions);
+        if !self.extensions.is_empty() && !present {
+            self.apps.push(extensions_app());
+            self.apps.sort_by_cached_key(sort_key);
+        } else if self.extensions.is_empty() && present {
+            self.apps.retain(|a| a.launch != Launch::Extensions);
+        }
+    }
+
+    /// The items at the open level of the Extensions list.
+    pub fn ext_items(&self) -> &[MenuItem] {
+        let mut items = self.extensions.as_slice();
+        for &i in &self.ext_path {
+            match items.get(i) {
+                Some(item) => items = &item.children,
+                None => return &[],
+            }
+        }
+        items
+    }
+
+    /// The Extensions list's title: "Extensions", or the open submenu's name.
+    pub fn ext_title(&self) -> String {
+        let mut items = self.extensions.as_slice();
+        let mut title = "Extensions".to_string();
+        for &i in &self.ext_path {
+            if let Some(item) = items.get(i) {
+                title = item.name.clone();
+                items = &item.children;
+            }
+        }
+        title
+    }
+
+    /// How deep the open submenu is (0: the top of the list).
+    pub fn ext_depth(&self) -> usize {
+        self.ext_path.len()
+    }
+
+    pub fn ext_pages(&self) -> usize {
+        self.layout.list_pages(self.ext_items().len())
+    }
+
+    /// The Extensions tile: open the list at the top.
+    pub fn open_extensions(&mut self) -> Action {
+        self.ext_path.clear();
+        self.ext_page = 0;
+        self.go(Screen::Extensions)
+    }
+
+    /// The Extensions list: open a submenu, run an item, page, or go back up.
+    fn extensions_list(&mut self, input: Input) -> Action {
+        let l = self.layout;
+        let turn = |u: &mut Ui, step: i32| -> Action {
+            let next = u.ext_page as i32 + step;
+            if next < 0 || next >= u.ext_pages() as i32 {
+                return Action::None;
+            }
+            u.ext_page = next as usize;
+            Action::Redraw { full: false }
+        };
+        match input {
+            Input::PageForward => turn(self, 1),
+            Input::PageBack => turn(self, -1),
+            Input::Swipe { dx, dy } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => turn(self, if dx < 0.0 { 1 } else { -1 }),
+            Input::Tap(x, y) => {
+                if l.done_button().inset(-20).contains(x, y) {
+                    if self.ext_path.pop().is_some() {
+                        self.ext_page = 0;
+                        return Action::Redraw { full: false };
+                    }
+                    return self.go(Screen::Home);
+                }
+                if l.footer().contains(x, y) {
+                    return turn(self, if x < (l.width / 2) as f32 { -1 } else { 1 });
+                }
+                let Some(row) = l.list_row_at(x, y) else { return Action::None };
+                let index = self.ext_page * l.list_rows_per_page() + row;
+                let Some(item) = self.ext_items().get(index).cloned() else { return Action::None };
+                if item.is_submenu() {
+                    self.ext_path.push(index);
+                    self.ext_page = 0;
+                    return Action::Redraw { full: false };
+                }
+                match item.app() {
+                    Some(app) => Action::Launch(app),
+                    None => Action::None,
+                }
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// The icon files "Change icon" cycles through.
+    pub fn set_icon_choices(&mut self, choices: Vec<String>) {
+        self.icon_choices = choices;
+    }
+
+    /// The app the app menu edits.
+    pub fn menu_app(&self) -> Option<&App> {
+        self.apps.get(self.menu)
     }
 
     /// Record a battery reading. Returns true when the warning changed (the screen needs a redraw). A critical
@@ -149,15 +285,93 @@ impl Ui {
         self.hidden_apps.len()
     }
 
-    /// Long press on a tile: hide that app. The Kindle UI and Settings stay in the grid.
+    /// Long press on a tile: open its app menu. The Kindle UI and Settings stay as they are.
     fn home_long_tap(&mut self, x: f32, y: f32) -> Action {
         let l = self.layout;
         let Some(slot) = l.slot_at(x, y) else { return Action::None };
         let index = self.page * l.per_page() + slot;
         let Some(app) = self.apps.get(index) else { return Action::None };
-        if matches!(app.launch, Launch::Settings | Launch::KindleMode) {
+        if is_builtin(app) {
             self.notice = Some(format!("{} stays in the grid", app.name));
             return Action::Redraw { full: false };
+        }
+        self.menu = index;
+        self.go(Screen::AppMenu)
+    }
+
+    /// The app menu: move the app, change its icon, hide it, or leave.
+    fn app_menu(&mut self, input: Input) -> Action {
+        match input {
+            Input::PageBack => self.leave_menu(),
+            Input::Tap(x, y) => match self.layout.app_menu_button_at(x, y) {
+                Some(Button::Done) => self.leave_menu(),
+                Some(Button::MenuEarlier) => self.move_app(-1),
+                Some(Button::MenuLater) => self.move_app(1),
+                Some(Button::MenuIcon) => self.next_icon(),
+                Some(Button::MenuHide) => {
+                    let action = self.hide_at(self.menu);
+                    self.screen = Screen::Home;
+                    action
+                }
+                _ => Action::None,
+            },
+            _ => Action::None,
+        }
+    }
+
+    /// Back to the grid, on the page that shows the edited app.
+    fn leave_menu(&mut self) -> Action {
+        self.page = (self.menu / self.layout.per_page()).min(self.pages().saturating_sub(1));
+        self.go(Screen::Home)
+    }
+
+    /// Move the edited app one place. The new order of every movable app is saved, so it holds after
+    /// apps are added or removed. Built-ins stay at the end.
+    fn move_app(&mut self, step: i64) -> Action {
+        let to = self.menu as i64 + step;
+        if to < 0 || to >= self.apps.len() as i64 || is_builtin(&self.apps[to as usize]) {
+            self.notice = Some(if step < 0 { "Already first".into() } else { "Already last".into() });
+            return Action::Redraw { full: false };
+        }
+        self.apps.swap(self.menu, to as usize);
+        self.menu = to as usize;
+        let mut order = Vec::new();
+        for (i, app) in self.apps.iter_mut().filter(|a| !is_builtin(a)).enumerate() {
+            app.order = Some(i as i64 + 1);
+            order.push((app.id.clone(), i as i64 + 1));
+        }
+        Action::SetOrder(order)
+    }
+
+    /// Change icon: the next file in the icons folder, then back to the app's own icon.
+    fn next_icon(&mut self) -> Action {
+        if self.icon_choices.is_empty() {
+            self.notice = Some("No icons: add PNG files to /mnt/us/launcher/icons".into());
+            return Action::Redraw { full: false };
+        }
+        let Some(app) = self.apps.get(self.menu) else { return Action::None };
+        let current = match &app.icon {
+            IconSource::File(path) => self.icon_choices.iter().position(|c| c == path),
+            _ => None,
+        };
+        let next = match current {
+            Some(i) if i + 1 < self.icon_choices.len() => Some(self.icon_choices[i + 1].clone()),
+            Some(_) => None,
+            None => Some(self.icon_choices[0].clone()),
+        };
+        let id = app.id.clone();
+        let icon = match &next {
+            Some(path) => IconSource::File(path.clone()),
+            None => self.original_icons.get(&id).cloned().unwrap_or(IconSource::None),
+        };
+        self.apps[self.menu].icon = icon;
+        Action::SetIcon { id, icon: next }
+    }
+
+    /// Hide the app at `index` (app menu > Hide).
+    fn hide_at(&mut self, index: usize) -> Action {
+        if index >= self.apps.len() || is_builtin(&self.apps[index]) {
+            return Action::None;
         }
         let app = self.apps.remove(index);
         let id = app.id.clone();
@@ -231,6 +445,8 @@ impl Ui {
             Screen::Home => self.home(input),
             Screen::Settings => self.settings(input),
             Screen::ConfirmKindle => self.confirm(input),
+            Screen::AppMenu => self.app_menu(input),
+            Screen::Extensions => self.extensions_list(input),
             Screen::Sleep => Action::None,
         };
         if had_notice && action == Action::None {
@@ -263,6 +479,7 @@ impl Ui {
                 match app.launch {
                     Launch::Settings => self.go(Screen::Settings),
                     Launch::KindleMode => self.go(Screen::ConfirmKindle),
+                    Launch::Extensions => self.open_extensions(),
                     _ => {
                         self.pressed = Some(slot);
                         Action::Launch(app)
@@ -307,6 +524,11 @@ impl Ui {
             Action::None
         }
     }
+}
+
+/// Settings and the Kindle UI: they cannot be moved, hidden or given another icon.
+fn is_builtin(app: &App) -> bool {
+    matches!(app.launch, Launch::Settings | Launch::KindleMode | Launch::Extensions)
 }
 
 #[cfg(test)]
@@ -429,8 +651,12 @@ mod tests {
         let before = u.apps().len();
         let name = u.apps()[0].name.clone();
         let id = u.apps()[0].id.clone();
-        let action = u.handle(Input::LongTap(x, y));
+        assert_eq!(u.handle(Input::LongTap(x, y)), Action::Redraw { full: false });
+        assert_eq!(u.screen, Screen::AppMenu);
+        let hide = u.layout.app_menu_buttons()[3].1;
+        let action = u.handle(Input::Tap(hide.x as f32 + 10.0, hide.y as f32 + 10.0));
         assert_eq!(action, Action::SetHidden(vec![(id, true)]));
+        assert_eq!(u.screen, Screen::Home);
         assert_eq!(u.apps().len(), before - 1);
         assert_eq!(u.hidden_count(), 1);
         assert!(u.notice.as_deref().unwrap().contains(&name));
@@ -441,6 +667,113 @@ mod tests {
         assert_eq!(u.apps().len(), before);
         assert_eq!(u.hidden_count(), 0);
         assert_eq!(u.show_all(), Action::None);
+    }
+
+    fn tap(u: &mut Ui, r: crate::layout::Rect) -> Action {
+        u.handle(Input::Tap(r.x as f32 + 10.0, r.y as f32 + 10.0))
+    }
+
+    fn open_menu(u: &mut Ui, slot: usize) {
+        let c = u.layout.cell(slot);
+        u.handle(Input::LongTap(c.x as f32 + 5.0, c.y as f32 + 5.0));
+        assert_eq!(u.screen, Screen::AppMenu);
+    }
+
+    #[test]
+    fn moving_an_app_saves_the_order_of_all_movable_apps() {
+        let mut u = ui(3);
+        let first = u.apps()[0].id.clone();
+        let second = u.apps()[1].id.clone();
+        open_menu(&mut u, 0);
+        let [_, (_, later), _, _] = u.layout.app_menu_buttons();
+        let Action::SetOrder(order) = tap(&mut u, later) else { panic!("no order saved") };
+        assert_eq!(order[0], (second.clone(), 1));
+        assert_eq!(order[1], (first.clone(), 2));
+        assert_eq!(u.menu, 1);
+        assert!(order.iter().all(|(id, _)| id != "settings" && id != "kindle"));
+        // Back to the grid on the page that shows it.
+        let done = u.layout.done_button();
+        assert_eq!(tap(&mut u, done), Action::Redraw { full: false });
+        assert_eq!(u.screen, Screen::Home);
+        assert_eq!(u.apps()[1].id, first);
+    }
+
+    #[test]
+    fn an_app_cannot_move_before_the_first_place_or_past_the_built_ins() {
+        let mut u = ui(1);
+        open_menu(&mut u, 0);
+        let [(_, earlier), (_, later), _, _] = u.layout.app_menu_buttons();
+        assert_eq!(tap(&mut u, earlier), Action::Redraw { full: false });
+        assert_eq!(u.notice.as_deref(), Some("Already first"));
+        assert_eq!(tap(&mut u, later), Action::Redraw { full: false });
+        assert_eq!(u.notice.as_deref(), Some("Already last"));
+    }
+
+    #[test]
+    fn change_icon_cycles_through_the_files_then_back_to_the_own_icon() {
+        let mut u = ui(1);
+        u.set_icon_choices(vec!["/i/a.png".into(), "/i/b.png".into()]);
+        let id = u.apps()[0].id.clone();
+        open_menu(&mut u, 0);
+        let icon = u.layout.app_menu_buttons()[2].1;
+        assert_eq!(tap(&mut u, icon), Action::SetIcon { id: id.clone(), icon: Some("/i/a.png".into()) });
+        assert_eq!(tap(&mut u, icon), Action::SetIcon { id: id.clone(), icon: Some("/i/b.png".into()) });
+        assert_eq!(tap(&mut u, icon), Action::SetIcon { id: id.clone(), icon: None });
+        assert_eq!(u.apps()[0].icon, IconSource::None);
+    }
+
+    #[test]
+    fn change_icon_without_icon_files_explains_where_to_put_them() {
+        let mut u = ui(1);
+        open_menu(&mut u, 0);
+        let icon = u.layout.app_menu_buttons()[2].1;
+        assert_eq!(tap(&mut u, icon), Action::Redraw { full: false });
+        assert!(u.notice.as_deref().unwrap().contains("/mnt/us/launcher/icons"));
+    }
+
+    fn menu_items() -> Vec<MenuItem> {
+        let leaf = |name: &str| MenuItem { name: name.into(), command: Some(format!("sh '/e/{name}.sh'")), dir: "/e".into(), priority: 0, children: vec![] };
+        vec![
+            leaf("Alpha"),
+            MenuItem { name: "Tools".into(), command: None, dir: "/e".into(), priority: 0, children: vec![leaf("Reset"), leaf("Sync")] },
+        ]
+    }
+
+    #[test]
+    fn extensions_add_one_tile_with_the_built_ins() {
+        let mut u = ui(2);
+        u.set_extensions(menu_items());
+        u.set_extensions(menu_items());
+        let ids: Vec<_> = u.apps().iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids.iter().filter(|i| **i == "extensions").count(), 1);
+        let at = ids.iter().position(|i| *i == "extensions").unwrap();
+        assert!(at >= ids.len() - 3, "the Extensions tile sits with the built-ins at the end: {ids:?}");
+        u.set_extensions(vec![]);
+        assert!(!u.apps().iter().any(|a| a.id == "extensions"));
+    }
+
+    #[test]
+    fn the_extensions_list_opens_submenus_runs_items_and_goes_back() {
+        let mut u = ui(1);
+        u.set_extensions(menu_items());
+        assert_eq!(u.open_extensions(), Action::Redraw { full: false });
+        assert_eq!(u.screen, Screen::Extensions);
+        assert_eq!(u.ext_title(), "Extensions");
+        // Open "Tools" (second row).
+        let tools = u.layout.list_row(1);
+        assert_eq!(tap(&mut u, tools), Action::Redraw { full: false });
+        assert_eq!(u.ext_title(), "Tools");
+        assert_eq!(u.ext_depth(), 1);
+        // Run "Sync".
+        let sync = u.layout.list_row(1);
+        let Action::Launch(app) = tap(&mut u, sync) else { panic!("no launch") };
+        assert_eq!(app.launch, Launch::Shell { command: "sh '/e/Sync.sh'".into() });
+        // Back goes up a level, then to the grid.
+        let back = u.layout.done_button();
+        assert_eq!(tap(&mut u, back), Action::Redraw { full: false });
+        assert_eq!(u.ext_depth(), 0);
+        tap(&mut u, back);
+        assert_eq!(u.screen, Screen::Home);
     }
 
     #[test]
