@@ -1,0 +1,648 @@
+//! Draws the launcher's screens into an 8-bit gray buffer: shapes with `vello_cpu`, text with `parley`
+//! (the same libraries and versions as Primitive Browser), icons as pre-dithered gray tiles.
+//!
+//! E-ink rules (see the `kindle-eink` skill): chrome and text are pure black on pure white after
+//! `solidify`, so page changes do not flash; only icons carry gray, dithered to the panel's 16 steps.
+
+pub mod image;
+
+use std::collections::HashMap;
+
+use kl_core::{
+    layout::{Button, Rect, Row, LABEL_LINE, LABEL_SIZE},
+    App, IconSource, Layout, Rotation, Screen, Status, Ui,
+};
+use parley::{FontContext, FontWeight, LayoutContext, PositionedLayoutItem, StyleProperty};
+use vello_cpu::{
+    kurbo::{self, Affine, Shape},
+    peniko::Color,
+    Glyph, Pixmap, RenderContext, Resources,
+};
+
+pub use image::GrayImage;
+
+const BLACK: u8 = 0;
+const WHITE: u8 = 255;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Start,
+    Center,
+    End,
+}
+
+/// One text block: wrapped to `w`, at most `lines` lines (the last one shortened with "…").
+struct Text<'a> {
+    text: &'a str,
+    x: f32,
+    y: f32,
+    w: f32,
+    size: f32,
+    bold: bool,
+    align: Align,
+    lines: usize,
+    gray: u8,
+}
+
+pub struct Renderer {
+    width: u16,
+    ctx: RenderContext,
+    resources: Resources,
+    pixmap: Pixmap,
+    fonts: FontContext,
+    layout_cx: LayoutContext<()>,
+    icons: HashMap<String, GrayImage>,
+}
+
+fn gray(v: u8) -> Color {
+    Color::from_rgb8(v, v, v)
+}
+
+fn krect(r: Rect) -> kurbo::Rect {
+    kurbo::Rect::new(r.x as f64, r.y as f64, r.right() as f64, r.bottom() as f64)
+}
+
+impl Renderer {
+    /// A renderer for a `width` × `height` screen with the fonts at `font_paths` (Noto Sans regular and
+    /// bold). Fails when no font could be loaded.
+    pub fn new(width: u32, height: u32, font_paths: &[String]) -> Result<Renderer, String> {
+        let mut fonts = FontContext::new();
+        let existing: Vec<&String> = font_paths.iter().filter(|p| std::fs::metadata(p).is_ok()).collect();
+        if existing.is_empty() {
+            return Err(format!("no fonts found in {font_paths:?}"));
+        }
+        fonts.collection.load_fonts_from_paths(existing.iter().map(|p| p.as_str()));
+        let Some(family) = fonts.collection.family_id("Noto Sans") else {
+            return Err("font family Noto Sans not found".into());
+        };
+        fonts.collection.set_generic_families(parley::GenericFamily::SansSerif, std::iter::once(family));
+        let (w, h) = (width as u16, height as u16);
+        Ok(Renderer {
+            width: w,
+            ctx: RenderContext::new(w, h),
+            resources: Resources::new(),
+            pixmap: Pixmap::new(w, h),
+            fonts,
+            layout_cx: LayoutContext::new(),
+            icons: HashMap::new(),
+        })
+    }
+
+    /// Set the dithered icon tile for an app id (sized to the layout's icon box).
+    pub fn set_icon(&mut self, id: &str, tile: GrayImage) {
+        self.icons.insert(id.to_string(), tile);
+    }
+
+    pub fn has_icon(&self, id: &str) -> bool {
+        self.icons.contains_key(id)
+    }
+
+    // ----- primitives -----
+
+    fn fill(&mut self, r: Rect, v: u8) {
+        self.ctx.set_transform(Affine::IDENTITY);
+        self.ctx.set_paint(gray(v));
+        self.ctx.fill_rect(&krect(r));
+    }
+
+    fn frame(&mut self, r: Rect, width: i32, v: u8) {
+        self.fill(Rect::new(r.x, r.y, r.w, width), v);
+        self.fill(Rect::new(r.x, r.bottom() - width, r.w, width), v);
+        self.fill(Rect::new(r.x, r.y, width, r.h), v);
+        self.fill(Rect::new(r.right() - width, r.y, width, r.h), v);
+    }
+
+    fn rounded(&mut self, r: Rect, radius: f64, v: u8) {
+        self.ctx.set_transform(Affine::IDENTITY);
+        self.ctx.set_paint(gray(v));
+        let path = kurbo::RoundedRect::from_rect(krect(r), radius).to_path(0.1);
+        self.ctx.fill_path(&path);
+    }
+
+    /// A rounded outline: an outer fill in `line`, an inner fill in `inside`.
+    fn rounded_frame(&mut self, r: Rect, radius: f64, width: i32, line: u8, inside: u8) {
+        self.rounded(r, radius, line);
+        self.rounded(r.inset(width), (radius - width as f64).max(0.0), inside);
+    }
+
+    /// Lay out and draw text. Returns the height used.
+    fn text(&mut self, t: Text) -> f32 {
+        let mut content = t.text.to_string();
+        // Shorten until it fits in `lines` lines.
+        loop {
+            let layout = self.layout_text(&content, t.size, t.bold, t.w);
+            let count = layout.lines().count();
+            if count <= t.lines || content.chars().count() <= 1 {
+                return self.draw_layout(&layout, &t);
+            }
+            let keep: String = content.trim_end_matches('…').chars().collect();
+            let mut chars: Vec<char> = keep.chars().collect();
+            let drop = (chars.len() / 10).max(1);
+            chars.truncate(chars.len().saturating_sub(drop));
+            content = format!("{}…", chars.into_iter().collect::<String>().trim_end());
+        }
+    }
+
+    fn layout_text(&mut self, text: &str, size: f32, bold: bool, w: f32) -> parley::Layout<()> {
+        let mut builder = self.layout_cx.ranged_builder(&mut self.fonts, text, 1.0, true);
+        builder.push_default(StyleProperty::FontSize(size));
+        builder.push_default(StyleProperty::FontWeight(if bold { FontWeight::BOLD } else { FontWeight::NORMAL }));
+        builder.push_default(StyleProperty::LineHeight(parley::LineHeight::FontSizeRelative(1.25)));
+        let mut layout: parley::Layout<()> = builder.build(text);
+        layout.break_all_lines(Some(w));
+        layout
+    }
+
+    fn draw_layout(&mut self, layout: &parley::Layout<()>, t: &Text) -> f32 {
+        let mut height = 0.0;
+        for line in layout.lines().take(t.lines) {
+            let m = line.metrics();
+            let dx = match t.align {
+                Align::Start => 0.0,
+                Align::Center => ((t.w - m.advance) / 2.0).max(0.0),
+                Align::End => (t.w - m.advance).max(0.0),
+            };
+            height = m.offset + m.line_height;
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyph_run) = item else { continue };
+                let run = glyph_run.run();
+                self.ctx.set_transform(Affine::translate(((t.x + dx) as f64, t.y as f64)));
+                self.ctx.set_paint(gray(t.gray));
+                let _ = self
+                    .ctx
+                    .glyph_run(&mut self.resources, run.font())
+                    .font_size(run.font_size())
+                    .hint(true)
+                    // The bundled Noto fonts are static, so there are no variation coordinates.
+                    .normalized_coords(&[])
+                    .fill_glyphs(glyph_run.positioned_glyphs().map(|g| Glyph { id: g.id, x: g.x, y: g.y }));
+            }
+        }
+        self.ctx.set_transform(Affine::IDENTITY);
+        height
+    }
+
+    /// The pixel width of one line of text.
+    fn text_width(&mut self, text: &str, size: f32, bold: bool) -> f32 {
+        let layout = self.layout_text(text, size, bold, f32::MAX);
+        let width = layout.lines().next().map_or(0.0, |l| l.metrics().advance);
+        width
+    }
+
+    /// Rasterise the recorded scene into a solidified gray buffer (premultiplied RGBA over an opaque white
+    /// page: the red channel is the gray).
+    fn finish_gray(&mut self) -> Vec<u8> {
+        self.ctx.flush();
+        self.ctx.render(self.pixmap.as_mut(), &mut self.resources);
+        let mut out: Vec<u8> = self.pixmap.data_as_u8_slice().iter().step_by(4).copied().collect();
+        image::solidify(&mut out);
+        out
+    }
+
+    // ----- screens -----
+
+    /// Draw the current screen. Returns `width × height` gray pixels, upright.
+    pub fn draw(&mut self, ui: &Ui, status: &Status) -> Vec<u8> {
+        self.ctx.reset();
+        let l = ui.layout;
+        self.fill(l.screen(), WHITE);
+        let mut icon_blits: Vec<(Rect, String)> = Vec::new();
+        match ui.screen {
+            Screen::Home => self.home(ui, status, &mut icon_blits),
+            Screen::Settings => self.settings(ui, status),
+            Screen::ConfirmKindle => {
+                // On a clean page: e-ink has no dimming, and a box over the grid cuts through labels.
+                self.status_strip(&l, status);
+                self.confirm(&l);
+            }
+            Screen::Sleep => self.sleep(&l, ui.battery_message()),
+        }
+        let mut out = self.finish_gray();
+        for (rect, id) in icon_blits {
+            if let Some(tile) = self.icons.get(&id) {
+                blit(&mut out, self.width as usize, rect, tile);
+            }
+        }
+        if let (Screen::Home, Some(slot)) = (ui.screen, ui.pressed) {
+            invert(&mut out, self.width as usize, l.cell(slot).inset(6));
+        }
+        out
+    }
+
+    fn status_strip(&mut self, l: &Layout, s: &Status) {
+        let r = l.status();
+        let clock = if s.clock.is_empty() { "--:--" } else { s.clock.as_str() };
+        self.text(Text { text: clock, x: 40.0, y: 26.0, w: 300.0, size: 46.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        if !s.date.is_empty() {
+            self.text(Text { text: &s.date, x: 210.0, y: 38.0, w: 360.0, size: 34.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+        }
+        // Battery: outline, fill by level, number beside it.
+        let bw = 70;
+        let bx = r.right() - 40 - bw - 8;
+        let body = Rect::new(bx, 38, bw, 36);
+        self.frame(body, 4, BLACK);
+        self.fill(Rect::new(body.right(), 48, 8, 16), BLACK);
+        if let Some(level) = s.battery {
+            let inner = body.inset(8);
+            let fw = (inner.w * level.min(100) as i32) / 100;
+            self.fill(Rect::new(inner.x, inner.y, fw.max(2), inner.h), BLACK);
+        }
+        let label = match (s.battery, s.charging) {
+            (Some(b), true) => format!("Charging {b}%"),
+            (Some(b), false) => format!("{b}%"),
+            (None, _) => String::new(),
+        };
+        let lw = 340.0;
+        self.text(Text { text: &label, x: bx as f32 - 16.0 - lw, y: 36.0, w: lw, size: 34.0, bold: false, align: Align::End, lines: 1, gray: BLACK });
+        let wifi = match (s.wifi_on, s.wifi_state.as_str()) {
+            (false, _) => "Wi-Fi off".to_string(),
+            (true, "connected") => "Wi-Fi".to_string(),
+            (true, "") => "Wi-Fi …".to_string(),
+            (true, other) => format!("Wi-Fi {other}"),
+        };
+        let ww = 330.0;
+        let label_w = if label.is_empty() { 0.0 } else { self.text_width(&label, 34.0, false) + 36.0 };
+        self.text(Text { text: &wifi, x: bx as f32 - 16.0 - label_w - ww, y: 36.0, w: ww, size: 34.0, bold: false, align: Align::End, lines: 1, gray: BLACK });
+        self.fill(Rect::new(0, r.bottom() - 4, r.w, 4), BLACK);
+    }
+
+    fn home(&mut self, ui: &Ui, s: &Status, icon_blits: &mut Vec<(Rect, String)>) {
+        let l = ui.layout;
+        self.status_strip(&l, s);
+        let page: Vec<(usize, App)> = ui.page_apps().map(|(i, a)| (i, a.clone())).collect();
+        for (slot, app) in page {
+            let icon = l.icon(slot);
+            let label = l.label(slot);
+            let has_tile = !matches!(app.icon, IconSource::None) && self.icons.contains_key(&app.id);
+            if has_tile {
+                self.frame(icon.inset(-3), 3, BLACK);
+                icon_blits.push((icon, app.id.clone()));
+            } else {
+                self.monogram(icon, &app);
+            }
+            self.text(Text {
+                text: &app.name,
+                x: label.x as f32,
+                y: label.y as f32,
+                w: label.w as f32,
+                size: LABEL_SIZE,
+                bold: false,
+                align: Align::Center,
+                lines: 2,
+                gray: BLACK,
+            });
+            let _ = LABEL_LINE;
+        }
+        self.footer(ui);
+    }
+
+    /// An app without an icon: its initials on a card. Built-ins are drawn inverted.
+    fn monogram(&mut self, r: Rect, app: &App) {
+        let builtin = matches!(app.launch, kl_core::Launch::Settings | kl_core::Launch::KindleMode);
+        let (bg, fg) = if builtin { (BLACK, WHITE) } else { (WHITE, BLACK) };
+        self.rounded_frame(r, 22.0, 5, BLACK, bg);
+        let initials: String = app
+            .name
+            .split_whitespace()
+            .filter_map(|w| w.chars().find(|c| c.is_alphanumeric()))
+            .take(2)
+            .flat_map(char::to_uppercase)
+            .collect();
+        let size = (r.w as f32 * 0.42).min(130.0);
+        self.text(Text {
+            text: if initials.is_empty() { "?" } else { &initials },
+            x: r.x as f32,
+            y: r.y as f32 + r.h as f32 / 2.0 - size * 0.68,
+            w: r.w as f32,
+            size,
+            bold: true,
+            align: Align::Center,
+            lines: 1,
+            gray: fg,
+        });
+    }
+
+    fn footer(&mut self, ui: &Ui) {
+        let f = ui.layout.footer();
+        self.fill(Rect::new(0, f.y, f.w, 3), BLACK);
+        if let Some(notice) = &ui.notice {
+            let n = notice.clone();
+            self.text(Text { text: &n, x: 40.0, y: f.y as f32 + 26.0, w: f.w as f32 - 80.0, size: 32.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
+            return;
+        }
+        // A battery warning takes the centre of the footer; the page controls stay at the sides.
+        let pages = ui.pages();
+        if let Some(message) = ui.battery_message() {
+            self.text(Text { text: &message, x: 300.0, y: f.y as f32 + 28.0, w: f.w as f32 - 600.0, size: 30.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+        } else if pages > 1 {
+            let label = format!("{} / {}", ui.page + 1, pages);
+            self.text(Text { text: &label, x: 0.0, y: f.y as f32 + 22.0, w: f.w as f32, size: 38.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+        }
+        if pages > 1 {
+            if ui.page > 0 {
+                self.text(Text { text: "‹  Previous", x: 40.0, y: f.y as f32 + 26.0, w: 240.0, size: 34.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            }
+            if ui.page + 1 < pages {
+                self.text(Text { text: "Next  ›", x: f.w as f32 - 280.0, y: f.y as f32 + 26.0, w: 240.0, size: 34.0, bold: false, align: Align::End, lines: 1, gray: BLACK });
+            }
+        }
+    }
+
+    fn button(&mut self, r: Rect, label: &str, filled: bool) {
+        let (bg, fg) = if filled { (BLACK, WHITE) } else { (WHITE, BLACK) };
+        self.rounded_frame(r, 16.0, 4, BLACK, bg);
+        let size = 36.0;
+        self.text(Text { text: label, x: r.x as f32, y: r.y as f32 + (r.h as f32 - size * 1.25) / 2.0, w: r.w as f32, size, bold: true, align: Align::Center, lines: 1, gray: fg });
+    }
+
+    fn settings(&mut self, ui: &Ui, s: &Status) {
+        let l = ui.layout;
+        let title = l.title();
+        self.text(Text { text: "Settings", x: 40.0, y: 32.0, w: 600.0, size: 56.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), "Done", true);
+        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
+        for row in l.settings_rows() {
+            let value = match row.row {
+                Row::Frontlight => format!("{} / 24", s.light),
+                Row::Warmth => format!("{} / 24", s.warmth),
+                Row::Wifi => match (s.wifi_on, s.wifi_state.as_str()) {
+                    (false, _) => "Off".into(),
+                    (true, "") => "On".into(),
+                    (true, state) => capitalise(state),
+                },
+                Row::Rotation => match (s.auto_rotation, s.rotation) {
+                    (true, Rotation::Upright) => "Automatic: upright".into(),
+                    (true, Rotation::UpsideDown) => "Automatic: upside down".into(),
+                    (false, Rotation::Upright) => "Upright (fixed)".into(),
+                    (false, Rotation::UpsideDown) => "Upside down (fixed)".into(),
+                },
+                Row::Ssh => if s.ssh { "Running".into() } else { "Off".into() },
+                Row::Autostart => if s.autostart { "On: the launcher opens after boot".into() } else { "Off: the stock Kindle opens after boot".into() },
+                Row::SleepScreen => if s.sleep_launcher { "The launcher's own".into() } else { "The Kindle's".into() },
+                Row::Hidden => match ui.hidden_count() {
+                    0 => "None. Long-press to hide".into(),
+                    n => format!("{n} hidden"),
+                },
+                Row::KindleUi => "Stock Kindle, about 10 s".into(),
+            };
+            let r = row.rect;
+            self.text(Text { text: row.row.label(), x: r.x as f32, y: r.y as f32 + 30.0, w: 520.0, size: 40.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+            self.text(Text { text: &value, x: r.x as f32, y: r.y as f32 + 86.0, w: 560.0, size: 32.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            for (b, rect) in row.buttons {
+                // Minus and plus are drawn as bars: the bundled font has no minus sign.
+                if matches!(b, Button::LightDown | Button::WarmDown | Button::LightUp | Button::WarmUp) {
+                    self.button(rect, "", false);
+                    let (cx, cy) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
+                    self.fill(Rect::new(cx - 22, cy - 3, 44, 7), BLACK);
+                    if matches!(b, Button::LightUp | Button::WarmUp) {
+                        self.fill(Rect::new(cx - 3, cy - 22, 7, 44), BLACK);
+                    }
+                    continue;
+                }
+                let label = match b {
+                    Button::Wifi => if s.wifi_on { "Turn off" } else { "Turn on" },
+                    Button::Rotation => "Turn",
+                    Button::RotationAuto => "Auto",
+                    Button::Ssh => if s.ssh { "Stop" } else { "Start" },
+                    Button::Autostart => if s.autostart { "Turn off" } else { "Turn on" },
+                    Button::ShowHidden => "Show all",
+                    Button::SleepScreen => "Switch",
+                    Button::KindleUi => "Open",
+                    _ => "",
+                };
+                self.button(rect, label, false);
+            }
+            self.fill(Rect::new(r.x, r.bottom() - 2, r.w, 2), BLACK);
+        }
+        let a = l.about();
+        let about = format!(
+            "Primitive Launcher {}\n{} apps · {}\nFrom the Kindle UI, open “Launcher” in the library to come back.",
+            kl_core::VERSION,
+            ui.apps().len(),
+            if s.memory.is_empty() { "memory unknown" } else { &s.memory },
+        );
+        let mut y = a.y as f32;
+        for line in about.lines() {
+            y += self.text(Text { text: line, x: a.x as f32, y, w: a.w as f32, size: 32.0, bold: false, align: Align::Start, lines: 2, gray: BLACK }) + 6.0;
+        }
+    }
+
+    fn confirm(&mut self, l: &Layout) {
+        let b = l.confirm_box();
+        self.rounded_frame(b, 24.0, 6, BLACK, WHITE);
+        let inner = b.inset(48);
+        self.text(Text { text: "Open the Kindle UI?", x: inner.x as f32, y: inner.y as f32, w: inner.w as f32, size: 50.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.text(Text {
+            text: "The launcher closes and the stock Kindle UI starts, which takes about 10 seconds. To come back, open “Launcher” in the Kindle library.",
+            x: inner.x as f32,
+            y: inner.y as f32 + 100.0,
+            w: inner.w as f32,
+            size: 36.0,
+            bold: false,
+            align: Align::Start,
+            lines: 5,
+            gray: BLACK,
+        });
+        let [(_, cancel), (_, open)] = l.confirm_buttons();
+        self.button(cancel, "Cancel", false);
+        self.button(open, "Open Kindle UI", true);
+    }
+
+    /// A full-screen message (e.g. "Starting the Kindle UI"): a title and a body, centred.
+    pub fn message(&mut self, title: &str, body: &str) -> Vec<u8> {
+        self.ctx.reset();
+        let (w, h) = (self.width as i32, self.ctx.height() as i32);
+        self.fill(Rect::new(0, 0, w, h), WHITE);
+        self.text(Text { text: title, x: 60.0, y: h as f32 / 2.0 - 140.0, w: w as f32 - 120.0, size: 64.0, bold: true, align: Align::Center, lines: 2, gray: BLACK });
+        self.text(Text { text: body, x: 80.0, y: h as f32 / 2.0, w: w as f32 - 160.0, size: 38.0, bold: false, align: Align::Center, lines: 4, gray: BLACK });
+        self.finish_gray()
+    }
+
+    /// The screen shown while the stock Kindle UI starts (about a minute): a title, a line of text and a row of
+    /// blocks that fill one per `step` and start again, so the e-ink shows movement with small partial updates.
+    pub fn waiting(&mut self, title: &str, body: &str, step: usize) -> Vec<u8> {
+        const BLOCKS: i32 = 10;
+        self.ctx.reset();
+        let (w, h) = (self.width as i32, self.ctx.height() as i32);
+        self.fill(Rect::new(0, 0, w, h), WHITE);
+        self.text(Text { text: title, x: 60.0, y: h as f32 / 2.0 - 220.0, w: w as f32 - 120.0, size: 64.0, bold: true, align: Align::Center, lines: 2, gray: BLACK });
+        self.text(Text { text: body, x: 80.0, y: h as f32 / 2.0 - 90.0, w: w as f32 - 160.0, size: 38.0, bold: false, align: Align::Center, lines: 2, gray: BLACK });
+        let (bw, gap, bh) = (72, 18, 40);
+        let x0 = (w - (BLOCKS * bw + (BLOCKS - 1) * gap)) / 2;
+        let filled = (step % (BLOCKS as usize + 1)) as i32;
+        for i in 0..BLOCKS {
+            let r = Rect::new(x0 + i * (bw + gap), h / 2 + 40, bw, bh);
+            self.rounded_frame(r, 8.0, 4, BLACK, if i < filled { BLACK } else { WHITE });
+        }
+        self.finish_gray()
+    }
+
+    /// The launcher's own library icon (600 × 920): a 3 × 3 grid of tiles and the name.
+    pub fn launcher_icon(&mut self) -> Vec<u8> {
+        self.ctx.reset();
+        let (w, h) = (self.width as i32, self.ctx.height() as i32);
+        self.fill(Rect::new(0, 0, w, h), WHITE);
+        self.rounded_frame(Rect::new(30, 30, w - 60, h - 60), 40.0, 10, BLACK, WHITE);
+        let (cell, gap) = (110, 26);
+        let (gx, gy) = ((w - 3 * cell - 2 * gap) / 2, 90);
+        for i in 0..9 {
+            let (c, r) = (i % 3, i / 3);
+            let tile = Rect::new(gx + c * (cell + gap), gy + r * (cell + gap) * 3 / 2, cell, cell * 3 / 2);
+            if i == 4 {
+                self.rounded(tile, 14.0, BLACK);
+            } else {
+                self.rounded_frame(tile, 14.0, 8, BLACK, WHITE);
+            }
+        }
+        self.text(Text { text: "Launcher", x: 0.0, y: h as f32 - 200.0, w: w as f32, size: 84.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+        self.finish_gray()
+    }
+
+    fn sleep(&mut self, l: &Layout, warning: Option<String>) {
+        let s = l.screen();
+        self.frame(s.inset(40), 6, BLACK);
+        self.text(Text { text: "Sleeping", x: 0.0, y: s.h as f32 / 2.0 - 120.0, w: s.w as f32, size: 96.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+        self.text(Text { text: "Press the power button to wake", x: 0.0, y: s.h as f32 / 2.0 + 20.0, w: s.w as f32, size: 40.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
+        if let Some(message) = warning {
+            self.text(Text { text: &message, x: 60.0, y: s.h as f32 / 2.0 + 120.0, w: s.w as f32 - 120.0, size: 36.0, bold: true, align: Align::Center, lines: 2, gray: BLACK });
+        }
+    }
+}
+
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Copy a tile into the screen buffer at `r` (clipped to the tile and screen).
+fn blit(out: &mut [u8], width: usize, r: Rect, tile: &GrayImage) {
+    let height = out.len() / width;
+    for ty in 0..(tile.height as usize).min(r.h.max(0) as usize) {
+        let y = r.y as usize + ty;
+        if y >= height {
+            break;
+        }
+        let n = (tile.width as usize).min(r.w.max(0) as usize).min(width.saturating_sub(r.x as usize));
+        let src = &tile.pixels[ty * tile.width as usize..ty * tile.width as usize + n];
+        out[y * width + r.x as usize..y * width + r.x as usize + n].copy_from_slice(src);
+    }
+}
+
+/// Invert a rectangle (the pressed tile).
+fn invert(out: &mut [u8], width: usize, r: Rect) {
+    let height = out.len() / width;
+    for y in r.y.max(0) as usize..(r.bottom().max(0) as usize).min(height) {
+        for x in r.x.max(0) as usize..(r.right().max(0) as usize).min(width) {
+            out[y * width + x] = 255 - out[y * width + x];
+        }
+    }
+}
+
+/// Turn a screen buffer upside down (rotation by 180°), in place.
+pub fn turn_half(buf: &mut [u8]) {
+    buf.reverse();
+}
+
+/// The pixels to show for `rotation`, given the framebuffer's own rotation (`fb_turn`, 0 or 2).
+pub fn for_panel(mut buf: Vec<u8>, rotation: Rotation, fb_turn: u32) -> Vec<u8> {
+    if (rotation.turn() + fb_turn) % 4 == 2 {
+        turn_half(&mut buf);
+    }
+    buf
+}
+
+/// The rows that differ between two frames: `(first, count)`, or `None` when equal.
+pub fn changed_rows(old: &[u8], new: &[u8], width: usize) -> Option<(usize, usize)> {
+    if old.len() != new.len() {
+        return Some((0, new.len() / width));
+    }
+    let rows = new.len() / width;
+    let first = (0..rows).find(|&y| old[y * width..(y + 1) * width] != new[y * width..(y + 1) * width])?;
+    let last = (0..rows).rev().find(|&y| old[y * width..(y + 1) * width] != new[y * width..(y + 1) * width])?;
+    Some((first, last - first + 1))
+}
+
+/// Whether a band of pixels is pure black and white (the non-flashing DU waveform can draw it).
+pub fn is_black_and_white(pixels: &[u8]) -> bool {
+    pixels.iter().all(|&p| p == 0 || p == 255)
+}
+
+
+/// The dithered icon tile for `app`, sized `w` × `h`, from its `# Icon:` data or file. With `cache`, tiles
+/// are read from and written to that folder (keyed by the source bytes and size). `Ok(None)` when the app
+/// has no icon.
+pub fn app_icon(app: &App, w: u32, h: u32, cache: Option<&std::path::Path>) -> Result<Option<GrayImage>, String> {
+    let bytes = match &app.icon {
+        IconSource::None => return Ok(None),
+        IconSource::Data(b64) => kl_core::base64::decode(b64).ok_or("icon: bad base64")?,
+        IconSource::File(path) => std::fs::read(path).map_err(|e| format!("icon {path}: {e}"))?,
+    };
+    let key = image::cache_key(&bytes, w, h);
+    if let Some(dir) = cache {
+        if let Some(tile) = std::fs::read(dir.join(&key)).ok().and_then(|b| image::from_cache(&b)) {
+            if (tile.width, tile.height) == (w, h) {
+                return Ok(Some(tile));
+            }
+        }
+    }
+    let tile = image::icon_tile(&bytes, w, h)?;
+    if let Some(dir) = cache {
+        let _ = std::fs::create_dir_all(dir);
+        let tmp = dir.join(format!("{key}.tmp"));
+        if std::fs::write(&tmp, image::to_cache(&tile)).is_ok() {
+            let _ = std::fs::rename(&tmp, dir.join(&key));
+        }
+    }
+    Ok(Some(tile))
+}
+
+/// Load the icon tiles of every app into the renderer. Returns the problems (bad icons draw as monograms).
+pub fn load_icons(renderer: &mut Renderer, apps: &[App], layout: &Layout, cache: Option<&std::path::Path>) -> Vec<String> {
+    let icon = layout.icon(0);
+    let mut problems = Vec::new();
+    for app in apps {
+        match app_icon(app, icon.w as u32, icon.h as u32, cache) {
+            Ok(Some(tile)) => renderer.set_icon(&app.id, tile),
+            Ok(None) => {}
+            Err(e) => problems.push(format!("{}: {e}", app.name)),
+        }
+    }
+    problems
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changed_rows_finds_the_band() {
+        let a = vec![0u8; 4 * 5];
+        let mut b = a.clone();
+        assert_eq!(changed_rows(&a, &b, 4), None);
+        b[4 + 2] = 9;
+        b[4 * 3] = 9;
+        assert_eq!(changed_rows(&a, &b, 4), Some((1, 3)));
+    }
+
+    #[test]
+    fn for_panel_turns_only_when_needed() {
+        let buf = vec![1, 2, 3];
+        assert_eq!(for_panel(buf.clone(), Rotation::Upright, 0), vec![1, 2, 3]);
+        assert_eq!(for_panel(buf.clone(), Rotation::UpsideDown, 0), vec![3, 2, 1]);
+        assert_eq!(for_panel(buf.clone(), Rotation::UpsideDown, 2), vec![1, 2, 3]);
+        assert_eq!(for_panel(buf, Rotation::Upright, 2), vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn blit_and_invert_stay_inside() {
+        let mut out = vec![255u8; 10 * 4];
+        let tile = GrayImage { width: 3, height: 3, pixels: vec![0; 9] };
+        blit(&mut out, 10, Rect::new(8, 2, 3, 3), &tile);
+        assert_eq!(out.iter().filter(|&&p| p == 0).count(), 4);
+        invert(&mut out, 10, Rect::new(-5, -5, 100, 100));
+        assert_eq!(out.iter().filter(|&&p| p == 255).count(), 4);
+    }
+}

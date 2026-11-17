@@ -1,0 +1,9 @@
+[package]
+name = "kl-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
+serde_json = "1"

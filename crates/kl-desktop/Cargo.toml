@@ -1,0 +1,10 @@
+[package]
+name = "kl-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kl-core = { path = "../kl-core" }
+kl-render = { path = "../kl-render" }
+png.workspace = true

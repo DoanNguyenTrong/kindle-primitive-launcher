@@ -1,0 +1,401 @@
+//! Primitive Launcher on the Kindle. Started by the supervisor (`launcher.sh`) with the stock framework
+//! stopped. Draws the app grid on the e-ink panel and reads touch, page buttons and power events. To open
+//! an app it writes `next` and exits with code 10; the supervisor runs the app and starts the launcher
+//! again. Exit 0 asks the supervisor for the stock Kindle UI.
+//!
+//! Environment (defaults for the Kindle):
+//!   KL_DIR        /mnt/us/launcher    apps.toml, settings.txt, fonts/, cache/, ssh.sh
+//!   KL_RUN        /var/tmp/kl         next, heartbeat, orientation, fonts copied at start
+//!   KL_DOCUMENTS  /mnt/us/documents   scriptlets
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{atomic::Ordering, mpsc::channel},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+use kl_core::{discover, Action, Config, DeviceCmd, Input, Layout, Rotation, Screen, Settings, Status, Ui};
+use kl_render::Renderer;
+
+mod device;
+mod eink;
+mod input;
+mod profile;
+
+const W: u32 = profile::ACTIVE.screen_w;
+const H: u32 = profile::ACTIVE.screen_h;
+
+/// Exit codes the supervisor acts on.
+const EXIT_KINDLE_UI: i32 = 0;
+const EXIT_LAUNCH: i32 = 10;
+
+pub enum Ev {
+    Input(Input),
+    Tick,
+    /// The device was turned (auto-rotation, after the debouncer).
+    Turn(Rotation),
+}
+
+pub fn log(msg: &str) {
+    eprintln!("[kl] {msg}");
+}
+
+fn env_dir(name: &str, default: &str) -> PathBuf {
+    PathBuf::from(std::env::var(name).unwrap_or_else(|_| default.to_string()))
+}
+
+/// Write a file through a temporary name, so a reader never sees half of it.
+fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, text)?;
+    fs::rename(&tmp, path)
+}
+
+/// Fonts: the copy in KL_RUN (tmpfs, made by the supervisor) when present, else KL_DIR.
+fn font_paths(dir: &Path, run: &Path) -> Vec<String> {
+    let names = ["NotoSans-Regular.ttf", "NotoSans-Bold.ttf"];
+    let base = if run.join("fonts").join(names[0]).exists() { run.join("fonts") } else { dir.join("fonts") };
+    names.iter().map(|n| base.join(n).to_string_lossy().into_owned()).collect()
+}
+
+/// Shows frames on the panel: a full GC16 update on request, otherwise only the changed rows with a
+/// non-flashing waveform (DU for pure black and white, AUTO when icons bring gray).
+struct Display {
+    panel: Option<eink::Panel>,
+    last: Vec<u8>,
+}
+
+impl Display {
+    fn open() -> Display {
+        let panel = match eink::Panel::open() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                log(&format!("panel: {e}"));
+                None
+            }
+        };
+        Display { panel, last: Vec::new() }
+    }
+
+    fn fb_turn(&self) -> u32 {
+        self.panel.as_ref().map_or(0, |p| p.turn())
+    }
+
+    fn show(&mut self, upright: Vec<u8>, settings: &Settings, full: bool) {
+        let fb_turn = self.fb_turn();
+        let frame = kl_render::for_panel(upright, settings.rotation, fb_turn);
+        let Some(panel) = self.panel.as_mut() else {
+            self.last = frame;
+            return;
+        };
+        let t = Instant::now();
+        let result = if full || self.last.len() != frame.len() {
+            panel.draw(W, 0, H, &frame, eink::WAVE_GC16, true).map(|ok| (ok, "GC16 full", H))
+        } else if let Some((y, rows)) = kl_render::changed_rows(&self.last, &frame, W as usize) {
+            let band = &frame[y * W as usize..(y + rows) * W as usize];
+            let (wave, name) = if kl_render::is_black_and_white(band) { (eink::WAVE_DU, "DU") } else { (eink::WAVE_AUTO, "AUTO") };
+            panel.draw(W, y as u32, rows as u32, band, wave, false).map(|ok| (ok, name, rows as u32))
+        } else {
+            Ok((true, "unchanged", 0))
+        };
+        match result {
+            Ok((true, wave, rows)) => log(&format!("draw {wave} {rows} rows in {} ms (fb turn {fb_turn})", t.elapsed().as_millis())),
+            Ok((false, ..)) => log("draw: the framebuffer is not in a drawable state"),
+            Err(e) => log(&format!("draw: {e}")),
+        }
+        self.last = frame;
+    }
+}
+
+extern "C" fn on_fatal(sig: libc::c_int, info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
+    // Only write(2) here: safe in a signal handler. Copied from Primitive Browser.
+    fn put(bytes: &[u8]) {
+        unsafe { libc::write(2, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
+    }
+    let addr = if info.is_null() { 0 } else { unsafe { (*info).si_addr() as usize } };
+    let mut buf = [0u8; 18];
+    let mut at = buf.len();
+    let mut v = addr;
+    loop {
+        at -= 1;
+        buf[at] = b"0123456789abcdef"[v & 15];
+        v >>= 4;
+        if v == 0 {
+            break;
+        }
+    }
+    put(b"\n[crash] fatal signal ");
+    put(&[b'0' + (sig as u8 / 10), b'0' + (sig as u8 % 10)]);
+    put(b" at address 0x");
+    put(&buf[at..]);
+    put(b"\n");
+    unsafe {
+        libc::signal(sig, libc::SIG_DFL);
+        libc::raise(sig);
+    }
+}
+
+fn install_crash_log() {
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_fatal as *const () as usize;
+        action.sa_flags = libc::SA_SIGINFO;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGBUS, &action, std::ptr::null_mut());
+        libc::sigaction(libc::SIGSEGV, &action, std::ptr::null_mut());
+    }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+fn main() {
+    install_crash_log();
+    let started = Instant::now();
+    let dir = env_dir("KL_DIR", "/mnt/us/launcher");
+    let run = env_dir("KL_RUN", "/var/tmp/kl");
+    let documents = env_dir("KL_DOCUMENTS", "/mnt/us/documents");
+    let _ = fs::create_dir_all(&run);
+    log(&format!("start v{} dir {} run {}", kl_core::VERSION, dir.display(), run.display()));
+
+    let settings_path = dir.join("settings.txt");
+    let mut settings = Settings::parse(&fs::read_to_string(&settings_path).unwrap_or_default());
+    if settings.sleep_screen_launcher {
+        device::unload_stock_screensaver();
+    }
+    // With automatic rotation the saved turn can be stale (it is only saved on manual changes): read the
+    // device's turn now, so the first screen is drawn the right way up.
+    if settings.auto_rotation {
+        if let Some(turn) = device::accelerometer_turn() {
+            settings.rotation = turn;
+        }
+    }
+    input::TURN.store(settings.rotation.turn(), Ordering::Relaxed);
+    let _ = write_atomic(&run.join("orientation"), settings.rotation.letter());
+    if std::env::args().any(|a| a == "--wait-screen") {
+        wait_screen(&dir, &run, &settings);
+        return;
+    }
+
+    let (config, mut problems) = match fs::read_to_string(dir.join("apps.toml")) {
+        Ok(text) => Config::parse(&text),
+        Err(_) => (Config::default(), Vec::new()),
+    };
+    let (apps, more) = discover(&documents, &config);
+    problems.extend(more);
+    let layout = Layout::new(W, H, config.columns, config.rows);
+
+    let mut renderer = match Renderer::new(W, H, &font_paths(&dir, &run)) {
+        Ok(r) => r,
+        Err(e) => {
+            log(&format!("renderer: {e}"));
+            std::process::exit(2);
+        }
+    };
+    problems.extend(kl_render::load_icons(&mut renderer, &apps, &layout, Some(&dir.join("cache"))));
+    for p in &problems {
+        log(&format!("problem: {p}"));
+    }
+    log(&format!("{} apps; ready in {} ms", apps.len(), started.elapsed().as_millis()));
+
+    let mut ui = Ui::new(apps, layout);
+    ui.notice = problems.first().cloned();
+    let mut display = Display::open();
+    let mut status = device::status(&settings);
+    ui.set_battery(status.battery, status.charging);
+
+    let (tx, rx) = channel();
+    match input::find(profile::ACTIVE.touch_name) {
+        Some(path) => {
+            let t = tx.clone();
+            thread::spawn(move || input::touch_loop(path, t));
+        }
+        None => log("no touch device found"),
+    }
+    match input::find("gpio-keys") {
+        Some(path) => {
+            let t = tx.clone();
+            thread::spawn(move || input::button_loop(path, t));
+        }
+        None => log("no page-button device found"),
+    }
+    {
+        let t = tx.clone();
+        thread::spawn(move || device::power_loop(t));
+    }
+    {
+        let t = tx.clone();
+        let start = settings.rotation;
+        thread::spawn(move || device::orientation_loop(t, start));
+    }
+    {
+        let t = tx.clone();
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_secs(5));
+            if t.send(Ev::Tick).is_err() {
+                return;
+            }
+        });
+    }
+
+    display.show(renderer.draw(&ui, &status), &settings, true);
+    log(&format!("first screen after {} ms", started.elapsed().as_millis()));
+    let mut minute = device::local_time().2;
+
+    while let Ok(ev) = rx.recv() {
+        let action = match ev {
+            Ev::Turn(rotation) => {
+                if settings.auto_rotation && rotation != settings.rotation {
+                    settings.rotation = rotation;
+                    input::TURN.store(rotation.turn(), Ordering::Relaxed);
+                    let _ = write_atomic(&run.join("orientation"), rotation.letter());
+                    log(&format!("screen turned: {}", rotation.letter()));
+                    status = device::status(&settings);
+                    Action::Redraw { full: true }
+                } else {
+                    Action::None
+                }
+            }
+            Ev::Tick => {
+                let _ = write_atomic(&run.join("heartbeat"), &now_secs().to_string());
+                let m = device::local_time().2;
+                if m != minute && ui.screen == Screen::Home {
+                    minute = m;
+                    status = device::status(&settings);
+                    ui.set_battery(status.battery, status.charging);
+                    Action::Redraw { full: false }
+                } else {
+                    Action::None
+                }
+            }
+            Ev::Input(input) => {
+                if !matches!(input, Input::Sleep | Input::Wake) {
+                    log(&format!("input {input:?}"));
+                }
+                ui.handle(input)
+            }
+        };
+        match action {
+            Action::None => {}
+            Action::Redraw { full } => {
+                if full {
+                    status = device::status(&settings);
+                }
+                display.show(renderer.draw(&ui, &status), &settings, full);
+            }
+            Action::Launch(app) => {
+                display.show(renderer.draw(&ui, &status), &settings, false);
+                let Some(next) = app.next_file() else {
+                    ui.pressed = None;
+                    ui.notice = Some(format!("{}: cannot be started", app.name));
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
+                };
+                if let Err(e) = write_atomic(&run.join("next"), &next) {
+                    ui.pressed = None;
+                    ui.notice = Some(format!("cannot write {}: {e}", run.join("next").display()));
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
+                }
+                log(&format!("launch {} ({})", app.name, app.id));
+                std::process::exit(EXIT_LAUNCH);
+            }
+            Action::SetHidden(changes) => {
+                let path = dir.join("apps.toml");
+                let text = fs::read_to_string(&path).unwrap_or_default();
+                match Config::load(&text) {
+                    Ok(mut config) => {
+                        for (id, hidden) in &changes {
+                            config.set_hidden(id, *hidden);
+                        }
+                        match write_atomic(&path, &config.to_toml()) {
+                            Ok(()) => log(&format!("apps.toml: {} change(s) saved", changes.len())),
+                            Err(e) => ui.notice = Some(format!("cannot save apps.toml: {e}")),
+                        }
+                    }
+                    Err(e) => {
+                        log(&format!("apps.toml is not valid TOML; not saved: {e}"));
+                        ui.notice = Some("apps.toml has an error, so the change was not saved".into());
+                    }
+                }
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::KindleMode => {
+                log("leaving for the Kindle UI");
+                std::process::exit(EXIT_KINDLE_UI);
+            }
+            Action::Device(cmd) => {
+                run_device(cmd, &mut status, &mut settings, &dir, &run, &settings_path);
+                let full = matches!(cmd, DeviceCmd::ToggleRotation | DeviceCmd::AutoRotation);
+                display.show(renderer.draw(&ui, &status), &settings, full);
+            }
+        }
+    }
+}
+
+/// `kl-launcher --wait-screen`: run by the supervisor while the stock Kindle UI starts (about a minute) and
+/// stopped by it once the library is ready. One full update, then one block of the bar every 1.5 s with a small
+/// partial update.
+fn wait_screen(dir: &Path, run: &Path, settings: &Settings) {
+    const TITLE: &str = "Opening the Kindle UI";
+    const BODY: &str = "This takes about a minute.";
+    let mut renderer = match Renderer::new(W, H, &font_paths(dir, run)) {
+        Ok(r) => r,
+        Err(e) => return log(&format!("wait screen: {e}")),
+    };
+    log("wait screen");
+    let mut display = Display::open();
+    let mut step = 0;
+    display.show(renderer.waiting(TITLE, BODY, step), settings, true);
+    loop {
+        thread::sleep(Duration::from_millis(1500));
+        step += 1;
+        display.show(renderer.waiting(TITLE, BODY, step), settings, false);
+    }
+}
+
+fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir: &Path, run: &Path, settings_path: &Path) {
+    match cmd {
+        DeviceCmd::Light(step) => device::set_light((status.light as i32 + step * 2).clamp(0, device::LEVEL_MAX as i32) as u32),
+        DeviceCmd::Warmth(step) => device::set_warmth((status.warmth as i32 + step * 2).clamp(0, device::LEVEL_MAX as i32) as u32),
+        DeviceCmd::ToggleWifi => device::set_wifi(!status.wifi_on),
+        DeviceCmd::ToggleSsh => device::set_ssh(&dir.to_string_lossy(), !status.ssh),
+        DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
+        DeviceCmd::ToggleSleepScreen => {
+            settings.sleep_screen_launcher = !settings.sleep_screen_launcher;
+            status.sleep_launcher = settings.sleep_screen_launcher;
+            if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
+                log(&format!("settings: {e}"));
+            }
+            if settings.sleep_screen_launcher {
+                device::unload_stock_screensaver();
+            } else {
+                log("sleep screen: the Kindle's; it returns after Kindle mode or a reboot");
+            }
+        }
+        DeviceCmd::AutoRotation => {
+            settings.auto_rotation = true;
+            if let Some(turn) = device::accelerometer_turn() {
+                settings.rotation = turn;
+                input::TURN.store(turn.turn(), Ordering::Relaxed);
+                let _ = write_atomic(&run.join("orientation"), turn.letter());
+            }
+            if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
+                log(&format!("settings: {e}"));
+            }
+        }
+        DeviceCmd::ToggleRotation => {
+            settings.auto_rotation = false;
+            settings.rotation = settings.rotation.flipped();
+            input::TURN.store(settings.rotation.turn(), Ordering::Relaxed);
+            if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
+                log(&format!("settings: {e}"));
+            }
+            let _ = write_atomic(&run.join("orientation"), settings.rotation.letter());
+        }
+    }
+    *status = device::status(settings);
+}

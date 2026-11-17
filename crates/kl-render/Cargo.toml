@@ -1,0 +1,11 @@
+[package]
+name = "kl-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kl-core = { path = "../kl-core" }
+vello_cpu.workspace = true
+parley.workspace = true
+png.workspace = true

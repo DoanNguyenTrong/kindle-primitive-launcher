@@ -1,0 +1,25 @@
+# Primitive Launcher: copy this file to apps.toml (same folder) and edit it.
+# Scriptlets in /mnt/us/documents appear without any entry here. Use entries to add other programs,
+# rename, reorder, hide, or set an icon (a PNG; portrait 2:3 looks best).
+
+columns = 3
+rows = 3
+
+# A program that has no scriptlet:
+# [[app]]
+# id = "kterm"
+# name = "Terminal"
+# command = "/mnt/us/extensions/kterm/bin/kterm.sh"
+# dir = "/mnt/us/extensions/kterm"
+# icon = "/mnt/us/launcher/icons/kterm.png"
+# order = 3
+
+# A discovered scriptlet (its id is the file name): move it first.
+# [[app]]
+# id = "Primitive Browser.sh"
+# order = 1
+
+# Hide an app:
+# [[app]]
+# id = "kindle"
+# hidden = true
