@@ -8,7 +8,7 @@ use crate::{
     apps::{extensions_app, sort_key, App, IconSource, Launch},
     kual::MenuItem,
     battery::{self, Warning},
-    layout::{Button, Layout},
+    layout::{Button, Layout, Rect},
     settings::Rotation,
 };
 
@@ -19,7 +19,8 @@ pub enum Screen {
     /// "Open the Kindle UI?" over the previous screen.
     ConfirmKindle,
     Sleep,
-    /// Edit one app (long press): move, change icon, hide. The app is `Ui::menu`.
+    /// Edit one app (long press): a box beside its icon to move it, change its icon or hide it. The app is
+    /// `Ui::menu`.
     AppMenu,
     /// The KUAL extensions list, with submenus.
     Extensions,
@@ -49,6 +50,8 @@ pub enum DeviceCmd {
     ToggleSleepScreen,
     /// Follow the device's turn again (Settings > Screen > Auto).
     AutoRotation,
+    ToggleDarkMode,
+    ToggleAnimation,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +94,10 @@ pub struct Status {
     pub sleep_launcher: bool,
     /// The screen follows the device's turn.
     pub auto_rotation: bool,
+    /// White on black.
+    pub dark_mode: bool,
+    /// The opening zoom is on.
+    pub animation: bool,
     pub rotation: Rotation,
     /// Free memory for the About text, e.g. "MemAvailable 312 MB".
     pub memory: String,
@@ -105,8 +112,8 @@ pub struct Ui {
     pub page: usize,
     pub screen: Screen,
     before_sleep: Screen,
-    /// The pressed tile slot, drawn inverted until the app starts.
-    pub pressed: Option<usize>,
+    /// The pressed icon, drawn darkened until the app starts.
+    pub pressed: Option<Rect>,
     /// A message in the footer (problems in apps.toml, a failed action). Cleared by the next tap.
     pub notice: Option<String>,
     /// Apps hidden by the user (long press, or Settings > Hidden apps). Kept so they can be shown again.
@@ -266,6 +273,28 @@ impl Ui {
         self.apps.get(self.menu)
     }
 
+    /// The icon of the app at `index`, when it is on the current page.
+    pub fn icon_rect(&self, index: usize) -> Option<Rect> {
+        let l = self.layout;
+        (index < self.apps.len() && index / l.per_page() == self.page).then(|| l.icon(index % l.per_page()))
+    }
+
+    /// The app menu's actions for the app it edits.
+    pub fn menu_actions(&self) -> Vec<Button> {
+        match self.menu_app() {
+            Some(app) if !is_builtin(app) => vec![Button::MenuEarlier, Button::MenuLater, Button::MenuIcon, Button::MenuHide],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Where the app menu opens: beside the edited app's icon.
+    pub fn menu_anchor(&self) -> Rect {
+        self.icon_rect(self.menu).unwrap_or_else(|| {
+            let s = self.layout.icon_size();
+            Rect::new((self.layout.width - s) / 2, self.layout.grid().y, s, s)
+        })
+    }
+
     /// Record a battery reading. Returns true when the warning changed (the screen needs a redraw). A critical
     /// battery on the home screen goes to the sleep screen, which shows the warning; the power button wakes it.
     pub fn set_battery(&mut self, level: Option<u32>, charging: bool) -> bool {
@@ -294,56 +323,66 @@ impl Ui {
         self.hidden_apps.len()
     }
 
-    /// Long press on a tile: open its app menu. The Kindle UI and Settings stay as they are.
-    fn home_long_tap(&mut self, x: f32, y: f32) -> Action {
+    /// The app (index into the visible apps) whose icon is under a point on the home screen.
+    fn app_at(&self, x: f32, y: f32) -> Option<usize> {
         let l = self.layout;
-        let Some(slot) = l.slot_at(x, y) else { return Action::None };
-        let index = self.page * l.per_page() + slot;
-        let Some(app) = self.apps.get(index) else { return Action::None };
-        if is_builtin(app) {
-            self.notice = Some(format!("{} stays in the grid", app.name));
+        let index = self.page * l.per_page() + l.slot_at(x, y)?;
+        (index < self.apps.len()).then_some(index)
+    }
+
+    /// Long press on an icon: open its app menu beside it. Settings and the Kindle UI stay as they are.
+    fn home_long_tap(&mut self, x: f32, y: f32) -> Action {
+        let Some(index) = self.app_at(x, y) else { return Action::None };
+        if is_builtin(&self.apps[index]) {
+            self.notice = Some(format!("{} stays in place", self.apps[index].name));
             return Action::Redraw { full: false };
         }
         self.menu = index;
         self.go(Screen::AppMenu)
     }
 
-    /// The app menu: move the app, change its icon, hide it, or leave.
+    /// The app menu: one of its actions, or a tap outside the box to close it.
     fn app_menu(&mut self, input: Input) -> Action {
         match input {
             Input::PageBack => self.leave_menu(),
-            Input::Tap(x, y) => match self.layout.app_menu_button_at(x, y) {
-                Some(Button::Done) => self.leave_menu(),
-                Some(Button::MenuEarlier) => self.move_app(-1),
-                Some(Button::MenuLater) => self.move_app(1),
-                Some(Button::MenuIcon) => self.next_icon(),
-                Some(Button::MenuHide) => {
-                    let action = self.hide_at(self.menu);
-                    self.screen = Screen::Home;
-                    action
+            Input::Tap(x, y) => {
+                let (anchor, actions) = (self.menu_anchor(), self.menu_actions());
+                let hit = (0..actions.len()).find(|&i| self.layout.menu_row(anchor, actions.len(), i).contains(x, y));
+                match hit.map(|i| actions[i]) {
+                    Some(Button::MenuEarlier) => self.move_app(-1),
+                    Some(Button::MenuLater) => self.move_app(1),
+                    Some(Button::MenuIcon) => self.next_icon(),
+                    Some(Button::MenuHide) => {
+                        let action = self.hide_at(self.menu);
+                        self.screen = Screen::Home;
+                        action
+                    }
+                    _ if !self.layout.menu_box(anchor, actions.len()).contains(x, y) => self.leave_menu(),
+                    _ => Action::None,
                 }
-                _ => Action::None,
-            },
+            }
             _ => Action::None,
         }
     }
 
-    /// Back to the grid, on the page that shows the edited app.
+    /// Back to the home screen.
     fn leave_menu(&mut self) -> Action {
-        self.page = (self.menu / self.layout.per_page()).min(self.pages().saturating_sub(1));
+        self.page = self.page.min(self.pages().saturating_sub(1));
         self.go(Screen::Home)
     }
 
-    /// Move the edited app one place. The new order of every movable app is saved, so it holds after
-    /// apps are added or removed. Built-ins stay at the end.
+    /// Move the edited app one place. The new order of every movable app is saved, so it holds after apps are
+    /// added or removed. Built-ins stay at the end. The page follows the app, so the menu stays beside it.
     fn move_app(&mut self, step: i64) -> Action {
         let to = self.menu as i64 + step;
         if to < 0 || to >= self.apps.len() as i64 || is_builtin(&self.apps[to as usize]) {
             self.notice = Some(if step < 0 { "Already first".into() } else { "Already last".into() });
             return Action::Redraw { full: false };
         }
-        self.apps.swap(self.menu, to as usize);
-        self.menu = to as usize;
+        let to = to as usize;
+        self.apps.swap(self.menu, to);
+        self.menu = to;
+        self.page = to / self.layout.per_page();
         let mut order = Vec::new();
         for (i, app) in self.apps.iter_mut().filter(|a| !is_builtin(a)).enumerate() {
             app.order = Some(i as i64 + 1);
@@ -478,20 +517,18 @@ impl Ui {
                 if l.status().contains(x, y) {
                     return self.go(Screen::Settings);
                 }
-                if l.footer().contains(x, y) {
+                if l.home_footer().contains(x, y) {
                     return self.turn_page(if x < (l.width / 2) as f32 { -1 } else { 1 });
                 }
-                let Some(slot) = l.slot_at(x, y) else { return Action::None };
-                let Some(app) = self.apps.get(self.page * l.per_page() + slot).cloned() else {
-                    return Action::None;
-                };
+                let Some(index) = self.app_at(x, y) else { return Action::None };
+                let app = self.apps[index].clone();
                 match app.launch {
                     Launch::Settings => self.go(Screen::Settings),
                     Launch::KindleMode => self.go(Screen::ConfirmKindle),
                     Launch::Extensions => self.open_extensions(),
                     _ if app.background => self.run_background(app),
                     _ => {
-                        self.pressed = Some(slot);
+                        self.pressed = self.icon_rect(index);
                         Action::Launch(app)
                     }
                 }
@@ -516,6 +553,8 @@ impl Ui {
                 Some(Button::ShowHidden) => self.show_all(),
                 Some(Button::SleepScreen) => Action::Device(DeviceCmd::ToggleSleepScreen),
                 Some(Button::RotationAuto) => Action::Device(DeviceCmd::AutoRotation),
+                Some(Button::DarkMode) => Action::Device(DeviceCmd::ToggleDarkMode),
+                Some(Button::Animation) => Action::Device(DeviceCmd::ToggleAnimation),
                 Some(Button::KindleUi) => self.go(Screen::ConfirmKindle),
                 _ => Action::None,
             },
@@ -536,7 +575,7 @@ impl Ui {
     }
 }
 
-/// Settings and the Kindle UI: they cannot be moved, hidden or given another icon.
+/// Settings, the Kindle UI and Extensions: they cannot be moved, hidden or given another icon.
 fn is_builtin(app: &App) -> bool {
     matches!(app.launch, Launch::Settings | Launch::KindleMode | Launch::Extensions)
 }
@@ -573,13 +612,18 @@ mod tests {
             Action::Launch(a) => assert_eq!(a.id, "app1.sh"),
             other => panic!("{other:?}"),
         }
-        assert_eq!(u.pressed, Some(1));
+        assert_eq!(u.pressed, Some(u.layout.icon(1)), "only the touched icon is marked");
         assert_eq!(u.handle(centre(u.layout.cell(8))), Action::None, "empty slot");
     }
 
     #[test]
     fn paging_with_buttons_swipes_and_bounds() {
-        let mut u = ui(10); // 12 tiles: 2 pages
+        let u = ui(7); // 9 icons with the built-ins: 1 page of 3 × 3; 10 would make 2
+        assert_eq!(u.pages(), 1);
+        let mut u2 = ui(8);
+        assert_eq!(u2.pages(), 2);
+        assert_eq!(u2.handle(Input::PageForward), Action::Redraw { full: false });
+        let mut u = ui(10); // 12 icons: 2 pages
         assert_eq!(u.pages(), 2);
         assert_eq!(u.handle(Input::PageBack), Action::None);
         assert_eq!(u.handle(Input::PageForward), Action::Redraw { full: false });
@@ -622,9 +666,12 @@ mod tests {
         u.handle(Input::Tap(600.0, 40.0));
         assert_eq!(u.screen, Screen::Settings);
         let rows = u.layout.settings_rows();
+        let row = |r: crate::layout::Row| rows.iter().find(|x| x.row == r).unwrap().buttons[0].1;
         assert_eq!(u.handle(centre(rows[0].buttons[1].1)), Action::Device(DeviceCmd::Light(1)));
-        assert_eq!(u.handle(centre(rows[2].buttons[0].1)), Action::Device(DeviceCmd::ToggleWifi));
-        assert_eq!(u.handle(centre(rows[3].buttons[0].1)), Action::Device(DeviceCmd::ToggleRotation));
+        assert_eq!(u.handle(centre(row(crate::layout::Row::Wifi))), Action::Device(DeviceCmd::ToggleWifi));
+        assert_eq!(u.handle(centre(row(crate::layout::Row::Rotation))), Action::Device(DeviceCmd::ToggleRotation));
+        assert_eq!(u.handle(centre(row(crate::layout::Row::DarkMode))), Action::Device(DeviceCmd::ToggleDarkMode));
+        assert_eq!(u.handle(centre(row(crate::layout::Row::Animation))), Action::Device(DeviceCmd::ToggleAnimation));
     }
 
     #[test]
@@ -663,7 +710,7 @@ mod tests {
         let id = u.apps()[0].id.clone();
         assert_eq!(u.handle(Input::LongTap(x, y)), Action::Redraw { full: false });
         assert_eq!(u.screen, Screen::AppMenu);
-        let hide = u.layout.app_menu_buttons()[3].1;
+        let hide = menu_row(&u, Button::MenuHide);
         let action = u.handle(Input::Tap(hide.x as f32 + 10.0, hide.y as f32 + 10.0));
         assert_eq!(action, Action::SetHidden(vec![(id, true)]));
         assert_eq!(u.screen, Screen::Home);
@@ -689,21 +736,35 @@ mod tests {
         assert_eq!(u.screen, Screen::AppMenu);
     }
 
+    /// Tap the app menu's `button`.
+    fn press(u: &mut Ui, button: Button) -> Action {
+        let row = menu_row(u, button);
+        tap(u, row)
+    }
+
+    /// The app menu's row for `button`, beside the edited app's icon.
+    fn menu_row(u: &Ui, button: Button) -> Rect {
+        let actions = u.menu_actions();
+        let i = actions.iter().position(|&b| b == button).expect("action in the menu");
+        u.layout.menu_row(u.menu_anchor(), actions.len(), i)
+    }
+
     #[test]
     fn moving_an_app_saves_the_order_of_all_movable_apps() {
         let mut u = ui(3);
         let first = u.apps()[0].id.clone();
         let second = u.apps()[1].id.clone();
         open_menu(&mut u, 0);
-        let [_, (_, later), _, _] = u.layout.app_menu_buttons();
+        let later = menu_row(&u, Button::MenuLater);
         let Action::SetOrder(order) = tap(&mut u, later) else { panic!("no order saved") };
         assert_eq!(order[0], (second.clone(), 1));
         assert_eq!(order[1], (first.clone(), 2));
         assert_eq!(u.menu, 1);
         assert!(order.iter().all(|(id, _)| id != "settings" && id != "kindle"));
-        // Back to the grid on the page that shows it.
-        let done = u.layout.done_button();
-        assert_eq!(tap(&mut u, done), Action::Redraw { full: false });
+        // The menu follows the icon to its new place.
+        assert_eq!(u.menu_anchor(), u.layout.icon(1));
+        // A tap outside the box closes it.
+        assert_eq!(u.handle(Input::Tap(5.0, 5.0)), Action::Redraw { full: false });
         assert_eq!(u.screen, Screen::Home);
         assert_eq!(u.apps()[1].id, first);
     }
@@ -712,7 +773,7 @@ mod tests {
     fn an_app_cannot_move_before_the_first_place_or_past_the_built_ins() {
         let mut u = ui(1);
         open_menu(&mut u, 0);
-        let [(_, earlier), (_, later), _, _] = u.layout.app_menu_buttons();
+        let (earlier, later) = (menu_row(&u, Button::MenuEarlier), menu_row(&u, Button::MenuLater));
         assert_eq!(tap(&mut u, earlier), Action::Redraw { full: false });
         assert_eq!(u.notice.as_deref(), Some("Already first"));
         assert_eq!(tap(&mut u, later), Action::Redraw { full: false });
@@ -725,7 +786,7 @@ mod tests {
         u.set_icon_choices(vec!["/i/a.png".into(), "/i/b.png".into()]);
         let id = u.apps()[0].id.clone();
         open_menu(&mut u, 0);
-        let icon = u.layout.app_menu_buttons()[2].1;
+        let icon = menu_row(&u, Button::MenuIcon);
         assert_eq!(tap(&mut u, icon), Action::SetIcon { id: id.clone(), icon: Some("/i/a.png".into()) });
         assert_eq!(tap(&mut u, icon), Action::SetIcon { id: id.clone(), icon: Some("/i/b.png".into()) });
         assert_eq!(tap(&mut u, icon), Action::SetIcon { id: id.clone(), icon: None });
@@ -736,7 +797,7 @@ mod tests {
     fn change_icon_without_icon_files_explains_where_to_put_them() {
         let mut u = ui(1);
         open_menu(&mut u, 0);
-        let icon = u.layout.app_menu_buttons()[2].1;
+        let icon = menu_row(&u, Button::MenuIcon);
         assert_eq!(tap(&mut u, icon), Action::Redraw { full: false });
         assert!(u.notice.as_deref().unwrap().contains("/mnt/us/launcher/icons"));
     }
@@ -797,10 +858,21 @@ mod tests {
             vec![app("kindle", Launch::KindleMode), app("a.sh", Launch::Script { path: "/d/a.sh".into(), hooks: false })],
             Layout::new(1264, 1680, 3, 3),
         );
-        let slot = u.layout.cell(0);
-        assert_eq!(u.handle(Input::LongTap(slot.x as f32 + 5.0, slot.y as f32 + 5.0)), Action::Redraw { full: false });
+        let kindle = u.layout.cell(0);
+        assert_eq!(u.handle(Input::LongTap(kindle.x as f32 + 5.0, kindle.y as f32 + 5.0)), Action::Redraw { full: false });
+        assert_eq!(u.screen, Screen::Home);
+        assert_eq!(u.notice.as_deref(), Some("kindle stays in place"));
         assert_eq!(u.apps().len(), 2);
         assert_eq!(u.hidden_count(), 0);
+    }
+
+    #[test]
+    fn moving_across_a_page_turns_the_page_with_the_app() {
+        let mut u = ui(12); // 3 × 3: app8 is the last on page 1
+        open_menu(&mut u, 8);
+        assert!(matches!(press(&mut u, Button::MenuLater), Action::SetOrder(_)));
+        assert_eq!(u.page, 1);
+        assert_eq!(u.menu_anchor(), u.layout.icon(0));
     }
 
     #[test]

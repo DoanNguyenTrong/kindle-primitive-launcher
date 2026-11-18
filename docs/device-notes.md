@@ -184,3 +184,51 @@ Two more causes were found and fixed after the appmgrd race:
 Result (log 01:19:44–01:20:51): framework start 9 s, library ready 49 s later, appmgrd `LOAD_SENT → LOADED →
 GO_SENT → STARTED`, no alert; the library appears about 65 s after tapping Kindle UI. The launcher's last screen
 stays up during the wait.
+
+## Wi-Fi API (S3, 2026-11-18, read-only)
+
+`lipc-probe -v com.lab126.wifid` with the framework stopped (wifid keeps running):
+
+- `signalStrength` (string) reads `4/5`; `cmState` reads `CONNECTED`; `enable` (int) switches Wi-Fi.
+- `scan` (write) starts a scan; `scanState` reads `idle` when done; `scanListCount` gives the count.
+- `scanList` is a hash array, read with `echo "{}" | lipc-hash-prop -n com.lab126.wifid scanList`. Each entry
+  has `essid`, `bssid`, `secured`, `known`, `netid`, `signal`, `signal_max` (5), `supported`, `wps`,
+  `enterprise`, `key_mgmt` (for example `WPA2 PSK`).
+- Saved networks: `profileCount` (8 here), `profileData` (hash), `createProfile` (hash), `deleteProfile`
+  (int, by netid), `cmConnect` (string, by essid), `cmDisconnect`.
+- Property `711` prints a readable report: the connected AP, its signal, security and channel, the saved
+  networks and the IP settings.
+
+Not tried yet: joining with `createProfile` and `cmConnect` (writes a profile; test with the user present,
+on one network).
+
+## Accelerometer (S4, 2026-11-18, stock UI stopped)
+
+- Two input devices: `bma2x2` (`/dev/input/event6`, sysfs `/sys/devices/virtual/input/input6`) and
+  `bma_interrupt` (`event7`). With the stock UI stopped **neither sends events**: two minutes of turning gave
+  0 bytes on both. The driver's `enable` reads 0; the stock window manager switches it on.
+- The sysfs file `value` answers anyway: three numbers x y z, about 1024 per g, read from the chip each time
+  (they vary by a few units between reads; `value_cache` stays 0 0 0). Nothing has to be switched on.
+- Readings (4 a second while the user turned the Kindle):
+
+  | Position | x | y | z |
+  |---|---|---|---|
+  | Upright, leaning back a little | 5 | +900 | 459 |
+  | Upside down | 194 | −997 | 287 |
+  | Upright again | 103 | +987 | 250 |
+  | Flat on the table | 71 | −4 | +1032 |
+  | Sideways | +1085 | −56 | 9 |
+  | Sideways the other way (in passing) | −690 | −575 | 448 |
+
+- Rule (`kl_core::rotation::turn_from_accel`): upright when y ≥ +600 and |y| ≥ 1.5 |x|; upside down when
+  y ≤ −600 and |y| ≥ 1.5 |x|; otherwise no reading (flat, sideways, between). The launcher polls `value` 4 times
+  a second and turns after 800 ms of the same reading. The reading changes within 0.25 s of turning.
+
+## USB with volumd paused (S5, first half, 2026-11-18 09:38)
+
+- Launcher running, volumd stopped by the supervisor (`T`), cable plugged into a computer for about 20 s.
+- Charging works: the charger's `online` 0 → 1, powerd `isCharging` 0 → 1. The charge light came on.
+- `/mnt/us` stayed mounted (`fuse.fsp`); the computer showed no drive. The kernel set up the USB gadget anyway
+  (`g_mass_storage gadget: high-speed config #1: Linux File-Backed Storage`) but with no disk behind it:
+  volumd gives it `/mnt/us`'s device only after unmounting, and it was stopped.
+- Open: entering drive mode on demand (resume volumd with the cable in, then pause it again after unplugging).

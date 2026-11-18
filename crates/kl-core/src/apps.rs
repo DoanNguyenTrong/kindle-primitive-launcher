@@ -28,7 +28,13 @@ pub enum IconSource {
     File(String),
     /// Base64 PNG data from a `data:` URI.
     Data(String),
+    /// A PNG built into the launcher (the built-ins' icons).
+    Bundled(&'static [u8]),
 }
+
+/// The Kindle UI tile's icon: the Kindle app's reader under the arcs, in the panel's grays
+/// (`assets/icons/kindle-ui.png`, made from `assets/kindle-icon.png`).
+pub const KINDLE_UI_ICON: &[u8] = include_bytes!("../../../assets/icons/kindle-ui.png");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
@@ -91,7 +97,7 @@ fn builtins() -> Vec<App> {
         App {
             id: "kindle".into(),
             name: "Kindle UI".into(),
-            icon: IconSource::None,
+            icon: IconSource::Bundled(KINDLE_UI_ICON),
             launch: Launch::KindleMode,
             dir: "/".into(),
             order: Some(9_001),
@@ -203,6 +209,21 @@ pub fn discover(documents: &Path, config: &Config) -> (Vec<App>, Vec<String>) {
     merge(scriptlets(documents), config)
 }
 
+/// KOReader's own library entry (`KOReader.sh`) would start the stock UI again when KOReader exits. Unless
+/// `apps.toml` gives it a command, it runs through the launcher's wrapper (`wrapper`, `run-koreader.sh`), which
+/// keeps the stock UI stopped. Nothing changes when the wrapper is missing.
+pub fn use_koreader_wrapper(apps: &mut [App], config: &Config, wrapper: &Path) {
+    if !wrapper.is_file() {
+        return;
+    }
+    let overridden = |id: &str| config.apps.iter().any(|e| e.id == id && e.command.is_some());
+    for app in apps.iter_mut().filter(|a| a.id == "KOReader.sh" && !overridden(&a.id)) {
+        if matches!(app.launch, Launch::Script { .. }) {
+            app.launch = Launch::Shell { command: format!("sh '{}'", wrapper.display()) };
+        }
+    }
+}
+
 /// The built-in Extensions tile, shown when KUAL extensions are installed. It sorts with the other built-ins.
 pub fn extensions_app() -> App {
     App {
@@ -258,6 +279,24 @@ mod tests {
             hidden: false,
             background: false,
         }
+    }
+
+    #[test]
+    fn koreader_runs_through_the_wrapper_unless_apps_toml_says_otherwise() {
+        let dir = temp_dir("wrapper");
+        let wrapper = dir.join("run-koreader.sh");
+        let mut apps = vec![script("KOReader.sh", "KOReader"), script("b.sh", "B")];
+        use_koreader_wrapper(&mut apps, &Config::default(), &wrapper);
+        assert!(matches!(apps[0].launch, Launch::Script { .. }), "no wrapper file: unchanged");
+        fs::write(&wrapper, "#!/bin/sh\n").unwrap();
+        use_koreader_wrapper(&mut apps, &Config::default(), &wrapper);
+        assert_eq!(apps[0].launch, Launch::Shell { command: format!("sh '{}'", wrapper.display()) });
+        assert!(matches!(apps[1].launch, Launch::Script { .. }));
+        let mut apps = vec![script("KOReader.sh", "KOReader")];
+        let (config, _) = Config::parse("[[app]]\nid = \"KOReader.sh\"\ncommand = \"/k.sh\"\n");
+        use_koreader_wrapper(&mut apps, &config, &wrapper);
+        assert!(matches!(apps[0].launch, Launch::Script { .. }), "apps.toml's command wins (merge applies it)");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

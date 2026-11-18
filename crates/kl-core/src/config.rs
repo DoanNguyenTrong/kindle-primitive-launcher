@@ -4,8 +4,8 @@
 //! reading; a bad file gives a notice and the defaults, and the launcher never overwrites a file it cannot read.
 //!
 //! ```toml
-//! columns = 3
-//! rows = 3
+//! columns = 4                            # optional: the grid is 4 × 5 by default
+//! rows = 5
 //!
 //! [[app]]
 //! id = "koreader"                       # new entry: needs a command
@@ -40,6 +40,10 @@ pub struct AppEntry {
     pub background: Option<bool>,
 }
 
+/// The grid: 4 columns × 5 rows, as on a phone home screen.
+pub const DEFAULT_COLUMNS: u32 = 4;
+pub const DEFAULT_ROWS: u32 = 5;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub columns: u32,
@@ -49,7 +53,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { columns: 3, rows: 3, apps: Vec::new() }
+        Config { columns: DEFAULT_COLUMNS, rows: DEFAULT_ROWS, apps: Vec::new() }
     }
 }
 
@@ -87,9 +91,13 @@ impl Config {
         self.entry(id).icon = icon;
     }
 
-    /// The file text for this config: the grid size, then each entry with the fields that are set.
+    /// The file text for this config: the grid size when it is not the default, then each entry with the
+    /// fields that are set.
     pub fn to_toml(&self) -> String {
-        let mut out = format!("columns = {}\nrows = {}\n", self.columns, self.rows);
+        let mut out = String::new();
+        if (self.columns, self.rows) != (DEFAULT_COLUMNS, DEFAULT_ROWS) {
+            out = format!("columns = {}\nrows = {}\n", self.columns, self.rows);
+        }
         for a in &self.apps {
             out.push_str("\n[[app]]\n");
             out.push_str(&format!("id = {}\n", quote(&a.id)));
@@ -131,10 +139,10 @@ impl Config {
         };
         let mut config = Config::default();
         if let Some(v) = table.get("columns").and_then(Value::as_integer) {
-            config.columns = v.clamp(2, 4) as u32;
+            config.columns = v.clamp(3, 5) as u32;
         }
         if let Some(v) = table.get("rows").and_then(Value::as_integer) {
-            config.rows = v.clamp(2, 4) as u32;
+            config.rows = v.clamp(3, 6) as u32;
         }
         if let Some(list) = table.get("app").and_then(Value::as_array) {
             for (i, item) in list.iter().enumerate() {
@@ -199,7 +207,7 @@ mod tests {
             "columns = 4\nrows = 9\n[[app]]\nid = \"koreader\"\nname = \"KOReader\"\ncommand = \"/k.sh\"\norder = 1\n[[app]]\nid = \"kindle\"\nhidden = true\n",
         );
         assert!(p.is_empty());
-        assert_eq!((c.columns, c.rows), (4, 4));
+        assert_eq!((c.columns, c.rows), (4, 6));
         assert_eq!(c.apps.len(), 2);
         assert_eq!(c.apps[0].command.as_deref(), Some("/k.sh"));
         assert_eq!(c.apps[0].order, Some(1));
@@ -222,7 +230,7 @@ mod tests {
 
     #[test]
     fn the_writer_round_trips_through_the_parser() {
-        let mut config = Config { columns: 4, rows: 2, apps: Vec::new() };
+        let mut config = Config { columns: 3, rows: 4, apps: Vec::new() };
         config.apps.push(AppEntry {
             id: "koreader".into(),
             name: Some("KO \"reader\"\\".into()),
@@ -235,13 +243,25 @@ mod tests {
         let text = config.to_toml();
         let (back, problems) = Config::parse(&text);
         assert!(problems.is_empty(), "{problems:?}");
-        assert_eq!(back.columns, 4);
-        assert_eq!(back.rows, 2);
+        assert_eq!(back.columns, 3);
+        assert_eq!(back.rows, 4);
         assert_eq!(back.apps.len(), 2);
         assert_eq!(back.apps[0].name.as_deref(), Some("KO \"reader\"\\"));
         assert_eq!(back.apps[0].hidden, Some(false));
         assert_eq!(back.apps[1].id, "Primitive Browser.sh");
         assert_eq!(back.apps[1].hidden, Some(true));
+    }
+
+    #[test]
+    fn the_default_grid_is_not_written() {
+        let mut config = Config::default();
+        config.set_hidden("a.sh", true);
+        let text = config.to_toml();
+        assert!(!text.contains("columns"), "{text}");
+        let (back, problems) = Config::parse(&text);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!((back.columns, back.rows), (DEFAULT_COLUMNS, DEFAULT_ROWS));
+        assert_eq!(back.apps[0].hidden, Some(true));
     }
 
     #[test]

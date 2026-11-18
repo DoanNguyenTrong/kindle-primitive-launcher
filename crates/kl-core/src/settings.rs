@@ -41,11 +41,15 @@ pub struct Settings {
     pub auto_rotation: bool,
     /// True: the launcher's own sleep screen (the stock screensaver is unloaded). False: the Kindle's.
     pub sleep_screen_launcher: bool,
+    /// White on black: the launcher's screens are drawn inverted (picture icons keep their look).
+    pub dark_mode: bool,
+    /// The opening zoom when an app starts. On by default.
+    pub animation: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { rotation: Rotation::Upright, auto_rotation: true, sleep_screen_launcher: false }
+        Settings { rotation: Rotation::Upright, auto_rotation: true, sleep_screen_launcher: false, dark_mode: false, animation: true }
     }
 }
 
@@ -61,6 +65,8 @@ impl Settings {
                 ("auto_rotation", "on") => s.auto_rotation = true,
                 ("auto_rotation", "off") => s.auto_rotation = false,
                 ("sleep_screen", "kindle") => s.sleep_screen_launcher = false,
+                ("dark_mode", value) => s.dark_mode = value == "on",
+                ("animation", value) => s.animation = value != "off",
                 _ => {}
             }
         }
@@ -73,8 +79,13 @@ impl Settings {
             Rotation::UpsideDown => "upside-down",
         };
         let sleep = if self.sleep_screen_launcher { "launcher" } else { "kindle" };
-        let auto = if self.auto_rotation { "on" } else { "off" };
-        format!("rotation={rotation}\nauto_rotation={auto}\nsleep_screen={sleep}\n")
+        let on = |b: bool| if b { "on" } else { "off" };
+        format!(
+            "rotation={rotation}\nauto_rotation={}\nsleep_screen={sleep}\ndark_mode={}\nanimation={}\n",
+            on(self.auto_rotation),
+            on(self.dark_mode),
+            on(self.animation)
+        )
     }
 }
 
@@ -84,8 +95,10 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let s = Settings { rotation: Rotation::UpsideDown, auto_rotation: false, sleep_screen_launcher: true };
+        let s = Settings { rotation: Rotation::UpsideDown, auto_rotation: false, sleep_screen_launcher: true, dark_mode: true, animation: false };
         assert_eq!(Settings::parse(&s.to_text()), s);
+        assert!(Settings::default().animation && !Settings::default().dark_mode);
+        assert!(Settings::parse("animation=yes\n").animation, "only off turns it off");
         assert_eq!(Settings::parse("junk\nrotation=sideways\n"), Settings::default());
     }
 

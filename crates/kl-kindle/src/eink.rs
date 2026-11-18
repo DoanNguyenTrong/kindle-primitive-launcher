@@ -215,36 +215,40 @@ impl Panel {
         Ok(Panel { file, map: map as *mut u8, len, line_length: fix.line_length as usize, marker: 0 })
     }
 
-    /// Copy `rows` rows of `width` gray pixels to row `y` and send the update with `wave`; `full` drives
-    /// every pixel (a flash with GC16). An upside-down screen (rotation 2) is drawn as it is: the panel shows the
-    /// memory unturned. Returns `Ok(false)` without drawing when this path cannot draw the screen as it is
+    /// Copy the region (`x`, `y`, `w`, `h`) of `frame` (a whole screen of `width` gray pixels a row) to the
+    /// framebuffer and send the update for that region only, with `wave`; `full` drives every pixel of it (a
+    /// flash with GC16). An upside-down screen (rotation 2) is drawn as it is: the panel shows the memory
+    /// unturned. Returns `Ok(false)` without drawing when this path cannot draw the screen as it is
     /// (landscape, or another size), so the caller can use fbink.
-    pub fn draw(&mut self, width: u32, y: u32, rows: u32, gray: &[u8], wave: u32, full: bool) -> Result<bool, String> {
+    pub fn draw(&mut self, width: u32, region: (u32, u32, u32, u32), frame: &[u8], wave: u32, full: bool) -> Result<bool, String> {
+        let (x, y, w, rows) = region;
         let fd = self.file.as_raw_fd();
         let var = var_info(fd)?;
         let fits = (var.rotate == 0 || var.rotate == 2)
             && var.xoffset == 0
             && var.xres == width
+            && x + w <= width
             && y + rows <= var.yres
-            && gray.len() >= (width * rows) as usize;
-        if !fits {
+            && frame.len() >= (width * (y + rows)) as usize;
+        if !fits || rows == 0 || w == 0 {
             return Ok(false);
         }
-        let w = width as usize;
+        let (stride, x, w) = (width as usize, x as usize, w as usize);
         let base = var.yoffset as usize * self.line_length;
-        let last_end = base + (y as usize + rows as usize - 1) * self.line_length + w;
-        if rows == 0 || w > self.line_length || last_end > self.len {
+        let last_end = base + (y as usize + rows as usize - 1) * self.line_length + x + w;
+        if stride > self.line_length || last_end > self.len {
             return Ok(false);
         }
-        for r in 0..rows as usize {
-            let dst = base + (y as usize + r) * self.line_length;
-            // SAFETY: the destination row is inside the mapping (checked above) and the source row inside `gray`.
-            unsafe { std::ptr::copy_nonoverlapping(gray.as_ptr().add(r * w), self.map.add(dst), w) };
+        for r in y as usize..(y + rows) as usize {
+            let dst = base + r * self.line_length + x;
+            // SAFETY: the destination run is inside the mapping (checked above) and the source run inside `frame`.
+            unsafe { std::ptr::copy_nonoverlapping(frame.as_ptr().add(r * stride + x), self.map.add(dst), w) };
         }
+        let width = w as u32;
         self.marker = self.marker.wrapping_add(1).max(1);
         let (hist_bw, hist_gray) = hist_waves(wave);
         let mut update = UpdateZelda {
-            region: Rect { top: y, left: 0, width, height: rows },
+            region: Rect { top: y, left: x as u32, width, height: rows },
             waveform_mode: wave,
             update_mode: if full { UPDATE_MODE_FULL } else { UPDATE_MODE_PARTIAL },
             update_marker: self.marker,

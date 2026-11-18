@@ -1,11 +1,12 @@
 #!/bin/sh
 # Build and deploy a device release of Primitive Launcher.
 #
-#   scripts/build-device.sh
+#   scripts/build-device.sh           # next patch version: 0.2.0 -> 0.2.1
+#   scripts/build-device.sh --minor   # next minor version, a new phase: 0.1.11 -> 0.2.0
 #
-# Every device build is a new patch version (0.1.0 -> 0.1.1 -> ...): the workspace version in Cargo.toml,
-# shown in Settings. The bump is undone if the tests, the build or the install fail, so a failed deploy
-# does not use up a version number.
+# Every device build is a new version: the workspace version in Cargo.toml, shown in Settings. A new phase
+# starts a new minor version (Phase 2 is 0.2.x). The bump is undone if the tests, the build or the install
+# fail, so a failed deploy does not use up a version number.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -13,7 +14,11 @@ export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:/opt/homeb
 MANIFEST="$ROOT/Cargo.toml"
 
 current=$(sed -n 's/^version = "\([0-9]*\.[0-9]*\.[0-9]*\)"/\1/p' "$MANIFEST" | head -n 1)
-next=$(echo "$current" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 + 1 }')
+case "${1:-}" in
+    --minor) next=$(echo "$current" | awk -F. '{ printf "%d.%d.0", $1, $2 + 1 }') ;;
+    "") next=$(echo "$current" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 + 1 }') ;;
+    *) echo "usage: $0 [--minor]" >&2; exit 2 ;;
+esac
 
 set_version() {
     sed -i '' "s/^version = \"[0-9]*\.[0-9]*\.[0-9]*\"/version = \"$1\"/" "$MANIFEST"

@@ -85,7 +85,7 @@ Its files: `deploy/install-ssh.sh` (installer), `deploy/Browser.sh` (launcher), 
   `sha256sum <file>` on the device equals the local `shasum -a 256`.
 - Ship every runtime file the app needs: fonts, device tools, their shared libraries and their licence texts.
   The release package and the installer must carry the same set. A missing library fails silently.
-- Device builds get a new patch version every time (the user's rule); tags `vX.Y.Z` are never moved.
+- Device builds get a new patch version every time (the user's rule); a new phase starts a new minor version with `scripts/build-device.sh --minor`. Tags `vX.Y.Z` are never moved.
 
 ## Debugging
 

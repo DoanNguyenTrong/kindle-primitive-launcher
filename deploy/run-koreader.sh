@@ -1,5 +1,6 @@
 #!/bin/sh
-# KOReader, started by Primitive Launcher (apps.toml points the KOReader entry here).
+# KOReader, started by Primitive Launcher: the launcher runs KOReader's library entry (KOReader.sh) through this
+# wrapper unless apps.toml gives KOReader another command.
 #
 # The launcher has already stopped the stock framework and owns the screen, so KOReader does not need it.
 # KOReader's framework-stopped mode (--framework_stop) does the stop itself, then starts the framework again on

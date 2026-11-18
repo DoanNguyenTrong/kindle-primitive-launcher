@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Unit tests, clippy and shell suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit tests
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Shell suites (stub Kindle commands)
+        run: |
+          sh tests/supervisor-test.sh
+          sh tests/boot-test.sh
+          sh tests/library-entry-test.sh
+          sh tests/koreader-wrapper-test.sh
+
+  desktop:
+    name: Desktop screenshots
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Draw every screen
+        run: |
+          mkdir -p "$RUNNER_TEMP/documents"
+          printf '#!/bin/sh\n# Name: KOReader\n' > "$RUNNER_TEMP/documents/KOReader.sh"
+          printf '#!/bin/sh\n# Name: Primitive Browser\n' > "$RUNNER_TEMP/documents/Primitive Browser.sh"
+          cargo run --release -p kl-desktop -- --documents "$RUNNER_TEMP/documents" --out "$RUNNER_TEMP/screens"
+          cargo run --release -p kl-desktop -- --launcher-icon "$RUNNER_TEMP/screens/launcher-icon.png"
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-screens
+          path: ${{ runner.temp }}/screens
+
+  device-build:
+    name: ARMv7 device build
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-musleabihf
+      - uses: Swatinem/rust-cache@v2
+      - name: Install zig, cargo-zigbuild and zip
+        run: |
+          sudo apt-get install -y zip
+          python3 -m pip install ziglang
+          cargo install cargo-zigbuild --locked
+      - name: Build the device binary
+        run: cargo zigbuild --release -p kl-kindle --target armv7-unknown-linux-musleabihf
+      - name: Check it is an ARM binary
+        run: file target/armv7-unknown-linux-musleabihf/release/kl-launcher | grep -q ARM
+      - name: Package (dry run)
+        run: sh scripts/package-release.sh
+      - name: Keep the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: primitive-launcher-package
+          path: dist/

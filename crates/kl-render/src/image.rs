@@ -141,18 +141,132 @@ pub fn solidify(gray: &mut [u8]) {
     }
 }
 
-/// Icon source to tile: decode, fit into `w` × `h`, dither.
-pub fn icon_tile(png_bytes: &[u8], w: u32, h: u32) -> Result<GrayImage, String> {
+/// A picture (sleep screen): decode, fit into `w` × `h`, dither.
+pub fn picture_tile(png_bytes: &[u8], w: u32, h: u32) -> Result<GrayImage, String> {
     let img = decode_png(png_bytes)?;
     let mut tile = fit(&img, w, h);
     dither16(&mut tile);
     Ok(tile)
 }
 
-/// FNV-1a, for cache file names keyed by the icon's source bytes and the tile size.
+/// Corner radius of the rounded-square icons, as a share of their side (as on iOS).
+pub const ICON_RADIUS: f32 = 0.225;
+/// The icon outline's width in pixels: white icons keep their shape on the white page.
+const ICON_OUTLINE: f32 = 3.0;
+
+/// Signed distance from the point (`x`, `y`) to the edge of a rounded square of side `side` and corner radius
+/// `radius` at the origin: negative inside.
+pub fn rounded_distance(x: f32, y: f32, side: f32, radius: f32) -> f32 {
+    let half = side / 2.0;
+    let qx = (x - half).abs() - (half - radius);
+    let qy = (y - half).abs() - (half - radius);
+    let (ox, oy) = (qx.max(0.0), qy.max(0.0));
+    (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - radius
+}
+
+/// An app icon: the picture fitted into a rounded square of side `size` (white around a picture of another
+/// shape), dithered, with a thin black outline and white outside the corners.
+pub fn icon_tile(png_bytes: &[u8], size: u32) -> Result<GrayImage, String> {
+    let img = decode_png(png_bytes)?;
+    let mut tile = fit(&img, size, size);
+    dither16(&mut tile);
+    let (s, r) = (size as f32, size as f32 * ICON_RADIUS);
+    for y in 0..size {
+        for x in 0..size {
+            let d = rounded_distance(x as f32 + 0.5, y as f32 + 0.5, s, r);
+            let outer = (0.5 - d).clamp(0.0, 1.0);
+            let inner = (0.5 - (d + ICON_OUTLINE)).clamp(0.0, 1.0);
+            let px = &mut tile.pixels[(y * size + x) as usize];
+            *px = (255.0 * (1.0 - outer) + *px as f32 * inner).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    Ok(tile)
+}
+
+/// Darken the inside of a rounded-square icon at `r` in a screen buffer: the pressed look.
+pub fn darken_icon(out: &mut [u8], width: usize, x0: i32, y0: i32, side: i32) {
+    let height = (out.len() / width) as i32;
+    let (s, r) = (side as f32, side as f32 * ICON_RADIUS);
+    for y in y0.max(0)..(y0 + side).min(height) {
+        for x in x0.max(0)..(x0 + side).min(width as i32) {
+            if rounded_distance((x - x0) as f32 + 0.5, (y - y0) as f32 + 0.5, s, r) < 0.0 {
+                let px = &mut out[y as usize * width + x as usize];
+                *px = (*px as u32 * 45 / 100) as u8;
+            }
+        }
+    }
+}
+
+/// A screen rectangle: x, y, width, height.
+pub type Area = (i32, i32, i32, i32);
+
+/// Signed distance from pixel (`x`, `y`) of a rectangle `w` × `h` with corner radius `radius` to its edge
+/// (negative inside).
+fn rect_distance(x: i32, y: i32, w: i32, h: i32, radius: f32) -> f32 {
+    let (hw, hh) = (w as f32 / 2.0, h as f32 / 2.0);
+    let r = radius.min(hw).min(hh);
+    let qx = (x as f32 + 0.5 - hw).abs() - (hw - r);
+    let qy = (y as f32 + 0.5 - hh).abs() - (hh - r);
+    (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r
+}
+
+/// Draw a rounded card with a border of `border` pixels at `area` into a screen buffer: one step of the opening
+/// zoom. White with a black border, or black with a white border in dark mode. Pure black and white, so the
+/// panel can draw it with its fast waveform.
+pub fn card(out: &mut [u8], width: usize, (x0, y0, w, h): Area, radius: f32, border: f32, dark: bool) {
+    let height = (out.len() / width) as i32;
+    let (edge, fill) = if dark { (255, 0) } else { (0, 255) };
+    for y in y0.max(0)..(y0 + h).min(height) {
+        for x in x0.max(0)..(x0 + w).min(width as i32) {
+            let d = rect_distance(x - x0, y - y0, w, h, radius);
+            if d < 0.0 {
+                out[y as usize * width + x as usize] = if d > -border { edge } else { fill };
+            }
+        }
+    }
+}
+
+/// Copy the rounded rectangle `area` (corner `radius`) of `layer` over `out`: a pop-up drawn in its own pass.
+pub fn copy_rounded(out: &mut [u8], layer: &[u8], width: usize, (x0, y0, w, h): Area, radius: f32) {
+    let height = (out.len().min(layer.len()) / width) as i32;
+    for y in y0.max(0)..(y0 + h).min(height) {
+        for x in x0.max(0)..(x0 + w).min(width as i32) {
+            if rect_distance(x - x0, y - y0, w, h, radius) < 0.0 {
+                let i = y as usize * width + x as usize;
+                out[i] = layer[i];
+            }
+        }
+    }
+}
+
+/// Dark mode: invert the screen, except the `pictures` (icons, the sleep picture), which keep their look inside
+/// their rounded shape (`(area, corner radius)`; the corners outside it turn dark like the page). Where a pop-up
+/// (`over`) covers a picture, the pop-up is inverted like the rest.
+pub fn invert_except(out: &mut [u8], width: usize, pictures: &[(Area, f32)], over: Option<Area>) {
+    for px in out.iter_mut() {
+        *px = 255 - *px;
+    }
+    let height = (out.len() / width) as i32;
+    let inside = |x: i32, y: i32, (ax, ay, aw, ah): Area| x >= ax && y >= ay && x < ax + aw && y < ay + ah;
+    for &((x0, y0, w, h), radius) in pictures {
+        for y in y0.max(0)..(y0 + h).min(height) {
+            for x in x0.max(0)..(x0 + w).min(width as i32) {
+                if !over.is_some_and(|o| inside(x, y, o)) && rect_distance(x - x0, y - y0, w, h, radius) < 0.0 {
+                    let i = y as usize * width + x as usize;
+                    out[i] = 255 - out[i];
+                }
+            }
+        }
+    }
+}
+
+/// Bumped when the icon tile's look changes, so cached tiles are made again.
+const TILE_VERSION: &[u8] = b"rounded-square-1";
+
+/// FNV-1a, for cache file names keyed by the icon's source bytes, the tile size and the tile version.
 pub fn cache_key(bytes: &[u8], w: u32, h: u32) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in bytes.iter().chain(w.to_le_bytes().iter()).chain(h.to_le_bytes().iter()) {
+    for b in TILE_VERSION.iter().chain(bytes.iter()).chain(w.to_le_bytes().iter()).chain(h.to_le_bytes().iter()) {
         hash ^= *b as u64;
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
@@ -231,6 +345,59 @@ mod tests {
         let mut g = [0, 20, 34, 51, 204, 221, 250];
         solidify(&mut g);
         assert_eq!(g, [0, 0, 0, 51, 204, 255, 255]);
+    }
+
+    #[test]
+    fn icon_tiles_are_rounded_squares_with_an_outline() {
+        let gray = png_bytes(4, 4, png::ColorType::Grayscale, &[136; 16]);
+        let tile = icon_tile(&gray, 100).unwrap();
+        assert_eq!((tile.width, tile.height), (100, 100));
+        let at = |x: u32, y: u32| tile.pixels[(y * 100 + x) as usize];
+        assert_eq!(at(0, 0), 255, "outside the corner");
+        assert_eq!(at(50, 1), 0, "the outline at the top edge");
+        assert_eq!(at(50, 50), 136, "the picture inside");
+    }
+
+    #[test]
+    fn darkening_stays_inside_the_rounded_square() {
+        let mut out = vec![255u8; 20 * 20];
+        darken_icon(&mut out, 20, 5, 5, 10);
+        assert_eq!(out[0], 255);
+        assert_eq!(out[5 * 20 + 5], 255, "the corner is outside");
+        assert_eq!(out[10 * 20 + 10], 114);
+        darken_icon(&mut out, 20, 15, 15, 10); // partly off the buffer: no panic
+    }
+
+    #[test]
+    fn a_card_is_white_inside_a_black_border_with_round_corners() {
+        let mut out = vec![128u8; 40 * 40];
+        card(&mut out, 40, (5, 5, 30, 30), 8.0, 2.0, false);
+        assert_eq!(out[20 * 40 + 20], 255, "inside");
+        assert_eq!(out[20 * 40 + 5], 0, "left edge");
+        assert_eq!(out[5 * 40 + 5], 128, "outside the round corner");
+        assert_eq!(out[0], 128);
+        assert!(out.iter().all(|&p| p == 0 || p == 255 || p == 128));
+        card(&mut out, 40, (5, 5, 30, 30), 8.0, 2.0, true);
+        assert_eq!((out[20 * 40 + 20], out[20 * 40 + 5]), (0, 255), "dark: black inside, white edge");
+    }
+
+    #[test]
+    fn dark_mode_inverts_all_but_the_pictures_and_a_popup_covers_pictures() {
+        let mut out = vec![200u8; 10 * 10];
+        invert_except(&mut out, 10, &[((0, 0, 4, 4), 0.0)], Some((2, 2, 4, 4)));
+        assert_eq!(out[0], 200, "a picture keeps its look");
+        assert_eq!(out[3 * 10 + 3], 55, "under the pop-up it is inverted");
+        assert_eq!(out[9 * 10 + 9], 55);
+    }
+
+    #[test]
+    fn a_popup_is_copied_inside_its_rounded_corners() {
+        let mut out = vec![0u8; 20 * 20];
+        let layer = vec![255u8; 20 * 20];
+        copy_rounded(&mut out, &layer, 20, (2, 2, 16, 16), 6.0);
+        assert_eq!(out[10 * 20 + 10], 255);
+        assert_eq!(out[2 * 20 + 2], 0, "the corner stays");
+        assert_eq!(out[0], 0);
     }
 
     #[test]

@@ -66,8 +66,9 @@ fn font_paths(dir: &Path, run: &Path) -> Vec<String> {
     names.iter().map(|n| base.join(n).to_string_lossy().into_owned()).collect()
 }
 
-/// Shows frames on the panel: a full GC16 update on request, otherwise only the changed rows with a
-/// non-flashing waveform (DU for pure black and white, AUTO when icons bring gray).
+/// Shows frames on the panel: a full GC16 update on request, otherwise only the box around the changed
+/// pixels, with a non-flashing waveform (DU for pure black and white, AUTO when icons bring gray). A tap on one
+/// icon updates that icon, not the full-width band of its row.
 struct Display {
     panel: Option<eink::Panel>,
     last: Vec<u8>,
@@ -98,20 +99,47 @@ impl Display {
         };
         let t = Instant::now();
         let result = if full || self.last.len() != frame.len() {
-            panel.draw(W, 0, H, &frame, eink::WAVE_GC16, true).map(|ok| (ok, "GC16 full", H))
-        } else if let Some((y, rows)) = kl_render::changed_rows(&self.last, &frame, W as usize) {
-            let band = &frame[y * W as usize..(y + rows) * W as usize];
-            let (wave, name) = if kl_render::is_black_and_white(band) { (eink::WAVE_DU, "DU") } else { (eink::WAVE_AUTO, "AUTO") };
-            panel.draw(W, y as u32, rows as u32, band, wave, false).map(|ok| (ok, name, rows as u32))
+            panel.draw(W, (0, 0, W, H), &frame, eink::WAVE_GC16, true).map(|ok| (ok, "GC16 full", (0, 0, W, H)))
+        } else if let Some((x, y, w, h)) = kl_render::changed_rect(&self.last, &frame, W as usize) {
+            let stride = W as usize;
+            let bw = (y..y + h).all(|r| kl_render::is_black_and_white(&frame[r * stride + x..r * stride + x + w]));
+            let (wave, name) = if bw { (eink::WAVE_DU, "DU") } else { (eink::WAVE_AUTO, "AUTO") };
+            let region = (x as u32, y as u32, w as u32, h as u32);
+            panel.draw(W, region, &frame, wave, false).map(|ok| (ok, name, region))
         } else {
-            Ok((true, "unchanged", 0))
+            Ok((true, "unchanged", (0, 0, 0, 0)))
         };
         match result {
-            Ok((true, wave, rows)) => log(&format!("draw {wave} {rows} rows in {} ms (fb turn {fb_turn})", t.elapsed().as_millis())),
+            Ok((true, wave, (x, y, w, h))) => log(&format!("draw {wave} {w}x{h} at {x},{y} in {} ms (fb turn {fb_turn})", t.elapsed().as_millis())),
             Ok((false, ..)) => log("draw: the framebuffer is not in a drawable state"),
             Err(e) => log(&format!("draw: {e}")),
         }
         self.last = frame;
+    }
+
+    /// Show only `area` of `upright` (a pop-up), leaving the rest of the panel as it is. The next `show` draws
+    /// the whole screen, as what is on the panel is no longer known.
+    fn show_region(&mut self, upright: Vec<u8>, area: kl_core::Rect, settings: &Settings) {
+        let fb_turn = self.fb_turn();
+        let turned = (settings.rotation.turn() + fb_turn) % 4 == 2;
+        let frame = kl_render::for_panel(upright, settings.rotation, fb_turn);
+        self.last.clear();
+        let Some(panel) = self.panel.as_mut() else { return };
+        // Upside down, the area sits at the opposite corner of the panel.
+        let (x, y) = if turned { (W as i32 - area.right(), H as i32 - area.bottom()) } else { (area.x, area.y) };
+        let x0 = x.clamp(0, W as i32) as u32 / 8 * 8;
+        let x1 = ((x + area.w).clamp(0, W as i32) as u32).div_ceil(8) * 8;
+        let (y0, y1) = (y.clamp(0, H as i32) as u32, (y + area.h).clamp(0, H as i32) as u32);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let region = (x0, y0, x1.min(W) - x0, y1 - y0);
+        let stride = W as usize;
+        let bw = (y0..y1).all(|r| kl_render::is_black_and_white(&frame[r as usize * stride + x0 as usize..r as usize * stride + (x0 + region.2) as usize]));
+        let wave = if bw { eink::WAVE_DU } else { eink::WAVE_AUTO };
+        if let Err(e) = panel.draw(W, region, &frame, wave, false) {
+            log(&format!("draw: {e}"));
+        }
     }
 }
 
@@ -190,8 +218,9 @@ fn main() {
         Ok(text) => Config::parse(&text),
         Err(_) => (Config::default(), Vec::new()),
     };
-    let (apps, more) = discover(&documents, &config);
+    let (mut apps, more) = discover(&documents, &config);
     problems.extend(more);
+    kl_core::apps::use_koreader_wrapper(&mut apps, &config, &dir.join("run-koreader.sh"));
     let extensions_root = documents.parent().unwrap_or(Path::new("/mnt/us")).join("extensions");
     let (extensions, more) = kl_core::kual::discover_root(&extensions_root);
     problems.extend(more);
@@ -323,6 +352,12 @@ fn main() {
         };
         match action {
             Action::None => {}
+            // Going to sleep draws nothing unless there is something to show: a battery warning, or a picture
+            // for the launcher's own sleep screen. Otherwise the Kindle's screensaver (or the last screen) stays.
+            Action::Redraw { .. }
+                if ui.screen == Screen::Sleep
+                    && ui.battery_message().is_none()
+                    && !(settings.sleep_screen_launcher && renderer.has_sleep_image()) => {}
             Action::Redraw { full } => {
                 if full {
                     status = device::status(&settings);
@@ -330,7 +365,8 @@ fn main() {
                 display.show(renderer.draw(&ui, &status), &settings, full);
             }
             Action::Launch(app) => {
-                display.show(renderer.draw(&ui, &status), &settings, false);
+                let pressed = renderer.draw(&ui, &status);
+                display.show(pressed.clone(), &settings, false);
                 let Some(next) = app.next_file() else {
                     ui.pressed = None;
                     ui.notice = Some(format!("{}: cannot be started", app.name));
@@ -344,6 +380,18 @@ fn main() {
                     continue;
                 }
                 log(&format!("launch {} ({})", app.name, app.id));
+                // The opening zoom (Settings > Opening animation): a card grows from the icon to the screen in
+                // three fast steps.
+                if let Some(icon) = ui.pressed.filter(|_| settings.animation) {
+                    for step in kl_core::layout::zoom_steps(icon, ui.layout.screen(), 3) {
+                        let mut frame = pressed.clone();
+                        let radius = (step.w.min(step.h) as f32 * 0.12).min(48.0);
+                        let area = (step.x, step.y, step.w, step.h);
+                        kl_render::image::card(&mut frame, W as usize, area, radius, 4.0, settings.dark_mode);
+                        display.show(frame, &settings, false);
+                        thread::sleep(Duration::from_millis(70));
+                    }
+                }
                 std::process::exit(EXIT_LAUNCH);
             }
             Action::SetHidden(changes) => {
@@ -380,11 +428,14 @@ fn main() {
             }
             Action::KindleMode => {
                 log("leaving for the Kindle UI");
+                // The dialog turns into "Opening the Kindle UI"; the wait screen fills its blocks from here.
+                let (frame, area) = renderer.waiting_dialog(&ui.layout, 0, settings.dark_mode);
+                display.show_region(frame, area, &settings);
                 std::process::exit(EXIT_KINDLE_UI);
             }
             Action::Device(cmd) => {
                 run_device(cmd, &mut status, &mut settings, &dir, &run, &settings_path);
-                let full = matches!(cmd, DeviceCmd::ToggleRotation | DeviceCmd::AutoRotation);
+                let full = matches!(cmd, DeviceCmd::ToggleRotation | DeviceCmd::AutoRotation | DeviceCmd::ToggleDarkMode);
                 display.show(renderer.draw(&ui, &status), &settings, full);
             }
         }
@@ -392,23 +443,22 @@ fn main() {
 }
 
 /// `kl-launcher --wait-screen`: run by the supervisor while the stock Kindle UI starts (about a minute) and
-/// stopped by it once the library is ready. One full update, then one block of the bar every 1.5 s with a small
-/// partial update.
+/// stopped by it once the library is ready. It draws only the "Opening the Kindle UI" dialog, over what is on the
+/// screen (the grid the launcher left), and fills one block of its bar every 1.5 s with a small partial update.
 fn wait_screen(dir: &Path, run: &Path, settings: &Settings) {
-    const TITLE: &str = "Opening the Kindle UI";
-    const BODY: &str = "This takes about a minute.";
     let mut renderer = match Renderer::new(W, H, &font_paths(dir, run)) {
         Ok(r) => r,
         Err(e) => return log(&format!("wait screen: {e}")),
     };
     log("wait screen");
+    let layout = Layout::new(W, H, kl_core::config::DEFAULT_COLUMNS, kl_core::config::DEFAULT_ROWS);
     let mut display = Display::open();
     let mut step = 0;
-    display.show(renderer.waiting(TITLE, BODY, step), settings, true);
     loop {
+        let (frame, area) = renderer.waiting_dialog(&layout, step, settings.dark_mode);
+        display.show_region(frame, area, settings);
         thread::sleep(Duration::from_millis(1500));
         step += 1;
-        display.show(renderer.waiting(TITLE, BODY, step), settings, false);
     }
 }
 
@@ -500,6 +550,16 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
                 settings.rotation = turn;
                 input::TURN.store(turn.turn(), Ordering::Relaxed);
                 let _ = write_atomic(&run.join("orientation"), turn.letter());
+            }
+            if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
+                log(&format!("settings: {e}"));
+            }
+        }
+        DeviceCmd::ToggleDarkMode | DeviceCmd::ToggleAnimation => {
+            if cmd == DeviceCmd::ToggleDarkMode {
+                settings.dark_mode = !settings.dark_mode;
+            } else {
+                settings.animation = !settings.animation;
             }
             if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
                 log(&format!("settings: {e}"));

@@ -5,10 +5,11 @@
 # Extensions tile. Sleep pictures: PNG files in /mnt/us/launcher/screensavers, with Settings > Sleep screen
 # set to the launcher's own.
 # Scriptlets in /mnt/us/documents appear without any entry here. Use entries to add other programs,
-# rename, reorder, hide, or set an icon (a PNG; portrait 2:3 looks best).
+# rename, reorder, hide, or set an icon (a PNG; square looks best: icons are rounded squares).
 
-columns = 3
-rows = 3
+# The grid is 4 columns × 5 rows unless set here (columns 3–5, rows 3–6):
+# columns = 4
+# rows = 5
 
 # A program that has no scriptlet:
 # [[app]]

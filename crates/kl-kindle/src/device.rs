@@ -132,6 +132,8 @@ pub fn status(settings: &Settings) -> Status {
         autostart: !Path::new(&launcher_dir()).join("DISABLE").exists(),
         sleep_launcher,
         auto_rotation: settings.auto_rotation,
+        dark_mode: settings.dark_mode,
+        animation: settings.animation,
         wifi_on,
         wifi_state,
         light: get_int(POWERD, "flIntensity").unwrap_or(0).min(LEVEL_MAX),
@@ -158,6 +160,12 @@ pub fn set_wifi(on: bool) {
 /// The device's turn from the framework's accelerometer (`U` upright, `D` upside down). Landscape and
 /// unreadable values give nothing. The browser reads the same property.
 pub fn accelerometer_turn() -> Option<Rotation> {
+    // The accelerometer itself (works with the stock UI stopped); the window manager's property otherwise.
+    if let Some(path) = accel_value_path() {
+        let text = std::fs::read_to_string(path).ok()?;
+        let (x, y, z) = kl_core::rotation::parse_accel(&text)?;
+        return kl_core::rotation::turn_from_accel(x, y, z);
+    }
     let out = Command::new("lipc-get-prop").args(["com.lab126.winmgr", "accelerometer"]).output().ok()?;
     match String::from_utf8_lossy(&out.stdout).trim() {
         "U" => Some(Rotation::Upright),
@@ -166,13 +174,27 @@ pub fn accelerometer_turn() -> Option<Rotation> {
     }
 }
 
-/// Follow the device's turn once a second. A new turn is sent after it has been read for 800 ms in a row
-/// (`kl_core::rotation`); a flat or unreadable reading starts the wait again.
+/// The accelerometer's `value` file: the input device named `bma2x2` (`/sys/class/input/input6` on the
+/// Oasis 3; found by name, as the numbers can change). Looked up once.
+fn accel_value_path() -> Option<&'static std::path::PathBuf> {
+    static PATH: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let found = std::fs::read_dir("/sys/class/input").ok()?.flatten().map(|e| e.path()).find(|p| {
+            std::fs::read_to_string(p.join("name")).is_ok_and(|n| n.trim() == "bma2x2") && p.join("value").exists()
+        });
+        log(&format!("accelerometer: {}", found.as_ref().map_or("not found, using the window manager".into(), |p| p.display().to_string())));
+        found.map(|p| p.join("value"))
+    })
+    .as_ref()
+}
+
+/// Follow the device's turn, 4 readings a second. A new turn is sent after it has been read for 800 ms in a
+/// row (`kl_core::rotation`); a flat, sideways or unreadable reading starts the wait again.
 pub fn orientation_loop(tx: Sender<Ev>, start: Rotation) {
     let mut debounce = Debouncer::new(start, 800);
     let began = std::time::Instant::now();
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(std::time::Duration::from_millis(250));
         let now = began.elapsed().as_millis() as u64;
         if let Some(turn) = debounce.feed(accelerometer_turn(), now) {
             if tx.send(Ev::Turn(turn)).is_err() {

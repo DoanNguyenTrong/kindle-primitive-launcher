@@ -9,8 +9,8 @@ pub mod image;
 use std::collections::HashMap;
 
 use kl_core::{
-    layout::{Button, Rect, Row, LABEL_LINE, LABEL_SIZE},
-    App, IconSource, Layout, Rotation, Screen, Status, Ui,
+    layout::{Button, Rect, Row, LABEL_SIZE},
+    App, IconSource, Launch, Layout, Rotation, Screen, Status, Ui,
 };
 use parley::{FontContext, FontWeight, LayoutContext, PositionedLayoutItem, StyleProperty};
 use vello_cpu::{
@@ -23,6 +23,9 @@ pub use image::GrayImage;
 
 const BLACK: u8 = 0;
 const WHITE: u8 = 255;
+/// Pop-ups (the app menu, the Kindle UI dialog): corner radius, and the white margin around them.
+const POPUP_RADIUS: f32 = 28.0;
+const POPUP_HALO: i32 = 10;
 
 // Icon paths copied from Primitive Browser (`crates/kb-app/src/ui.rs`, the `icon` set and `battery_icon`).
 const WIFI_ARC_OUTER: &str = "M2.5 9 A14 14 0 0 1 21.5 9";
@@ -110,6 +113,11 @@ impl Renderer {
     /// Drop an app's tile (its icon was changed; the driver loads the new one).
     pub fn forget_icon(&mut self, id: &str) {
         self.icons.remove(id);
+    }
+
+    /// Whether a sleep picture is set (the launcher's own sleep screen has something to show).
+    pub fn has_sleep_image(&self) -> bool {
+        self.sleep_image.is_some()
     }
 
     pub fn has_icon(&self, id: &str) -> bool {
@@ -297,37 +305,87 @@ impl Renderer {
         match ui.screen {
             Screen::Home => self.home(ui, status, &mut icon_blits),
             Screen::Settings => self.settings(ui, status),
-            Screen::ConfirmKindle => {
-                // On a clean page: e-ink has no dimming, and a box over the grid cuts through labels.
-                self.status_strip(&l, status);
-                self.confirm(&l);
-            }
+            // The dialog is a pop-up over the grid, drawn last (below).
+            Screen::ConfirmKindle => self.home(ui, status, &mut icon_blits),
             // A sleep picture replaces the text, except for a battery warning, which matters more.
             Screen::Sleep => {
                 if self.sleep_image.is_none() || ui.battery_message().is_some() {
                     self.sleep(&l, ui.battery_message());
                 }
             }
-            Screen::AppMenu => self.app_menu(ui, &mut icon_blits),
+            Screen::AppMenu => self.app_menu(ui, status, &mut icon_blits),
             Screen::Extensions => self.extensions(ui),
         }
+        let width = self.width as usize;
         let mut out = self.finish_gray();
+        // Pictures (icons, the sleep picture) keep their look in dark mode.
+        let mut pictures = Vec::new();
         for (rect, id) in icon_blits {
             if let Some(tile) = self.icons.get(&id) {
-                blit(&mut out, self.width as usize, rect, tile);
+                blit(&mut out, width, rect, tile);
+                pictures.push(((rect.x, rect.y, rect.w, rect.h), rect.w as f32 * image::ICON_RADIUS));
             }
         }
         if ui.screen == Screen::Sleep && ui.battery_message().is_none() {
             if let Some(picture) = &self.sleep_image {
                 let s = l.screen();
                 let r = Rect::new((s.w - picture.width as i32) / 2, (s.h - picture.height as i32) / 2, picture.width as i32, picture.height as i32);
-                blit(&mut out, self.width as usize, r, picture);
+                blit(&mut out, width, r, picture);
+                pictures.push(((r.x, r.y, r.w, r.h), 0.0));
             }
         }
-        if let (Screen::Home, Some(slot)) = (ui.screen, ui.pressed) {
-            invert(&mut out, self.width as usize, l.cell(slot).inset(6));
+        // Pop-ups are drawn in a second pass and copied over the screen, so icon pictures stay under them.
+        let popup = match ui.screen {
+            Screen::ConfirmKindle => Some(l.confirm_box()),
+            Screen::AppMenu => Some(l.menu_box(ui.menu_anchor(), ui.menu_actions().len())),
+            _ => None,
+        };
+        if let Some(b) = popup {
+            self.ctx.reset();
+            self.fill(l.screen(), WHITE);
+            match ui.screen {
+                Screen::ConfirmKindle => self.confirm(&l),
+                _ => self.app_menu_box(ui),
+            }
+            let layer = self.finish_gray();
+            image::copy_rounded(&mut out, &layer, width, (b.x - POPUP_HALO, b.y - POPUP_HALO, b.w + 2 * POPUP_HALO, b.h + 2 * POPUP_HALO), POPUP_RADIUS + POPUP_HALO as f32);
+        }
+        if status.dark_mode && ui.screen != Screen::Sleep {
+            let halo = popup.map(|b| b.inset(-POPUP_HALO));
+            image::invert_except(&mut out, width, &pictures, halo.map(|h| (h.x, h.y, h.w, h.h)));
+        }
+        // The pressed look: only the touched icon darkens.
+        if let (Screen::Home, Some(r)) = (ui.screen, ui.pressed) {
+            image::darken_icon(&mut out, width, r.x, r.y, r.w);
         }
         out
+    }
+
+    /// The "Opening the Kindle UI" dialog, where the confirm dialog was: a frame of the whole screen in which only
+    /// the returned rectangle (the dialog and its margin) is drawn. The caller shows that rectangle over what is on
+    /// the screen. `step` fills one more block each time.
+    pub fn waiting_dialog(&mut self, l: &Layout, step: usize, dark: bool) -> (Vec<u8>, Rect) {
+        const BLOCKS: i32 = 10;
+        self.ctx.reset();
+        self.fill(l.screen(), WHITE);
+        let b = l.confirm_box();
+        self.rounded_frame(b, POPUP_RADIUS as f64, 6, BLACK, WHITE);
+        let inner = b.inset(48);
+        self.text(Text { text: "Opening the Kindle UI", x: inner.x as f32, y: inner.y as f32, w: inner.w as f32, size: 50.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.text(Text { text: "This takes about a minute. The Kindle library opens by itself.", x: inner.x as f32, y: inner.y as f32 + 100.0, w: inner.w as f32, size: 36.0, bold: false, align: Align::Start, lines: 3, gray: BLACK });
+        let (bw, gap, bh) = (72, 18, 40);
+        let x0 = b.x + (b.w - (BLOCKS * bw + (BLOCKS - 1) * gap)) / 2;
+        let filled = (step % (BLOCKS as usize + 1)) as i32;
+        for i in 0..BLOCKS {
+            let r = Rect::new(x0 + i * (bw + gap), b.bottom() - 48 - bh - 30, bw, bh);
+            self.rounded_frame(r, 8.0, 4, BLACK, if i < filled { BLACK } else { WHITE });
+        }
+        let mut out = self.finish_gray();
+        let halo = b.inset(-POPUP_HALO);
+        if dark {
+            image::invert_except(&mut out, self.width as usize, &[], None);
+        }
+        (out, halo)
     }
 
     fn status_strip(&mut self, l: &Layout, s: &Status) {
@@ -358,20 +416,14 @@ impl Renderer {
         self.fill(Rect::new(0, r.bottom() - 4, r.w, 4), BLACK);
     }
 
+    /// The home screen: status bar, the page's icons with their names, and the page dots.
     fn home(&mut self, ui: &Ui, s: &Status, icon_blits: &mut Vec<(Rect, String)>) {
         let l = ui.layout;
         self.status_strip(&l, s);
         let page: Vec<(usize, App)> = ui.page_apps().map(|(i, a)| (i, a.clone())).collect();
         for (slot, app) in page {
-            let icon = l.icon(slot);
+            self.app_icon(l.icon(slot), &app, icon_blits);
             let label = l.label(slot);
-            let has_tile = !matches!(app.icon, IconSource::None) && self.icons.contains_key(&app.id);
-            if has_tile {
-                self.frame(icon.inset(-3), 3, BLACK);
-                icon_blits.push((icon, app.id.clone()));
-            } else {
-                self.monogram(icon, &app);
-            }
             self.text(Text {
                 text: &app.name,
                 x: label.x as f32,
@@ -380,19 +432,112 @@ impl Renderer {
                 size: LABEL_SIZE,
                 bold: false,
                 align: Align::Center,
-                lines: 2,
+                lines: 1,
                 gray: BLACK,
             });
-            let _ = LABEL_LINE;
         }
-        self.footer(ui);
+        self.home_footer(ui);
     }
 
-    /// An app without an icon: its initials on a card. Built-ins are drawn inverted.
+    /// An app's icon in a rounded square: its picture (blitted after rendering), a glyph for the built-ins, or
+    /// its initials.
+    fn app_icon(&mut self, r: Rect, app: &App, icon_blits: &mut Vec<(Rect, String)>) {
+        if !matches!(app.icon, IconSource::None) && self.icons.contains_key(&app.id) {
+            icon_blits.push((r, app.id.clone()));
+        } else if !self.glyph_icon(r, &app.launch) {
+            self.monogram(r, app);
+        }
+    }
+
+    fn icon_radius(r: Rect) -> f64 {
+        (r.w as f32 * image::ICON_RADIUS) as f64
+    }
+
+    /// The built-ins' icons: white glyphs on black. Returns false for other apps.
+    fn glyph_icon(&mut self, r: Rect, launch: &Launch) -> bool {
+        let glyph: fn(&mut Renderer, f64, f64, f64) = match launch {
+            Launch::Settings => Renderer::gear,
+            Launch::KindleMode => Renderer::book,
+            Launch::Extensions => Renderer::four_squares,
+            _ => return false,
+        };
+        self.rounded(r, Self::icon_radius(r), BLACK);
+        glyph(self, (r.x + r.w / 2) as f64, (r.y + r.h / 2) as f64, r.w as f64);
+        true
+    }
+
+    /// Settings: a gear with eight teeth, centred at (`cx`, `cy`) on an icon of side `s`.
+    fn gear(&mut self, cx: f64, cy: f64, s: f64) {
+        self.ctx.set_paint(gray(WHITE));
+        for i in 0..8 {
+            let turn = Affine::translate((cx, cy)) * Affine::rotate(i as f64 * std::f64::consts::FRAC_PI_4);
+            self.ctx.set_transform(turn);
+            let tooth = kurbo::RoundedRect::new(-0.065 * s, -0.36 * s, 0.065 * s, -0.2 * s, 0.02 * s).to_path(0.1);
+            self.ctx.fill_path(&tooth);
+        }
+        self.ctx.set_transform(Affine::IDENTITY);
+        self.ctx.fill_path(&kurbo::Circle::new((cx, cy), 0.27 * s).to_path(0.1));
+        self.ctx.set_paint(gray(BLACK));
+        self.ctx.fill_path(&kurbo::Circle::new((cx, cy), 0.11 * s).to_path(0.1));
+    }
+
+    /// The Kindle UI: an open book, two pages with lines of text.
+    fn book(&mut self, cx: f64, cy: f64, s: f64) {
+        let (pw, ph, gap) = (0.27 * s, 0.44 * s, 0.035 * s);
+        for side in [-1.0, 1.0] {
+            let x0 = if side < 0.0 { cx - gap / 2.0 - pw } else { cx + gap / 2.0 };
+            self.ctx.set_transform(Affine::IDENTITY);
+            self.ctx.set_paint(gray(WHITE));
+            self.ctx.fill_path(&kurbo::RoundedRect::new(x0, cy - ph / 2.0, x0 + pw, cy + ph / 2.0, 0.03 * s).to_path(0.1));
+            self.ctx.set_paint(gray(BLACK));
+            for line in 0..4 {
+                let y = cy - ph / 2.0 + 0.09 * s + line as f64 * 0.085 * s;
+                self.ctx.fill_rect(&kurbo::Rect::new(x0 + 0.05 * s, y, x0 + pw - 0.05 * s, y + 0.025 * s));
+            }
+        }
+    }
+
+    /// Extensions: four rounded squares.
+    fn four_squares(&mut self, cx: f64, cy: f64, s: f64) {
+        let (q, gap) = (0.2 * s, 0.07 * s);
+        self.ctx.set_transform(Affine::IDENTITY);
+        self.ctx.set_paint(gray(WHITE));
+        for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let x0 = if dx < 0.0 { cx - gap / 2.0 - q } else { cx + gap / 2.0 };
+            let y0 = if dy < 0.0 { cy - gap / 2.0 - q } else { cy + gap / 2.0 };
+            self.ctx.fill_path(&kurbo::RoundedRect::new(x0, y0, x0 + q, y0 + q, 0.05 * s).to_path(0.1));
+        }
+    }
+
+    /// The bottom row: a notice, a battery warning, or the page dots.
+    fn home_footer(&mut self, ui: &Ui) {
+        let f = ui.layout.home_footer();
+        let message = ui.notice.clone().or_else(|| ui.battery_message());
+        if let Some(text) = message {
+            let bold = ui.notice.is_none();
+            self.text(Text { text: &text, x: 40.0, y: f.y as f32 + 18.0, w: f.w as f32 - 80.0, size: 30.0, bold, align: Align::Center, lines: 1, gray: BLACK });
+            return;
+        }
+        let pages = ui.pages();
+        if pages < 2 {
+            return;
+        }
+        let (d, step) = (18, 44);
+        let x0 = (f.w - (pages as i32 - 1) * step - d) / 2;
+        for p in 0..pages {
+            let dot = Rect::new(x0 + p as i32 * step, f.y + (f.h - d) / 2, d, d);
+            if p == ui.page {
+                self.rounded(dot, d as f64 / 2.0, BLACK);
+            } else {
+                self.rounded_frame(dot, d as f64 / 2.0, 3, BLACK, WHITE);
+            }
+        }
+    }
+
+    /// An app without an icon: its initials in a white rounded square with an outline.
     fn monogram(&mut self, r: Rect, app: &App) {
-        let builtin = matches!(app.launch, kl_core::Launch::Settings | kl_core::Launch::KindleMode | kl_core::Launch::Extensions);
-        let (bg, fg) = if builtin { (BLACK, WHITE) } else { (WHITE, BLACK) };
-        self.rounded_frame(r, 22.0, 5, BLACK, bg);
+        let (bg, fg) = (WHITE, BLACK);
+        self.rounded_frame(r, Self::icon_radius(r), 4, BLACK, bg);
         let initials: String = app
             .name
             .split_whitespace()
@@ -400,7 +545,7 @@ impl Renderer {
             .take(2)
             .flat_map(char::to_uppercase)
             .collect();
-        let size = (r.w as f32 * 0.42).min(130.0);
+        let size = (r.w as f32 * 0.36).min(120.0);
         self.text(Text {
             text: if initials.is_empty() { "?" } else { &initials },
             x: r.x as f32,
@@ -412,32 +557,6 @@ impl Renderer {
             lines: 1,
             gray: fg,
         });
-    }
-
-    fn footer(&mut self, ui: &Ui) {
-        let f = ui.layout.footer();
-        self.fill(Rect::new(0, f.y, f.w, 3), BLACK);
-        if let Some(notice) = &ui.notice {
-            let n = notice.clone();
-            self.text(Text { text: &n, x: 40.0, y: f.y as f32 + 26.0, w: f.w as f32 - 80.0, size: 32.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
-            return;
-        }
-        // A battery warning takes the centre of the footer; the page controls stay at the sides.
-        let pages = ui.pages();
-        if let Some(message) = ui.battery_message() {
-            self.text(Text { text: &message, x: 300.0, y: f.y as f32 + 28.0, w: f.w as f32 - 600.0, size: 30.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
-        } else if pages > 1 {
-            let label = format!("{} / {}", ui.page + 1, pages);
-            self.text(Text { text: &label, x: 0.0, y: f.y as f32 + 22.0, w: f.w as f32, size: 38.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
-        }
-        if pages > 1 {
-            if ui.page > 0 {
-                self.text(Text { text: "‹  Previous", x: 40.0, y: f.y as f32 + 26.0, w: 240.0, size: 34.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
-            }
-            if ui.page + 1 < pages {
-                self.text(Text { text: "Next  ›", x: f.w as f32 - 280.0, y: f.y as f32 + 26.0, w: 240.0, size: 34.0, bold: false, align: Align::End, lines: 1, gray: BLACK });
-            }
-        }
     }
 
     fn button(&mut self, r: Rect, label: &str, filled: bool) {
@@ -485,39 +604,40 @@ impl Renderer {
         }
     }
 
-    /// The app menu: the app's name, four buttons and its tile as it looks now.
-    fn app_menu(&mut self, ui: &Ui, icon_blits: &mut Vec<(Rect, String)>) {
+    /// The app menu under its box: the home screen, with a ring around the icon being edited.
+    fn app_menu(&mut self, ui: &Ui, s: &Status, icon_blits: &mut Vec<(Rect, String)>) {
+        self.home(ui, s, icon_blits);
+        let Some(app) = ui.menu_app().cloned() else { return };
+        let anchor = ui.menu_anchor();
+        let ring = anchor.inset(-10);
+        self.rounded_frame(ring, Self::icon_radius(ring), 4, BLACK, WHITE);
+        self.app_icon(anchor, &app, icon_blits);
+    }
+
+    /// The app menu's box beside the icon: the app's name, then one row per action (a pop-up, drawn last).
+    fn app_menu_box(&mut self, ui: &Ui) {
         let l = ui.layout;
         let Some(app) = ui.menu_app().cloned() else { return };
-        let title = l.title();
-        let name_w = (l.done_button().x - 80) as f32;
-        self.text(Text { text: &app.name, x: 40.0, y: 38.0, w: name_w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
-        self.button(l.done_button(), "Done", true);
-        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
-        let icon_label = match &app.icon {
-            IconSource::File(path) => format!("Change icon: {}", path.rsplit('/').next().unwrap_or(path)),
-            _ => "Change icon".to_string(),
-        };
-        for (b, r) in l.app_menu_buttons() {
-            let label = match b {
+        let (anchor, actions) = (ui.menu_anchor(), ui.menu_actions());
+        let b = l.menu_box(anchor, actions.len());
+        self.rounded_frame(b, POPUP_RADIUS as f64, 4, BLACK, WHITE);
+        let name_row = Rect::new(b.x, b.y, b.w, l.menu_row(anchor, actions.len(), 0).y - b.y);
+        self.text(Text { text: &app.name, x: (b.x + 36) as f32, y: (name_row.y + 28) as f32, w: (b.w - 72) as f32, size: 36.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        for (i, action) in actions.iter().enumerate() {
+            let r = l.menu_row(anchor, actions.len(), i);
+            self.fill(Rect::new(b.x + 4, r.y, b.w - 8, 2), BLACK);
+            let label = match action {
                 Button::MenuEarlier => "Move earlier".to_string(),
                 Button::MenuLater => "Move later".to_string(),
-                Button::MenuIcon => icon_label.clone(),
+                Button::MenuIcon => match &app.icon {
+                    IconSource::File(path) => format!("Change icon ({})", path.rsplit('/').next().unwrap_or(path)),
+                    _ => "Change icon".to_string(),
+                },
                 Button::MenuHide => "Hide".to_string(),
                 _ => String::new(),
             };
-            self.button(r, &label, false);
+            self.text(Text { text: &label, x: (r.x + 36) as f32, y: (r.y + 28) as f32, w: (r.w - 72) as f32, size: 36.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
         }
-        let preview = l.app_menu_preview();
-        if !matches!(app.icon, IconSource::None) && self.icons.contains_key(&app.id) {
-            self.frame(preview.inset(-3), 3, BLACK);
-            icon_blits.push((preview, app.id.clone()));
-        } else {
-            self.monogram(preview, &app);
-        }
-        let position = format!("Place {} of {}", ui.menu + 1, ui.apps().len());
-        self.text(Text { text: &position, x: 0.0, y: (preview.bottom() + 24) as f32, w: title.w as f32, size: 34.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
-        self.footer(ui);
     }
 
     fn settings(&mut self, ui: &Ui, s: &Status) {
@@ -548,11 +668,13 @@ impl Renderer {
                     0 => "None. Long-press to hide".into(),
                     n => format!("{n} hidden"),
                 },
-                Row::KindleUi => "Stock Kindle, about 10 s".into(),
+                Row::KindleUi => "Stock Kindle, about a minute".into(),
+                Row::DarkMode => if s.dark_mode { "On: white on black".into() } else { "Off".into() },
+                Row::Animation => if s.animation { "On: a zoom when an app opens".into() } else { "Off".into() },
             };
             let r = row.rect;
-            self.text(Text { text: row.row.label(), x: r.x as f32, y: r.y as f32 + 30.0, w: 520.0, size: 40.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
-            self.text(Text { text: &value, x: r.x as f32, y: r.y as f32 + 86.0, w: 560.0, size: 32.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            self.text(Text { text: row.row.label(), x: r.x as f32, y: r.y as f32 + 14.0, w: 520.0, size: 38.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+            self.text(Text { text: &value, x: r.x as f32, y: r.y as f32 + 64.0, w: 560.0, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
             for (b, rect) in row.buttons {
                 // Minus and plus are drawn as bars: the bundled font has no minus sign.
                 if matches!(b, Button::LightDown | Button::WarmDown | Button::LightUp | Button::WarmUp) {
@@ -573,6 +695,8 @@ impl Renderer {
                     Button::ShowHidden => "Show all",
                     Button::SleepScreen => "Switch",
                     Button::KindleUi => "Open",
+                    Button::DarkMode => if s.dark_mode { "Turn off" } else { "Turn on" },
+                    Button::Animation => if s.animation { "Turn off" } else { "Turn on" },
                     _ => "",
                 };
                 self.button(rect, label, false);
@@ -594,11 +718,11 @@ impl Renderer {
 
     fn confirm(&mut self, l: &Layout) {
         let b = l.confirm_box();
-        self.rounded_frame(b, 24.0, 6, BLACK, WHITE);
+        self.rounded_frame(b, POPUP_RADIUS as f64, 6, BLACK, WHITE);
         let inner = b.inset(48);
         self.text(Text { text: "Open the Kindle UI?", x: inner.x as f32, y: inner.y as f32, w: inner.w as f32, size: 50.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
         self.text(Text {
-            text: "The launcher closes and the stock Kindle UI starts, which takes about 10 seconds. To come back, open “Launcher” in the Kindle library.",
+            text: "The launcher closes and the stock Kindle UI starts, which takes about a minute. To come back, open “Launcher” in the Kindle library.",
             x: inner.x as f32,
             y: inner.y as f32 + 100.0,
             w: inner.w as f32,
@@ -623,54 +747,43 @@ impl Renderer {
         self.finish_gray()
     }
 
-    /// The screen shown while the stock Kindle UI starts (about a minute): a title, a line of text and a row of
-    /// blocks that fill one per `step` and start again, so the e-ink shows movement with small partial updates.
-    pub fn waiting(&mut self, title: &str, body: &str, step: usize) -> Vec<u8> {
-        const BLOCKS: i32 = 10;
-        self.ctx.reset();
-        let (w, h) = (self.width as i32, self.ctx.height() as i32);
-        self.fill(Rect::new(0, 0, w, h), WHITE);
-        self.text(Text { text: title, x: 60.0, y: h as f32 / 2.0 - 220.0, w: w as f32 - 120.0, size: 64.0, bold: true, align: Align::Center, lines: 2, gray: BLACK });
-        self.text(Text { text: body, x: 80.0, y: h as f32 / 2.0 - 90.0, w: w as f32 - 160.0, size: 38.0, bold: false, align: Align::Center, lines: 2, gray: BLACK });
-        let (bw, gap, bh) = (72, 18, 40);
-        let x0 = (w - (BLOCKS * bw + (BLOCKS - 1) * gap)) / 2;
-        let filled = (step % (BLOCKS as usize + 1)) as i32;
-        for i in 0..BLOCKS {
-            let r = Rect::new(x0 + i * (bw + gap), h / 2 + 40, bw, bh);
-            self.rounded_frame(r, 8.0, 4, BLACK, if i < filled { BLACK } else { WHITE });
-        }
-        self.finish_gray()
-    }
-
-    /// The launcher's own library icon (600 × 920): a 3 × 3 grid of tiles and the name.
-    pub fn launcher_icon(&mut self) -> Vec<u8> {
+    /// The launcher's own library icon (600 × 920): a 3 × 3 grid of rounded-square tiles, as on the home screen,
+    /// with `logo` (the Primitive logo) in the centre tile, and the name.
+    pub fn launcher_icon(&mut self, logo: Option<&GrayImage>) -> Vec<u8> {
         self.ctx.reset();
         let (w, h) = (self.width as i32, self.ctx.height() as i32);
         self.fill(Rect::new(0, 0, w, h), WHITE);
         self.rounded_frame(Rect::new(30, 30, w - 60, h - 60), 40.0, 10, BLACK, WHITE);
-        let (cell, gap) = (110, 26);
-        let (gx, gy) = ((w - 3 * cell - 2 * gap) / 2, 90);
+        let (cell, gap) = (140, 26);
+        let (gx, gy) = ((w - 3 * cell - 2 * gap) / 2, 110);
+        let tile = |i: i32| Rect::new(gx + (i % 3) * (cell + gap), gy + (i / 3) * (cell + gap), cell, cell);
         for i in 0..9 {
-            let (c, r) = (i % 3, i / 3);
-            let tile = Rect::new(gx + c * (cell + gap), gy + r * (cell + gap) * 3 / 2, cell, cell * 3 / 2);
-            if i == 4 {
-                self.rounded(tile, 14.0, BLACK);
+            let radius = cell as f64 * image::ICON_RADIUS as f64;
+            if i == 4 && logo.is_none() {
+                self.rounded(tile(i), radius, BLACK);
             } else {
-                self.rounded_frame(tile, 14.0, 8, BLACK, WHITE);
+                self.rounded_frame(tile(i), radius, 8, BLACK, WHITE);
             }
         }
-        self.text(Text { text: "Launcher", x: 0.0, y: h as f32 - 200.0, w: w as f32, size: 84.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
-        self.finish_gray()
+        self.text(Text { text: "Launcher", x: 0.0, y: h as f32 - 220.0, w: w as f32, size: 84.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+        let mut out = self.finish_gray();
+        if let Some(logo) = logo {
+            let inner = tile(4).inset(18);
+            let mut fitted = image::fit(logo, inner.w as u32, inner.h as u32);
+            image::dither16(&mut fitted);
+            blit(&mut out, w as usize, inner, &fitted);
+        }
+        out
     }
 
+    /// The sleep screen when there is no picture: only used for a battery warning (otherwise the driver draws
+    /// nothing and the Kindle's screensaver, or the last screen, stays).
     fn sleep(&mut self, l: &Layout, warning: Option<String>) {
         let s = l.screen();
         self.frame(s.inset(40), 6, BLACK);
-        self.text(Text { text: "Sleeping", x: 0.0, y: s.h as f32 / 2.0 - 120.0, w: s.w as f32, size: 96.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
-        self.text(Text { text: "Press the power button to wake", x: 0.0, y: s.h as f32 / 2.0 + 20.0, w: s.w as f32, size: 40.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
-        if let Some(message) = warning {
-            self.text(Text { text: &message, x: 60.0, y: s.h as f32 / 2.0 + 120.0, w: s.w as f32 - 120.0, size: 36.0, bold: true, align: Align::Center, lines: 2, gray: BLACK });
-        }
+        let message = warning.unwrap_or_default();
+        self.text(Text { text: "Connect the charger", x: 0.0, y: s.h as f32 / 2.0 - 120.0, w: s.w as f32, size: 80.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+        self.text(Text { text: &message, x: 60.0, y: s.h as f32 / 2.0 + 20.0, w: s.w as f32 - 120.0, size: 40.0, bold: false, align: Align::Center, lines: 2, gray: BLACK });
     }
 }
 
@@ -693,16 +806,6 @@ fn blit(out: &mut [u8], width: usize, r: Rect, tile: &GrayImage) {
         let n = (tile.width as usize).min(r.w.max(0) as usize).min(width.saturating_sub(r.x as usize));
         let src = &tile.pixels[ty * tile.width as usize..ty * tile.width as usize + n];
         out[y * width + r.x as usize..y * width + r.x as usize + n].copy_from_slice(src);
-    }
-}
-
-/// Invert a rectangle (the pressed tile).
-fn invert(out: &mut [u8], width: usize, r: Rect) {
-    let height = out.len() / width;
-    for y in r.y.max(0) as usize..(r.bottom().max(0) as usize).min(height) {
-        for x in r.x.max(0) as usize..(r.right().max(0) as usize).min(width) {
-            out[y * width + x] = 255 - out[y * width + x];
-        }
     }
 }
 
@@ -730,6 +833,29 @@ pub fn changed_rows(old: &[u8], new: &[u8], width: usize) -> Option<(usize, usiz
     Some((first, last - first + 1))
 }
 
+/// The box around every changed pixel: `(x, y, w, h)`, with `x` and `w` on 8-pixel columns (the e-ink
+/// driver's update regions), or `None` when the frames are equal. A frame of another size changes everything.
+pub fn changed_rect(old: &[u8], new: &[u8], width: usize) -> Option<(usize, usize, usize, usize)> {
+    let rows = new.len() / width;
+    if old.len() != new.len() {
+        return Some((0, 0, width, rows));
+    }
+    let (y, h) = changed_rows(old, new, width)?;
+    let (mut left, mut right) = (width, 0);
+    for row in y..y + h {
+        let (o, n) = (&old[row * width..(row + 1) * width], &new[row * width..(row + 1) * width]);
+        if let Some(first) = (0..left).find(|&x| o[x] != n[x]) {
+            left = first;
+        }
+        if let Some(last) = (right..width).rev().find(|&x| o[x] != n[x]) {
+            right = right.max(last + 1);
+        }
+    }
+    let x = left / 8 * 8;
+    let end = right.div_ceil(8) * 8;
+    Some((x, y, end.min(width) - x, h))
+}
+
 /// Whether a band of pixels is pure black and white (the non-flashing DU waveform can draw it).
 pub fn is_black_and_white(pixels: &[u8]) -> bool {
     pixels.iter().all(|&p| p == 0 || p == 255)
@@ -740,10 +866,10 @@ pub fn is_black_and_white(pixels: &[u8]) -> bool {
 /// panel's 16 grays.
 pub fn sleep_image(path: &std::path::Path, w: u32, h: u32) -> Result<GrayImage, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    image::icon_tile(&bytes, w, h)
+    image::picture_tile(&bytes, w, h)
 }
 
-/// The dithered icon tile for `app`, sized `w` × `h`, from its `# Icon:` data or file. With `cache`, tiles
+/// The dithered rounded-square icon tile for `app`, of side `w` (`h` is the same), from its `# Icon:` data or file. With `cache`, tiles
 /// are read from and written to that folder (keyed by the source bytes and size). `Ok(None)` when the app
 /// has no icon.
 pub fn app_icon(app: &App, w: u32, h: u32, cache: Option<&std::path::Path>) -> Result<Option<GrayImage>, String> {
@@ -751,6 +877,7 @@ pub fn app_icon(app: &App, w: u32, h: u32, cache: Option<&std::path::Path>) -> R
         IconSource::None => return Ok(None),
         IconSource::Data(b64) => kl_core::base64::decode(b64).ok_or("icon: bad base64")?,
         IconSource::File(path) => std::fs::read(path).map_err(|e| format!("icon {path}: {e}"))?,
+        IconSource::Bundled(bytes) => bytes.to_vec(),
     };
     let key = image::cache_key(&bytes, w, h);
     if let Some(dir) = cache {
@@ -760,7 +887,7 @@ pub fn app_icon(app: &App, w: u32, h: u32, cache: Option<&std::path::Path>) -> R
             }
         }
     }
-    let tile = image::icon_tile(&bytes, w, h)?;
+    let tile = image::icon_tile(&bytes, w.min(h))?;
     if let Some(dir) = cache {
         let _ = std::fs::create_dir_all(dir);
         let tmp = dir.join(format!("{key}.tmp"));
@@ -809,12 +936,40 @@ mod tests {
     }
 
     #[test]
-    fn blit_and_invert_stay_inside() {
+    fn the_bundled_kindle_ui_icon_makes_a_tile() {
+        let kindle = App {
+            id: "kindle".into(),
+            name: "Kindle UI".into(),
+            icon: IconSource::Bundled(kl_core::apps::KINDLE_UI_ICON),
+            launch: Launch::KindleMode,
+            dir: "/".into(),
+            order: None,
+            hidden: false,
+            background: false,
+        };
+        let tile = app_icon(&kindle, 184, 184, None).unwrap().unwrap();
+        assert_eq!((tile.width, tile.height), (184, 184));
+        // The reader's silhouette is black; the sky above it is a mid gray.
+        assert!(tile.pixels.iter().filter(|&&p| p == 0).count() > 184 * 184 / 5);
+        assert!(tile.pixels.iter().any(|&p| p > 60 && p < 200));
+    }
+
+    #[test]
+    fn blit_stays_inside() {
         let mut out = vec![255u8; 10 * 4];
         let tile = GrayImage { width: 3, height: 3, pixels: vec![0; 9] };
         blit(&mut out, 10, Rect::new(8, 2, 3, 3), &tile);
         assert_eq!(out.iter().filter(|&&p| p == 0).count(), 4);
-        invert(&mut out, 10, Rect::new(-5, -5, 100, 100));
-        assert_eq!(out.iter().filter(|&&p| p == 255).count(), 4);
+    }
+
+    #[test]
+    fn changed_rect_is_the_box_around_the_changes_on_8_pixel_columns() {
+        let a = vec![0u8; 32 * 6];
+        let mut b = a.clone();
+        assert_eq!(changed_rect(&a, &b, 32), None);
+        b[32 + 9] = 9;
+        b[32 * 4 + 20] = 9;
+        assert_eq!(changed_rect(&a, &b, 32), Some((8, 1, 16, 4)));
+        assert_eq!(changed_rect(&a, &[0u8; 4], 32), Some((0, 0, 32, 0)));
     }
 }

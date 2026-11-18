@@ -32,6 +32,19 @@ impl Rect {
     }
 }
 
+/// The steps of the opening zoom: `n` rectangles growing from `from` (the tapped icon) to `to` (the screen),
+/// eased out (big steps first), the last one `to`.
+pub fn zoom_steps(from: Rect, to: Rect, n: usize) -> Vec<Rect> {
+    let lerp = |a: i32, b: i32, t: f32| a + ((b - a) as f32 * t).round() as i32;
+    (1..=n)
+        .map(|i| {
+            let t = i as f32 / n as f32;
+            let t = 1.0 - (1.0 - t) * (1.0 - t);
+            Rect::new(lerp(from.x, to.x, t), lerp(from.y, to.y, t), lerp(from.w, to.w, t), lerp(from.h, to.h, t))
+        })
+        .collect()
+}
+
 /// Controls on the Settings screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
@@ -54,14 +67,18 @@ pub enum Button {
     MenuHide,
     ConfirmCancel,
     ConfirmOpen,
+    DarkMode,
+    Animation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Frontlight,
     Warmth,
+    DarkMode,
     Wifi,
     Rotation,
+    Animation,
     Ssh,
     Autostart,
     Hidden,
@@ -70,11 +87,13 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 9] = [
+    pub const ALL: [Row; 11] = [
         Row::Frontlight,
         Row::Warmth,
+        Row::DarkMode,
         Row::Wifi,
         Row::Rotation,
+        Row::Animation,
         Row::Ssh,
         Row::Autostart,
         Row::Hidden,
@@ -86,6 +105,8 @@ impl Row {
         match self {
             Row::Frontlight => "Frontlight",
             Row::Warmth => "Warmth",
+            Row::DarkMode => "Dark mode",
+            Row::Animation => "Opening animation",
             Row::Wifi => "Wi-Fi",
             Row::Rotation => "Screen",
             Row::Ssh => "SSH (port 2222)",
@@ -113,23 +134,32 @@ pub struct Layout {
 }
 
 pub const STATUS_H: i32 = 112;
-pub const FOOTER_H: i32 = 100;
+/// The row of page dots (and notices) at the bottom of the home screen.
+pub const FOOTER_H: i32 = 90;
 pub const MARGIN: i32 = 40;
-/// Label text size and line height on tiles.
-pub const LABEL_SIZE: f32 = 34.0;
-pub const LABEL_LINE: i32 = 44;
-const LABEL_H: i32 = LABEL_LINE * 2 + 4;
+/// The home grid's side margin.
+const GRID_SIDE: i32 = 24;
+/// Icons are rounded squares of one size: at most this many pixels.
+const ICON_MAX: i32 = 184;
+/// Gap between an icon and its name.
+const LABEL_GAP: i32 = 12;
+/// Label text size and line height under icons (one line).
+pub const LABEL_SIZE: f32 = 30.0;
+pub const LABEL_LINE: i32 = 40;
+/// The app menu (long press): a box beside the icon, one row per action under the app's name.
+const MENU_W: i32 = 600;
+const MENU_ROW_H: i32 = 100;
 const TITLE_H: i32 = 130;
 /// One row of the Extensions list.
 const LIST_ROW_H: i32 = 120;
-const ROW_H: i32 = 140;
+const ROW_H: i32 = 116;
 const BUTTON_W: i32 = 150;
 const WIDE_W: i32 = 300;
 const BUTTON_H: i32 = 100;
 
 impl Layout {
     pub fn new(width: u32, height: u32, cols: u32, rows: u32) -> Layout {
-        Layout { width: width as i32, height: height as i32, cols: cols.clamp(2, 4) as i32, rows: rows.clamp(2, 4) as i32 }
+        Layout { width: width as i32, height: height as i32, cols: cols.clamp(3, 5) as i32, rows: rows.clamp(3, 6) as i32 }
     }
 
     pub fn screen(&self) -> Rect {
@@ -140,13 +170,29 @@ impl Layout {
         Rect::new(0, 0, self.width, STATUS_H)
     }
 
+    /// The app grid, between the status bar and the page dots.
     pub fn grid(&self) -> Rect {
-        Rect::new(0, STATUS_H, self.width, self.height - STATUS_H - FOOTER_H)
+        let top = STATUS_H + 20;
+        Rect::new(GRID_SIDE, top, self.width - 2 * GRID_SIDE, self.home_footer().y - top)
     }
 
+    /// The bottom bar of list screens (Extensions): page controls.
     pub fn footer(&self) -> Rect {
-        Rect::new(0, self.height - FOOTER_H, self.width, FOOTER_H)
+        Rect::new(0, self.height - 100, self.width, 100)
     }
+
+    /// The row of page dots at the bottom of the home screen. Notices are shown here too.
+    pub fn home_footer(&self) -> Rect {
+        Rect::new(0, self.height - 20 - FOOTER_H, self.width, FOOTER_H)
+    }
+
+    /// The side of every icon: as large as the cell allows, at most `ICON_MAX`.
+    pub fn icon_size(&self) -> i32 {
+        let grid = self.grid();
+        let (cw, ch) = (grid.w / self.cols, grid.h / self.rows);
+        ICON_MAX.min(cw - 2 * MARGIN).min(ch - LABEL_GAP - LABEL_LINE - 16)
+    }
+
 
     pub fn per_page(&self) -> usize {
         (self.cols * self.rows) as usize
@@ -164,22 +210,19 @@ impl Layout {
         Rect::new(grid.x + col * cw, grid.y + row * ch, cw, ch)
     }
 
-    /// The icon box in a cell: 2:3 portrait, like a book cover, centred.
+    /// The icon in a cell: a square of `icon_size`, centred with its name under it.
     pub fn icon(&self, slot: usize) -> Rect {
         let cell = self.cell(slot);
-        let mut h = cell.h - 18 - 12 - LABEL_H - 10;
-        let mut w = h * 2 / 3;
-        if w > cell.w - 2 * MARGIN {
-            w = cell.w - 2 * MARGIN;
-            h = w * 3 / 2;
-        }
-        Rect::new(cell.x + (cell.w - w) / 2, cell.y + 18, w, h)
+        let s = self.icon_size();
+        let top = cell.y + (cell.h - s - LABEL_GAP - LABEL_LINE) / 2;
+        Rect::new(cell.x + (cell.w - s) / 2, top, s, s)
     }
 
+    /// The app's name under its icon: one line.
     pub fn label(&self, slot: usize) -> Rect {
         let cell = self.cell(slot);
         let icon = self.icon(slot);
-        Rect::new(cell.x + 12, icon.bottom() + 12, cell.w - 24, LABEL_H)
+        Rect::new(cell.x + 6, icon.bottom() + LABEL_GAP, cell.w - 12, LABEL_LINE)
     }
 
     /// The slot under a point on the home screen.
@@ -215,6 +258,8 @@ impl Layout {
                     Row::Frontlight => pair(Button::LightDown, Button::LightUp),
                     Row::Warmth => pair(Button::WarmDown, Button::WarmUp),
                     Row::Wifi => wide(Button::Wifi),
+                    Row::DarkMode => wide(Button::DarkMode),
+                    Row::Animation => wide(Button::Animation),
                     Row::Rotation => pair(Button::Rotation, Button::RotationAuto),
                     Row::Ssh => wide(Button::Ssh),
                     Row::Autostart => wide(Button::Autostart),
@@ -233,26 +278,21 @@ impl Layout {
         Rect::new(MARGIN, top, self.width - 2 * MARGIN, self.height - top - MARGIN)
     }
 
-    /// The app menu (long press on a tile): four wide buttons under the title.
-    pub fn app_menu_buttons(&self) -> [(Button, Rect); 4] {
-        let top = TITLE_H + 40;
-        let w = self.width - 2 * MARGIN;
-        let at = |i: i32| Rect::new(MARGIN, top + i * (BUTTON_H + 28), w, BUTTON_H);
-        [(Button::MenuEarlier, at(0)), (Button::MenuLater, at(1)), (Button::MenuIcon, at(2)), (Button::MenuHide, at(3))]
+    /// The app menu's box for an icon at `anchor` with `actions` rows under the name row: below the icon
+    /// when it fits, else above it; inside the screen.
+    pub fn menu_box(&self, anchor: Rect, actions: usize) -> Rect {
+        let h = (actions as i32 + 1) * MENU_ROW_H;
+        let x = (anchor.x + anchor.w / 2 - MENU_W / 2).clamp(MARGIN, self.width - MARGIN - MENU_W);
+        // Below the icon's name, so the name stays readable.
+        let below = anchor.bottom() + LABEL_GAP + LABEL_LINE + 16;
+        let y = if below + h <= self.height - 20 { below } else { (anchor.y - 24 - h).max(STATUS_H) };
+        Rect::new(x, y, MENU_W, h)
     }
 
-    /// Where the app menu shows the app's tile, under its buttons.
-    pub fn app_menu_preview(&self) -> Rect {
-        let icon = self.icon(0);
-        let top = TITLE_H + 40 + 4 * (BUTTON_H + 28) + 40;
-        Rect::new((self.width - icon.w) / 2, top, icon.w, icon.h)
-    }
-
-    pub fn app_menu_button_at(&self, x: f32, y: f32) -> Option<Button> {
-        if self.done_button().inset(-20).contains(x, y) {
-            return Some(Button::Done);
-        }
-        self.app_menu_buttons().into_iter().find(|(_, r)| r.inset(-8).contains(x, y)).map(|(b, _)| b)
+    /// Row `i` of the app menu's actions (row 0 of the box is the app's name).
+    pub fn menu_row(&self, anchor: Rect, actions: usize, i: usize) -> Rect {
+        let b = self.menu_box(anchor, actions);
+        Rect::new(b.x, b.y + (i as i32 + 1) * MENU_ROW_H, b.w, MENU_ROW_H)
     }
 
     /// Rows of the Extensions list on one page (between the title and the footer).
@@ -304,32 +344,62 @@ mod tests {
     use super::*;
 
     fn oasis() -> Layout {
-        Layout::new(1264, 1680, 3, 3)
+        Layout::new(1264, 1680, 4, 5)
     }
 
     #[test]
-    fn cells_tile_the_grid_and_icons_are_portrait() {
+    fn icons_are_equal_squares_on_an_even_grid() {
         let l = oasis();
-        assert_eq!(l.per_page(), 9);
-        assert_eq!(l.cell(0).y, STATUS_H);
-        assert!(l.cell(8).bottom() <= l.footer().y);
-        for s in 0..9 {
-            let (icon, cell, label) = (l.icon(s), l.cell(s), l.label(s));
-            assert!((icon.h * 2 - icon.w * 3).abs() <= 3, "2:3 icon {icon:?}");
+        assert_eq!(l.per_page(), 20);
+        assert!(l.cell(0).y > STATUS_H);
+        assert!(l.cell(19).bottom() <= l.home_footer().y);
+        assert!(l.home_footer().bottom() <= l.height);
+        let s = l.icon_size();
+        assert!(s >= 160, "icons {s} px");
+        for slot in 0..20 {
+            let (icon, cell, label) = (l.icon(slot), l.cell(slot), l.label(slot));
+            assert_eq!((icon.w, icon.h), (s, s));
             assert!(icon.x >= cell.x && icon.right() <= cell.right());
-            assert!(label.bottom() <= cell.bottom(), "label inside cell {s}");
+            assert!(label.bottom() <= cell.bottom(), "label inside cell {slot}");
+            // Columns and rows line up: the same x in a column, the same y in a row.
+            assert_eq!(icon.x, l.icon(slot % 4).x);
+            assert_eq!(icon.y, l.icon(slot / 4 * 4).y);
         }
+    }
+
+    #[test]
+    fn the_menu_box_opens_below_or_above_the_icon_inside_the_screen() {
+        let l = oasis();
+        let top = l.icon(0);
+        let b = l.menu_box(top, 5);
+        assert!(b.y > top.bottom() && b.x >= MARGIN && b.right() <= l.width - MARGIN);
+        let last = l.icon(19);
+        let b = l.menu_box(last, 5);
+        assert!(b.bottom() < last.y, "above an icon in the last row: {b:?}");
+        assert_eq!(l.menu_row(last, 5, 0).y, b.y + MENU_ROW_H);
+    }
+
+    #[test]
+    fn the_zoom_grows_from_the_icon_to_the_screen() {
+        let l = oasis();
+        let icon = l.icon(5);
+        let steps = zoom_steps(icon, l.screen(), 3);
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[2], l.screen());
+        assert!(steps[0].w > icon.w && steps[0].w < steps[1].w);
+        // Eased out: the first step covers more than a third of the way.
+        assert!(steps[0].w - icon.w > (l.width - icon.w) / 3);
     }
 
     #[test]
     fn hit_testing_finds_slots() {
         let l = oasis();
-        let c = l.cell(4);
-        assert_eq!(l.slot_at((c.x + 5) as f32, (c.y + 5) as f32), Some(4));
+        let c = l.cell(5);
+        assert_eq!(l.slot_at((c.x + 5) as f32, (c.y + 5) as f32), Some(5));
         assert_eq!(l.slot_at(10.0, 10.0), None);
         assert_eq!(l.pages(0), 1);
-        assert_eq!(l.pages(9), 1);
-        assert_eq!(l.pages(10), 2);
+        assert_eq!(l.pages(20), 1);
+        assert_eq!(l.pages(21), 2);
     }
 
     #[test]
@@ -337,7 +407,7 @@ mod tests {
         let l = oasis();
         let rows = l.settings_rows();
         assert!(rows.last().unwrap().rect.bottom() < l.about().y);
-        assert!(l.about().h > 150);
+        assert!(l.about().h >= 140, "about {:?}", l.about());
         let (b, r) = rows[0].buttons[1];
         assert_eq!(l.settings_button_at((r.x + 10) as f32, (r.y + 10) as f32), Some(b));
         let d = l.done_button();

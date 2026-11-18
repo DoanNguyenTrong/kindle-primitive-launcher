@@ -45,6 +45,8 @@ fn demo_status() -> Status {
         autostart: true,
         sleep_launcher: false,
         auto_rotation: true,
+        dark_mode: false,
+        animation: true,
         rotation: Rotation::Upright,
         memory: "MemAvailable 312 MB".into(),
     }
@@ -54,8 +56,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let font_dir = arg(&args, "--fonts").unwrap_or_else(|| "assets/fonts".into());
     if let Some(path) = arg(&args, "--launcher-icon") {
+        // The Primitive logo goes in the centre tile.
+        let logo = fs::read("assets/primitive-icon.png").ok().and_then(|b| kl_render::image::decode_png(&b).ok());
         let mut r = Renderer::new(600, 920, &fonts(&font_dir)).expect("fonts");
-        let gray = r.launcher_icon();
+        let gray = r.launcher_icon(logo.as_ref());
         write_png(&PathBuf::from(path), 600, 920, &gray);
         return;
     }
@@ -114,13 +118,19 @@ fn main() {
     full.wifi_on = false;
     full.wifi_state = "off".into();
     write_png(&out.join("status-wifi-off.png"), W, H, &renderer.draw(&ui, &full));
-    ui.pressed = Some(1);
+    ui.pressed = Some(ui.layout.icon(1));
     shot(&mut renderer, &ui, "home-pressed");
     ui.pressed = None;
     ui.handle(Input::Tap(600.0, 40.0));
     shot(&mut renderer, &ui, "settings");
     ui.screen = kl_core::Screen::ConfirmKindle;
     shot(&mut renderer, &ui, "confirm");
+    // Dark mode: the grid, Settings and the dialog, white on black; pictures keep their look.
+    let dark = Status { dark_mode: true, ..demo_status() };
+    for (screen, name) in [(kl_core::Screen::Home, "dark-home"), (kl_core::Screen::Settings, "dark-settings"), (kl_core::Screen::ConfirmKindle, "dark-confirm")] {
+        ui.screen = screen;
+        write_png(&out.join(format!("{name}.png")), W, H, &renderer.draw(&ui, &dark));
+    }
     ui.screen = kl_core::Screen::Home;
     let first = ui.layout.cell(0);
     ui.handle(Input::LongTap(first.x as f32 + 5.0, first.y as f32 + 5.0));
@@ -136,8 +146,11 @@ fn main() {
         }
         ui.screen = kl_core::Screen::Home;
     }
+    // A critical battery: the only sleep screen with text (otherwise sleep draws nothing, or a picture).
+    ui.set_battery(Some(4), false);
+    shot(&mut renderer, &ui, "sleep-battery");
+    ui.set_battery(Some(90), false);
     ui.handle(Input::Sleep);
-    shot(&mut renderer, &ui, "sleep");
     // The launcher's own sleep screen with a picture (the launcher icon stands in for one).
     match kl_render::sleep_image(std::path::Path::new("assets/launcher-icon.png"), W, H) {
         Ok(picture) => {
@@ -148,7 +161,11 @@ fn main() {
         Err(e) => eprintln!("sleep picture: {e}"),
     }
     for step in [0, 4] {
-        let gray = renderer.waiting("Opening the Kindle UI", "This takes about a minute.", step);
-        write_png(&out.join(format!("waiting-{step}.png")), W, H, &gray);
+        // The dialog over the grid, as the Kindle shows it.
+        ui.screen = kl_core::Screen::Home;
+        let mut base = renderer.draw(&ui, &status);
+        let (layer, area) = renderer.waiting_dialog(&ui.layout, step, false);
+        kl_render::image::copy_rounded(&mut base, &layer, W as usize, (area.x, area.y, area.w, area.h), 38.0);
+        write_png(&out.join(format!("waiting-{step}.png")), W, H, &base);
     }
 }
