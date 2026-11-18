@@ -80,7 +80,7 @@ fn main() {
     let (apps, more) = discover(&documents, &config);
     problems.extend(more);
     let extensions_root = documents.parent().map(|p| p.join("extensions")).unwrap_or_default();
-    let (extensions, more) = kl_core::kual::discover_root(&extensions_root);
+    let (extensions, more) = kl_core::kual::discover_root(&extensions_root, kl_core::kual::OASIS_3_MODEL);
     problems.extend(more);
     let layout = Layout::new(W, H, config.columns, config.rows);
     let mut renderer = Renderer::new(W, H, &fonts(&font_dir)).expect("fonts");

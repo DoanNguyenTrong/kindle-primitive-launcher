@@ -5,7 +5,9 @@
 //!
 //! The menu file is the one the extension's `config.xml` names (`<menu type="json">…</menu>`), else `menu.json`.
 //! `exitmenu: false` runs the item in the background: the launcher stays in front and shows its last output
-//! line. Not used: `status`, `checked`, `model` and `if` checks. Those depend on KUAL's own runtime.
+//! line. An `if` of the form `"Model" -m` shows the item on that model, `"Model" -m!` on every other one (the
+//! Kindle's model is KindleOasis3; see `OASIS_3_MODEL`). Any other `if` leaves the item out. Not used: `status` and
+//! `checked`: their meaning is KUAL's own, and no installed menu on the Kindle sets them.
 
 use crate::apps::{App, IconSource, Launch};
 use serde_json::Value;
@@ -13,6 +15,9 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+
+/// The model name of the Kindle Oasis 3 (KOReader's name for it, which KUAL's `if` checks use).
+pub const OASIS_3_MODEL: &str = "KindleOasis3";
 
 /// One entry of an extension menu: a submenu (`children`) or a command.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,21 +55,43 @@ impl MenuItem {
 }
 
 /// The items of one `menu.json`. `ext_id` (the folder name) only labels problems.
-pub fn parse(json: &str, ext_dir: &Path, ext_id: &str) -> Result<Vec<MenuItem>, String> {
+pub fn parse(json: &str, ext_dir: &Path, ext_id: &str, model: &str) -> Result<Vec<MenuItem>, String> {
     let value: Value = serde_json::from_str(json).map_err(|e| format!("{ext_id}/menu.json: {e}"))?;
     let list = value
         .get("items")
         .and_then(Value::as_array)
         .ok_or_else(|| format!("{ext_id}/menu.json: no items list"))?;
-    Ok(items(list, ext_dir))
+    Ok(items(list, ext_dir, model))
 }
 
-fn items(list: &[Value], dir: &Path) -> Vec<MenuItem> {
+/// Whether a KUAL `if` lets an item show on `model`: `"Model" -m` (that model) and `"Model" -m!` (any other). `None`
+/// for any other expression: the item is then left out.
+fn model_allows(expr: &str, model: &str) -> Option<bool> {
+    let mut parts = expr.split_whitespace();
+    let name = parts.next()?.trim_matches('"');
+    let op = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    match op {
+        "-m" => Some(model == name),
+        "-m!" => Some(model != name),
+        _ => None,
+    }
+}
+
+fn items(list: &[Value], dir: &Path, model: &str) -> Vec<MenuItem> {
     let mut out = Vec::new();
     for item in list {
         let Some(name) = item.get("name").and_then(Value::as_str).filter(|n| !n.trim().is_empty()) else { continue };
+        // The model check first: an item for another model (or an expression not known here) is left out.
+        if let Some(expr) = item.get("if").and_then(Value::as_str) {
+            if model_allows(expr, model) != Some(true) {
+                continue;
+            }
+        }
         let priority = item.get("priority").and_then(Value::as_i64).unwrap_or(0);
-        let children = item.get("items").and_then(Value::as_array).map(|c| items(c, dir)).unwrap_or_default();
+        let children = item.get("items").and_then(Value::as_array).map(|c| items(c, dir, model)).unwrap_or_default();
         let command = if children.is_empty() {
             item.get("action").and_then(Value::as_str).filter(|a| !a.is_empty()).map(|action| {
                 let mut command = format!("sh {}", shell_quote(&dir.join(action).to_string_lossy()));
@@ -123,7 +150,7 @@ fn menu_file(dir: &Path) -> PathBuf {
 
 /// The top level of the Extensions list: the items of every extension under `root` with a `menu.json`, in
 /// one list. Problems (unreadable or invalid files) are returned as text; the other extensions still load.
-pub fn discover_root(root: &Path) -> (Vec<MenuItem>, Vec<String>) {
+pub fn discover_root(root: &Path, model: &str) -> (Vec<MenuItem>, Vec<String>) {
     let mut menu = Vec::new();
     let mut problems = Vec::new();
     let Ok(entries) = fs::read_dir(root) else { return (menu, problems) };
@@ -136,7 +163,7 @@ pub fn discover_root(root: &Path) -> (Vec<MenuItem>, Vec<String>) {
         }
         let ext_id = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         match fs::read_to_string(&file) {
-            Ok(text) => match parse(&text, &dir, &ext_id) {
+            Ok(text) => match parse(&text, &dir, &ext_id, model) {
                 Ok(found) => menu.extend(found),
                 Err(e) => problems.push(e),
             },
@@ -166,7 +193,7 @@ mod tests {
 
     #[test]
     fn submenus_keep_their_items_in_priority_order() {
-        let menu = parse(MENU, Path::new("/mnt/us/extensions/tools"), "tools").unwrap();
+        let menu = parse(MENU, Path::new("/mnt/us/extensions/tools"), "tools", OASIS_3_MODEL).unwrap();
         let names: Vec<_> = menu.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["Quoted", "Wi-Fi tools"]);
         let tools = &menu[1];
@@ -178,7 +205,7 @@ mod tests {
 
     #[test]
     fn commands_quote_paths_and_pass_params() {
-        let menu = parse(MENU, Path::new("/e"), "e").unwrap();
+        let menu = parse(MENU, Path::new("/e"), "e", OASIS_3_MODEL).unwrap();
         assert_eq!(menu[0].command.as_deref(), Some("sh '/e/it'\\''s.sh'"));
         assert_eq!(menu[1].children[1].command.as_deref(), Some("sh '/e/bin/hi.sh' --loud"));
         let app = menu[1].children[0].app().unwrap();
@@ -189,9 +216,9 @@ mod tests {
 
     #[test]
     fn a_menu_without_items_is_a_problem() {
-        let err = parse("{}", Path::new("/e"), "e").unwrap_err();
+        let err = parse("{}", Path::new("/e"), "e", OASIS_3_MODEL).unwrap_err();
         assert!(err.contains("no items list"), "{err}");
-        assert!(parse("{ not json", Path::new("/e"), "e").is_err());
+        assert!(parse("{ not json", Path::new("/e"), "e", OASIS_3_MODEL).is_err());
     }
 
     #[test]
@@ -204,7 +231,7 @@ mod tests {
         fs::write(root.join("good/menu.json"), MENU).unwrap();
         fs::write(root.join("other/menu.json"), r#"{"items":[{"name":"Alpha","action":"a.sh","priority":1}]}"#).unwrap();
         fs::write(root.join("bad/menu.json"), "[]").unwrap();
-        let (menu, problems) = discover_root(&root);
+        let (menu, problems) = discover_root(&root, OASIS_3_MODEL);
         let names: Vec<_> = menu.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["Alpha", "Quoted", "Wi-Fi tools"]);
         assert_eq!(problems.len(), 1);
@@ -223,7 +250,7 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("ext/custom.json"), r#"{"items":[{"name":"Quiet","action":"q.sh","exitmenu":false},{"name":"Loud","action":"l.sh"}]}"#).unwrap();
-        let (menu, problems) = discover_root(&root);
+        let (menu, problems) = discover_root(&root, OASIS_3_MODEL);
         assert!(problems.is_empty(), "{problems:?}");
         let names: Vec<_> = menu.iter().map(|i| (i.name.as_str(), i.background)).collect();
         assert_eq!(names, [("Loud", false), ("Quiet", true)]);
@@ -233,7 +260,32 @@ mod tests {
 
     #[test]
     fn a_missing_root_is_not_a_problem() {
-        let (menu, problems) = discover_root(Path::new("/definitely/not/here"));
+        let (menu, problems) = discover_root(Path::new("/definitely/not/here"), OASIS_3_MODEL);
         assert!(menu.is_empty() && problems.is_empty());
     }
+
+    #[test]
+    fn a_model_check_shows_an_item_on_that_model_only() {
+        assert_eq!(model_allows("\"KindleOasis3\" -m", OASIS_3_MODEL), Some(true));
+        assert_eq!(model_allows("\"KindleOasis3\" -m!", OASIS_3_MODEL), Some(false));
+        assert_eq!(model_allows("\"KindleVoyage\" -m", OASIS_3_MODEL), Some(false));
+        assert_eq!(model_allows("\"KindleVoyage\" -m!", OASIS_3_MODEL), Some(true));
+        assert_eq!(model_allows("\"KindleOasis3\" -x", OASIS_3_MODEL), None, "not known: left out");
+        assert_eq!(model_allows("", OASIS_3_MODEL), None);
+    }
+
+    #[test]
+    fn items_with_an_if_follow_the_model() {
+        let json = r#"{ "items": [
+            { "name": "Start KOReader", "if": "\"KindleVoyage\" -m!", "action": "a.sh" },
+            { "name": "Oasis only", "if": "\"KindleOasis3\" -m", "action": "b.sh" },
+            { "name": "Other models", "if": "\"KindleOasis3\" -m!", "action": "c.sh" },
+            { "name": "No check", "action": "d.sh" },
+            { "name": "Menu for Voyage", "if": "\"KindleVoyage\" -m", "items": [ { "name": "x", "action": "e.sh" } ] }
+        ] }"#;
+        let menu = parse(json, Path::new("/e"), "e", OASIS_3_MODEL).unwrap();
+        let names: Vec<_> = menu.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["No check", "Oasis only", "Start KOReader"]);
+    }
+
 }

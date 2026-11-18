@@ -278,7 +278,7 @@ fn main() {
     problems.extend(more);
     kl_core::apps::use_koreader_wrapper(&mut apps, &config, &dir.join("run-koreader.sh"));
     let extensions_root = documents.parent().unwrap_or(Path::new("/mnt/us")).join("extensions");
-    let (extensions, more) = kl_core::kual::discover_root(&extensions_root);
+    let (extensions, more) = kl_core::kual::discover_root(&extensions_root, kl_core::kual::OASIS_3_MODEL);
     problems.extend(more);
     let layout = Layout::new(W, H, config.columns, config.rows);
 

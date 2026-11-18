@@ -186,7 +186,9 @@ Phase 4, v0.4.x.
 - [x] Move apps and choose an icon from `icons/` (Mac).
 - [x] Sleep pictures from `screensavers/` (Mac).
 - [x] The app list is written to the log at start (Mac).
-- [ ] KUAL `status`, `checked` and model `if` checks.
+- [x] KUAL model `if` checks: `"Model" -m` and `-m!` (the Oasis 3 is KindleOasis3; the form the KOReader menu on
+      the Kindle uses) (v0.3.1, device check pending).
+- [ ] KUAL `status` and `checked`: their meaning is KUAL's own; no installed menu sets them, so they wait for an example.
 - [ ] Research only: never start the framework at boot (M6c), after Phase 3 is stable for weeks.
 
 ---
