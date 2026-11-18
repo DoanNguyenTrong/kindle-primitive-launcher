@@ -71,6 +71,8 @@ if [ "$1" = --wait-screen ]; then echo "wait screen shown" >> "$STATE/calls"; ex
 code=$(head -n 1 "$STATE/codes")
 tail -n +2 "$STATE/codes" > "$STATE/codes.tmp"; mv "$STATE/codes.tmp" "$STATE/codes"
 echo "launcher run: $code" >> "$STATE/calls"
+echo "launcher says hello $code"
+[ -p /dev/fd/1 ] && echo "launcher stdout is a pipe" >> "$STATE/calls"
 case "$code" in
     10) printf '%s\nscript\n%s\n' "$STATE" "$STATE/app.sh" > "$KL_RUN/next"; exit 10 ;;
     term) kill -TERM $$ ;;
@@ -286,6 +288,15 @@ printf '0\n' > "$STATE/codes"
 run_sup
 check "volumd never paused without an app" '! grep -q "killall -STOP volumd" "$STATE/calls"'
 check "volumd running at the end" 'grep -q "killall -CONT volumd" "$STATE/calls"'
+teardown
+
+echo "test: the launcher logs through a pipe, not an open file on the user storage"
+setup
+printf '0\n' > "$STATE/codes"
+run_sup
+check "output reached the log" 'grep -q "launcher says hello 0" "$KL_DIR/log-launcher.txt"'
+check "stdout was a pipe" 'grep -q "launcher stdout is a pipe" "$STATE/calls"'
+check "no pipe left behind" '[ ! -p "$KL_RUN/log.fifo" ]'
 teardown
 
 echo "passed $PASS, failed $FAIL"

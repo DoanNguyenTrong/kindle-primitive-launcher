@@ -36,8 +36,41 @@ WATCH_EVERY=${KL_WATCH_EVERY:-5}
 
 mkdir -p "$RUN"
 export KL_DIR="$DIR" KL_RUN="$RUN"
+# Nothing of this script may hold /mnt/us: the Kindle unmounts it to show its drive on a computer (a USB cable), and
+# it kills whatever still holds it. The working directory is /, and long-running programs log through a pipe.
+cd /
+LOG_FIFO=$RUN/log.fifo
+LOG_PENDING=$RUN/log-pending.txt
+LOG_OUT=$LOG
 
 log() { echo "[launcher $(date '+%H:%M:%S')] $*" >> "$LOG"; }
+
+# The launcher, the holder and the wait screen write into a pipe; this reader appends each line to the log and closes
+# the log again, so no long-running program keeps a file open on /mnt/us. While /mnt/us is away (the drive is on a
+# computer), lines wait in $LOG_PENDING and are added when it is back.
+logger_start() {
+    rm -f "$LOG_FIFO"
+    mkfifo "$LOG_FIFO" 2>/dev/null || return 0
+    sup=$$
+    (
+        while [ -p "$LOG_FIFO" ] && kill -0 "$sup" 2>/dev/null; do
+            while IFS= read -r line; do
+                if [ -s "$LOG_PENDING" ] && cat "$LOG_PENDING" >> "$LOG" 2>/dev/null; then
+                    rm -f "$LOG_PENDING"
+                fi
+                echo "$line" >> "$LOG" 2>/dev/null || echo "$line" >> "$LOG_PENDING"
+            done < "$LOG_FIFO"
+        done
+    ) &
+    LOGGER=$!
+    LOG_OUT=$LOG_FIFO
+}
+
+logger_stop() {
+    [ -n "${LOGGER:-}" ] && kill "$LOGGER" 2>/dev/null
+    rm -f "$LOG_FIFO"
+    LOG_OUT=$LOG
+}
 
 # Keep the log small on the Kindle's flash: keep the last ~100 KB of a log over ~200 KB.
 if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 204800 ]; then
@@ -75,7 +108,7 @@ holder_start() {
         log "holder not started: lua or holder.lua missing"
         return
     fi
-    lua "$RUN/holder.lua" >> "$LOG" 2>&1 &
+    lua "$RUN/holder.lua" >> "$LOG_OUT" 2>&1 &
     echo $! > "$HOLDER_PID"
     log "holder started (pid $!)"
 }
@@ -206,7 +239,7 @@ framework_wait_ready() {
 # The waiting screen ("Opening the Kindle UI" with a moving bar) covers the minute the stock UI takes to start.
 wait_screen_start() {
     [ -x "$RUN/kl-launcher" ] || return 0
-    "$RUN/kl-launcher" --wait-screen >> "$LOG" 2>&1 &
+    "$RUN/kl-launcher" --wait-screen >> "$LOG_OUT" 2>&1 &
     echo $! > "$WAIT_PID"
 }
 
@@ -255,12 +288,12 @@ usb_watch() {
     last=""
     while kill -0 "$1" 2>/dev/null; do
         cable=$(cat /sys/class/power_supply/max77796-charger/online 2>/dev/null)
-        drive=$(cat /sys/devices/platform/soc/30800000.aips-bus/30b10000.usb/ci_hdrc.0/gadget/lun0/file 2>/dev/null)
+        mounted=$(grep -c " /mnt/us " /proc/mounts 2>/dev/null)
         vstate=$(awk '{print $3}' /proc/$(pidof volumd 2>/dev/null)/stat 2>/dev/null)
         lp=$(cat "$LAUNCHER_PID" 2>/dev/null)
         lalive=no
         [ -n "$lp" ] && kill -0 "$lp" 2>/dev/null && lalive=yes
-        now="cable=$cable drive=${drive:-none} volumd=${vstate:-none} launcher=${lp:-none}/$lalive supervisor=$1"
+        now="cable=$cable userstore=${mounted:-?} volumd=${vstate:-none} launcher=${lp:-none}/$lalive supervisor=$1"
         if [ "$now" != "$last" ]; then
             log "usb: $now"
             last="$now"
@@ -303,6 +336,7 @@ watchdog() {
 finish() {
     restore
     wait_screen_stop
+    logger_stop
     rm -f "$PIDFILE" "$LAUNCHER_PID" "$APP_PID" "$HOLDER_PID"
     log "end"
 }
@@ -352,6 +386,7 @@ run_app() {
     volumd_resume
 }
 
+logger_start
 install_traps
 if framework_running; then
     framework_stop
@@ -376,7 +411,7 @@ while :; do
     fi
     date +%s > "$RUN/heartbeat"
     rm -f "$RUN/next"
-    "$RUN/kl-launcher" >> "$LOG" 2>&1 &
+    "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
     lp=$!
     echo "$lp" > "$LAUNCHER_PID"
     wait "$lp"

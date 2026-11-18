@@ -55,11 +55,14 @@ fn sysfs_text(path: &str) -> String {
     std::fs::read_to_string(path).map(|t| t.trim().to_string()).unwrap_or_default()
 }
 
-/// The USB state: the cable (the charger's `online`) and the drive (the gadget's mass-storage file).
+/// The USB state: the cable (the charger's `online`) and whether `/mnt/us` is mounted (it is not while the drive is
+/// on a computer).
 pub fn usb_state() -> kl_core::Usb {
     let cable_in = sysfs_text(profile::ACTIVE.charger_online) == "1";
-    let drive = sysfs_text(profile::ACTIVE.usb_drive_file);
-    kl_core::Usb::from_device(cable_in, &drive)
+    let mounted = std::fs::read_to_string("/proc/mounts")
+        .map(|m| m.lines().any(|l| l.split_whitespace().nth(1) == Some("/mnt/us")))
+        .unwrap_or(true);
+    kl_core::Usb::from_device(cable_in, mounted)
 }
 
 /// The local time and date, e.g. "10:38" and "Mon 16 Nov".

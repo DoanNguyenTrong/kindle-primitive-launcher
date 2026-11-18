@@ -17,6 +17,14 @@
 DIR=${KL_DIR:-/mnt/us/launcher}
 RUN=${KL_RUN:-/var/tmp/kl}
 
+# The library runs this script from /mnt/us/documents, and a shell keeps its script open while it runs. /mnt/us must
+# be free to unmount when a USB cable shows the drive on a computer, so the script runs again from a copy in $RUN.
+case "$0" in
+    "$RUN"/*) ;;
+    *) mkdir -p "$RUN" && cp "$0" "$RUN/Launcher.sh" && cd / && exec /bin/sh "$RUN/Launcher.sh" ;;
+esac
+cd /
+
 if [ -f "$RUN/supervisor.pid" ] && kill -0 "$(cat "$RUN/supervisor.pid" 2>/dev/null)" 2>/dev/null; then
     exit 0
 fi

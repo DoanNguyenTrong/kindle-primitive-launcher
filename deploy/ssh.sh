@@ -14,6 +14,7 @@ LIB="$SSH_DIR/lib"
 KEY="$SSH_DIR/dropbear_ed25519_host_key"
 LOG="$SSH_DIR/dropbear.log"
 PID=/tmp/dropbear_launcher.pid
+TMP_SSH=/var/tmp/kl-ssh
 IPT=$(command -v iptables || echo /usr/sbin/iptables)
 
 running() { [ -f "$PID" ] && kill -0 "$(cat "$PID" 2>/dev/null)" 2>/dev/null; }
@@ -40,7 +41,11 @@ case "$1" in
         mkdir -p "$SSH_DIR"
         echo "started $(date)" >> "$LOG"
         # -R makes the host key if there is none yet; the key is kept, so the server keeps its identity.
-        (cd "$BIN" && LD_LIBRARY_PATH="$LIB" ./dropbear -E -R -r "$KEY" -p 2222 -P "$PID" 2>> "$LOG")
+        # The server runs from a copy in tmpfs, with / as its directory: nothing of it may hold /mnt/us, which the Kindle
+        # unmounts to show its drive on a computer (and whatever still holds it is killed).
+        mkdir -p "$TMP_SSH/lib" && cp "$BIN/dropbear" "$TMP_SSH/dropbear" && cp "$LIB/libz.so.1" "$TMP_SSH/lib/" || { echo "could not copy the server to $TMP_SSH"; exit 1; }
+        chmod 755 "$TMP_SSH/dropbear"
+        (cd / && LD_LIBRARY_PATH="$TMP_SSH/lib" "$TMP_SSH/dropbear" -E -R -r "$KEY" -p 2222 -P "$PID" 2>> "$TMP_SSH/dropbear.log")
         sleep 1
         if running; then open_port; echo "running"; else echo "failed"; exit 1; fi
         ;;

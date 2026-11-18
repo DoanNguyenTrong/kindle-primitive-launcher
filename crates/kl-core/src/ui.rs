@@ -119,15 +119,13 @@ pub enum Usb {
 }
 
 impl Usb {
-    /// From the charger's `online` (the cable is in) and the gadget's mass-storage file (set while the drive is shown
-    /// on a computer, empty otherwise).
-    pub fn from_device(cable_in: bool, drive_file: &str) -> Usb {
-        if !cable_in {
-            Usb::Unplugged
-        } else if drive_file.trim().is_empty() {
-            Usb::Charging
-        } else {
-            Usb::Drive
+    /// From the charger's `online` (the cable is in) and whether the user storage (`/mnt/us`) is mounted on the Kindle:
+    /// while the drive is shown on a computer, the Kindle has it unmounted.
+    pub fn from_device(cable_in: bool, userstore_mounted: bool) -> Usb {
+        match (cable_in, userstore_mounted) {
+            (false, _) => Usb::Unplugged,
+            (true, true) => Usb::Charging,
+            (true, false) => Usb::Drive,
         }
     }
 }
@@ -1147,10 +1145,10 @@ mod tests {
 
     #[test]
     fn the_usb_state_comes_from_the_cable_and_the_drive() {
-        assert_eq!(Usb::from_device(false, ""), Usb::Unplugged);
-        assert_eq!(Usb::from_device(false, "/dev/loop/x"), Usb::Unplugged, "no cable, no drive");
-        assert_eq!(Usb::from_device(true, ""), Usb::Charging);
-        assert_eq!(Usb::from_device(true, "/dev/mmcblk0p2\n"), Usb::Drive);
+        assert_eq!(Usb::from_device(false, true), Usb::Unplugged);
+        assert_eq!(Usb::from_device(false, false), Usb::Unplugged, "no cable, no drive");
+        assert_eq!(Usb::from_device(true, true), Usb::Charging);
+        assert_eq!(Usb::from_device(true, false), Usb::Drive, "the drive is on the computer: /mnt/us is away");
     }
 
     #[test]
