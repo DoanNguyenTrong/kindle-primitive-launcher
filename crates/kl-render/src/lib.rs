@@ -86,7 +86,12 @@ pub struct Renderer {
     icons: HashMap<String, GrayImage>,
     /// The launcher's own sleep screen picture, when one is set (screensavers folder).
     sleep_image: Option<GrayImage>,
+    /// The drive-mode picture (`assets/usb-drive-mode.png`), fitted to the screen and snapped to black and white.
+    usb_picture: Option<GrayImage>,
 }
+
+/// The drive-mode picture: a laptop and a Kindle joined by a cable.
+const USB_PICTURE: &[u8] = include_bytes!("../../../assets/usb-drive-mode.png");
 
 fn gray(v: u8) -> Color {
     Color::from_rgb8(v, v, v)
@@ -120,6 +125,11 @@ impl Renderer {
             layout_cx: LayoutContext::new(),
             icons: HashMap::new(),
             sleep_image: None,
+            usb_picture: image::decode_png(USB_PICTURE).ok().map(|img| {
+                let mut fitted = image::fit(&img, width - 120, height - 240);
+                image::solidify(&mut fitted.pixels);
+                fitted
+            }),
         })
     }
 
@@ -316,11 +326,18 @@ impl Renderer {
         self.ctx.reset();
         let l = ui.layout;
         self.fill(l.screen(), WHITE);
-        let w = l.width as f32;
-        self.text(Text { text: "USB drive mode", x: 0.0, y: 520.0, w, size: 72.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
-        self.text(Text { text: "The Kindle shows on the computer.", x: 80.0, y: 640.0, w: w - 160.0, size: 40.0, bold: false, align: Align::Center, lines: 2, gray: 85 });
-        self.text(Text { text: "Eject it on the computer when you are done. Then unplug the cable.", x: 80.0, y: 760.0, w: w - 160.0, size: 40.0, bold: false, align: Align::Center, lines: 3, gray: 85 });
-        self.finish_gray()
+        let mut out = self.finish_gray();
+        // The picture, centred on the white screen.
+        if let Some(pic) = &self.usb_picture {
+            let (w, h) = (l.width as usize, l.height as usize);
+            let (pw, ph) = (pic.width as usize, pic.height as usize);
+            let (ox, oy) = ((w - pw) / 2, (h - ph) / 2);
+            for y in 0..ph {
+                let dst = (oy + y) * w + ox;
+                out[dst..dst + pw].copy_from_slice(&pic.pixels[y * pw..(y + 1) * pw]);
+            }
+        }
+        out
     }
 
     fn finish_gray(&mut self) -> Vec<u8> {
