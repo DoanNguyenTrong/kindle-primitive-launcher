@@ -145,8 +145,8 @@ Kindle's own calls as KOReader makes them).
 - [x] Forget a saved network, from its screen or by tapping the connected network (v0.2.19, device check pending).
 - [x] Long lists: a scroll bar and the count; a swipe moves by the rows it covers (v0.2.19, checked with 30 networks). Tested on the Kindle: a test profile was created
       and deleted, and the saved list was back to its earlier count.
-- [ ] Enterprise networks: user name and password, if `createProfile` accepts them (to be tested; no
-      enterprise network nearby yet).
+- [ ] Enterprise networks: skipped for now (user name and password, if `createProfile` accepts them; no
+      enterprise network nearby to test).
 - [x] Join a hidden network by name: "Other…" opens a name field and the keyboard (Next asks for the password;
       an empty password joins an open network) (v0.2.20, device check pending).
 - [x] Wi-Fi off: the list says so; turning Wi-Fi on from the page starts a scan (v0.2.20, device check pending).
