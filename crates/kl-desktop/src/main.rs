@@ -45,6 +45,7 @@ fn demo_status() -> Status {
         ssh: false,
         ssh_address: String::new(),
         ssh_password_set: true,
+        usb: kl_core::Usb::Unplugged,
         public_dns: false,
         autostart: true,
         sleep_launcher: false,
@@ -247,6 +248,10 @@ fn main() {
     let (_, pressed) = ui.layout.keyboard_keys_with(ui.network_name.layer, "Next").into_iter().find(|(d, _)| d.key == primitive_keyboard::Key::Char('e')).unwrap();
     ui.pressed_key = Some(pressed);
     write_png(&out.join("keyboard-pressed.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    // The drive-mode screen: shown while the drive is on a computer (no taps then).
+    ui.usb = kl_core::Usb::Drive;
+    write_png(&out.join("usb-drive.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    ui.usb = kl_core::Usb::Unplugged;
     ui.pressed_key = None;
     ui.network_name = primitive_keyboard::Editor::new(32);
     ui.handle(Input::Sleep);

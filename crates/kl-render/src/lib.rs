@@ -311,6 +311,18 @@ impl Renderer {
 
     /// Rasterise the recorded scene into a solidified gray buffer (premultiplied RGBA over an opaque white
     /// page: the red channel is the gray).
+    /// The drive-mode screen: the Kindle shows on a computer. Eject it there, and the Kindle charges.
+    fn usb_drive_frame(&mut self, ui: &Ui) -> Vec<u8> {
+        self.ctx.reset();
+        let l = ui.layout;
+        self.fill(l.screen(), WHITE);
+        let w = l.width as f32;
+        self.text(Text { text: "USB drive mode", x: 0.0, y: 520.0, w, size: 72.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+        self.text(Text { text: "The Kindle shows on the computer.", x: 80.0, y: 640.0, w: w - 160.0, size: 40.0, bold: false, align: Align::Center, lines: 2, gray: 85 });
+        self.text(Text { text: "Eject it on the computer when you are done. Then unplug the cable.", x: 80.0, y: 760.0, w: w - 160.0, size: 40.0, bold: false, align: Align::Center, lines: 3, gray: 85 });
+        self.finish_gray()
+    }
+
     fn finish_gray(&mut self) -> Vec<u8> {
         self.ctx.flush();
         self.ctx.render(self.pixmap.as_mut(), &mut self.resources);
@@ -323,6 +335,10 @@ impl Renderer {
 
     /// Draw the current screen. Returns `width × height` gray pixels, upright.
     pub fn draw(&mut self, ui: &Ui, status: &Status) -> Vec<u8> {
+        // While the drive is shown on a computer, the drive-mode screen is all there is.
+        if ui.usb == kl_core::Usb::Drive {
+            return self.usb_drive_frame(ui);
+        }
         self.ctx.reset();
         let l = ui.layout;
         self.fill(l.screen(), WHITE);

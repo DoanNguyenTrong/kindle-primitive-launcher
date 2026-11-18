@@ -249,6 +249,26 @@ refresh_files() {
     refresh_copy holder.lua
 }
 
+# Logs what the USB cable and the drive do, and whether the launcher and this script are alive, each time one of
+# them changes. It is the record for a launcher that disappears during a USB session.
+usb_watch() {
+    last=""
+    while kill -0 "$1" 2>/dev/null; do
+        cable=$(cat /sys/class/power_supply/max77796-charger/online 2>/dev/null)
+        drive=$(cat /sys/devices/platform/soc/30800000.aips-bus/30b10000.usb/ci_hdrc.0/gadget/lun0/file 2>/dev/null)
+        vstate=$(awk '{print $3}' /proc/$(pidof volumd 2>/dev/null)/stat 2>/dev/null)
+        lp=$(cat "$LAUNCHER_PID" 2>/dev/null)
+        lalive=no
+        [ -n "$lp" ] && kill -0 "$lp" 2>/dev/null && lalive=yes
+        now="cable=$cable drive=${drive:-none} volumd=${vstate:-none} launcher=${lp:-none}/$lalive supervisor=$1"
+        if [ "$now" != "$last" ]; then
+            log "usb: $now"
+            last="$now"
+        fi
+        sleep 1
+    done
+}
+
 watchdog() {
     trap '' HUP INT
     sup=$1
@@ -344,6 +364,8 @@ else
 fi
 volumd_resume
 watchdog $$ &
+usb_watch $$ &
+trap 'log "supervisor exit (status $?)"' EXIT
 
 crashes=""
 while :; do

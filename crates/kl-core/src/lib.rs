@@ -19,7 +19,7 @@ pub use apps::{discover, App, IconSource, Launch};
 pub use config::Config;
 pub use layout::{Layout, Rect};
 pub use settings::{Rotation, Settings};
-pub use ui::{Action, DeviceCmd, Input, Screen, Status, Ui};
+pub use ui::{Action, DeviceCmd, Input, Screen, Status, Ui, Usb};
 
 /// The launcher's version, shown in Settings.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

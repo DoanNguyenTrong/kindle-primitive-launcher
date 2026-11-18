@@ -21,6 +21,8 @@ pub struct Profile {
     pub charger_charging: &'static str,
     pub charger_status: &'static str,
     pub charger_online: &'static str,
+    /// The USB gadget's mass-storage file: named while the drive is shown on a computer, empty otherwise.
+    pub usb_drive_file: &'static str,
 }
 
 /// The Kindle Oasis 3 on firmware 5.18.2.
@@ -35,6 +37,7 @@ pub const OASIS_3: Profile = Profile {
     charger_charging: "/sys/class/power_supply/max77796-charger/charging",
     charger_status: "/sys/class/power_supply/max77796-charger/status",
     charger_online: "/sys/class/power_supply/max77796-charger/online",
+    usb_drive_file: "/sys/devices/platform/soc/30800000.aips-bus/30b10000.usb/ci_hdrc.0/gadget/lun0/file",
 };
 
 /// The profile this build runs with.

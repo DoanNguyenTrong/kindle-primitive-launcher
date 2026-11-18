@@ -38,6 +38,8 @@ const EXIT_LAUNCH: i32 = 10;
 pub enum Ev {
     Input(Input),
     Tick,
+    /// The USB state changed (the cable, or the drive shown on a computer).
+    Usb(kl_core::Usb),
     /// The device was turned (auto-rotation, after the debouncer).
     Turn(Rotation),
     /// A background app ended: its name, last output line and whether it succeeded.
@@ -326,6 +328,23 @@ fn main() {
         thread::spawn(move || device::power_loop(t));
     }
     {
+        // The USB state, each second: an event is sent only when it changes.
+        let t = tx.clone();
+        thread::spawn(move || {
+            let mut last = None;
+            loop {
+                let now = device::usb_state();
+                if last != Some(now) {
+                    last = Some(now);
+                    if t.send(Ev::Usb(now)).is_err() {
+                        return;
+                    }
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
+    {
         let t = tx.clone();
         let start = settings.rotation;
         thread::spawn(move || device::orientation_loop(t, start));
@@ -413,6 +432,16 @@ fn main() {
                     }
                 } else {
                     Action::None
+                }
+            }
+            Ev::Usb(usb) => {
+                if usb == ui.usb {
+                    Action::None
+                } else {
+                    log(&format!("usb: {usb:?}"));
+                    ui.usb = usb;
+                    status.usb = usb;
+                    Action::Redraw { full: true }
                 }
             }
             Ev::Input(input) => {

@@ -109,6 +109,29 @@ pub enum Action {
     CheckSsh,
 }
 
+/// The Kindle's USB state: nothing plugged in, the cable charging the Kindle, or the drive shown on a computer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Usb {
+    #[default]
+    Unplugged,
+    Charging,
+    Drive,
+}
+
+impl Usb {
+    /// From the charger's `online` (the cable is in) and the gadget's mass-storage file (set while the drive is shown
+    /// on a computer, empty otherwise).
+    pub fn from_device(cable_in: bool, drive_file: &str) -> Usb {
+        if !cable_in {
+            Usb::Unplugged
+        } else if drive_file.trim().is_empty() {
+            Usb::Charging
+        } else {
+            Usb::Drive
+        }
+    }
+}
+
 /// What the status strip and Settings show. Filled by the driver.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Status {
@@ -116,6 +139,8 @@ pub struct Status {
     pub date: String,
     pub battery: Option<u32>,
     pub charging: bool,
+    /// The USB state (see `Usb`).
+    pub usb: Usb,
     pub wifi_on: bool,
     /// "connected", "not connected", "off", or empty when unknown.
     pub wifi_state: String,
@@ -209,6 +234,8 @@ pub struct Ui {
     pub notice: Option<String>,
     /// The keyboard key under the finger, drawn in the on look until its action runs (see `press_feedback`).
     pub pressed_key: Option<Rect>,
+    /// The USB state the screen follows: while the drive is shown, the drive-mode screen is drawn instead.
+    pub usb: Usb,
     /// Apps hidden by the user (long press, or Settings > Hidden apps). Kept so they can be shown again.
     hidden_apps: Vec<App>,
     /// Low or critical battery, shown in the footer until the level recovers or the charger is connected.
@@ -258,6 +285,7 @@ impl Ui {
             pressed: None,
             notice: None,
             pressed_key: None,
+            usb: Usb::Unplugged,
             battery: Warning::None,
             battery_level: None,
             menu: 0,
@@ -641,6 +669,10 @@ impl Ui {
 
     pub fn handle(&mut self, input: Input) -> Action {
         self.pressed_key = None;
+        // While the drive is shown on a computer, the screen takes no taps: the Kindle's files are changing.
+        if self.usb == Usb::Drive && !matches!(input, Input::Sleep | Input::Wake) {
+            return Action::None;
+        }
         match input {
             Input::Sleep => {
                 if self.screen != Screen::Sleep {
@@ -1111,6 +1143,26 @@ mod tests {
         let rows: Vec<_> = u.layout.page_sections(Page::Device).into_iter().flat_map(|s| s.rows).collect();
         let restart = rows.iter().find(|r| r.row == Row::Restart).expect("the restart row is on the Device page");
         assert_eq!(u.handle(centre(restart.buttons[0].1)), Action::Device(DeviceCmd::RestartLauncher));
+    }
+
+    #[test]
+    fn the_usb_state_comes_from_the_cable_and_the_drive() {
+        assert_eq!(Usb::from_device(false, ""), Usb::Unplugged);
+        assert_eq!(Usb::from_device(false, "/dev/loop/x"), Usb::Unplugged, "no cable, no drive");
+        assert_eq!(Usb::from_device(true, ""), Usb::Charging);
+        assert_eq!(Usb::from_device(true, "/dev/mmcblk0p2\n"), Usb::Drive);
+    }
+
+    #[test]
+    fn the_drive_screen_takes_no_taps_until_it_ends() {
+        let mut u = ui(1);
+        u.screen = Screen::Settings;
+        let done = centre(u.layout.done_button());
+        u.usb = Usb::Drive;
+        assert_eq!(u.handle(done), Action::None, "no taps while the drive is shown");
+        u.usb = Usb::Charging;
+        assert_eq!(u.handle(done), Action::Redraw { full: false }, "taps work again");
+        assert_eq!(u.screen, Screen::Home);
     }
 
     #[test]

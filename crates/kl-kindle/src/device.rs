@@ -55,6 +55,13 @@ fn sysfs_text(path: &str) -> String {
     std::fs::read_to_string(path).map(|t| t.trim().to_string()).unwrap_or_default()
 }
 
+/// The USB state: the cable (the charger's `online`) and the drive (the gadget's mass-storage file).
+pub fn usb_state() -> kl_core::Usb {
+    let cable_in = sysfs_text(profile::ACTIVE.charger_online) == "1";
+    let drive = sysfs_text(profile::ACTIVE.usb_drive_file);
+    kl_core::Usb::from_device(cable_in, &drive)
+}
+
 /// The local time and date, e.g. "10:38" and "Mon 16 Nov".
 pub fn local_time() -> (String, String, i32) {
     const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -150,6 +157,7 @@ pub fn status(settings: &Settings) -> Status {
         date,
         battery: battery(),
         charging: charging(),
+        usb: usb_state(),
         autostart: !Path::new(&launcher_dir()).join("DISABLE").exists(),
         sleep_launcher,
         auto_rotation: settings.auto_rotation,
