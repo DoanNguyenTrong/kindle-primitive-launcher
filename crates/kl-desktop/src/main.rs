@@ -240,6 +240,15 @@ fn main() {
     ui.ssh_password.caret = ui.ssh_password.text.len();
     write_png(&out.join("ssh-password.png"), W, H, &renderer.draw(&ui, &ssh_on));
     ui.ssh_password = primitive_keyboard::Editor::new(64);
+    // A key under the finger: drawn in the on look until its action runs (the shared keyboard look).
+    ui.screen = kl_core::Screen::NetworkName;
+    ui.network_name.text = "Gard".chars().collect();
+    ui.network_name.caret = ui.network_name.text.len();
+    let (_, pressed) = ui.layout.keyboard_keys_with(ui.network_name.layer, "Next").into_iter().find(|(d, _)| d.key == primitive_keyboard::Key::Char('e')).unwrap();
+    ui.pressed_key = Some(pressed);
+    write_png(&out.join("keyboard-pressed.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    ui.pressed_key = None;
+    ui.network_name = primitive_keyboard::Editor::new(32);
     ui.handle(Input::Sleep);
     // The launcher's own sleep screen with a picture (the launcher icon stands in for one).
     match kl_render::sleep_image(std::path::Path::new("assets/launcher-icon.png"), W, H) {

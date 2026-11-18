@@ -889,7 +889,8 @@ impl Renderer {
         let area = l.keyboard_area();
         self.fill(Rect::new(area.x, area.y, area.w, primitive_keyboard::style::TOP_LINE as i32), primitive_keyboard::style::TOP_LINE_GRAY);
         for (key, r) in l.keyboard_keys(ui.password.layer) {
-            self.key(&key, r);
+            let pressed = ui.pressed_key == Some(r);
+            self.key(&key, r, pressed);
         }
         if let Some(notice) = ui.notice.clone() {
             let n = l.password_notice();
@@ -921,7 +922,8 @@ impl Renderer {
         let area = l.keyboard_area();
         self.fill(Rect::new(area.x, area.y, area.w, primitive_keyboard::style::TOP_LINE as i32), primitive_keyboard::style::TOP_LINE_GRAY);
         for (key, r) in l.keyboard_keys_with(ui.network_name.layer, "Next") {
-            self.key(&key, r);
+            let pressed = ui.pressed_key == Some(r);
+            self.key(&key, r, pressed);
         }
         if let Some(notice) = ui.notice.clone() {
             let n = l.password_notice();
@@ -952,7 +954,8 @@ impl Renderer {
         let area = l.keyboard_area();
         self.fill(Rect::new(area.x, area.y, area.w, primitive_keyboard::style::TOP_LINE as i32), primitive_keyboard::style::TOP_LINE_GRAY);
         for (key, r) in l.keyboard_keys_with(ui.ssh_password.layer, "Set") {
-            self.key(&key, r);
+            let pressed = ui.pressed_key == Some(r);
+            self.key(&key, r, pressed);
         }
         if let Some(notice) = ui.notice.clone() {
             let n = l.password_notice();
@@ -962,13 +965,13 @@ impl Renderer {
 
     /// One key of the keyboard, in the shared look (`primitive-keyboard::style`, the same as Primitive Browser's
     /// keys): a light key with a thin grey outline, or an inked key with white text when it is on (Shift, Go).
-    fn key(&mut self, key: &primitive_keyboard::KeyDef, r: Rect) {
+    /// One key, in the keyboard's shared look: on, or pressed, takes the ink look (see `primitive_keyboard::look`).
+    fn key(&mut self, key: &primitive_keyboard::KeyDef, r: Rect, pressed: bool) {
         use primitive_keyboard::style::*;
-        let (fill, text) = if key.on { (INK_GRAY, WHITE) } else { (FILL_GRAY, INK_GRAY) };
-        let line = if key.on { INK_GRAY } else { BORDER_GRAY };
-        self.rounded_frame(r, RADIUS as f64, BORDER as i32, line, fill);
+        let look = primitive_keyboard::look(key, pressed);
+        self.rounded_frame(r, RADIUS as f64, BORDER as i32, look.line, look.fill);
         let size = label_size(&key.label) as f32;
-        self.text(Text { text: &key.label, x: r.x as f32, y: r.y as f32 + r.h as f32 / 2.0 - size * 0.7, w: r.w as f32, size, bold: false, align: Align::Center, lines: 1, gray: text });
+        self.text(Text { text: &key.label, x: r.x as f32, y: r.y as f32 + r.h as f32 / 2.0 - size * 0.7, w: r.w as f32, size, bold: false, align: Align::Center, lines: 1, gray: look.ink });
     }
 
     /// Settings: the list of pages in groups. Each group is a header and one card; each page row shows its title, its

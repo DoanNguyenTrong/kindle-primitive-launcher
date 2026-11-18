@@ -437,6 +437,10 @@ fn main() {
                     };
                     renderer.set_sleep_image(picture);
                 }
+                // A key of the keyboard is drawn as pressed before its action runs: the tap is seen at once.
+                if ui.press_feedback(input) {
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                }
                 let before = ui.screen;
                 let action = ui.handle(input);
                 // A Settings page opens with a fresh status: the About text shows the current address and storage.

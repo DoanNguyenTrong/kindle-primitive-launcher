@@ -207,6 +207,8 @@ pub struct Ui {
     pub pressed: Option<Rect>,
     /// A message in the footer (problems in apps.toml, a failed action). Cleared by the next tap.
     pub notice: Option<String>,
+    /// The keyboard key under the finger, drawn in the on look until its action runs (see `press_feedback`).
+    pub pressed_key: Option<Rect>,
     /// Apps hidden by the user (long press, or Settings > Hidden apps). Kept so they can be shown again.
     hidden_apps: Vec<App>,
     /// Low or critical battery, shown in the footer until the level recovers or the charger is connected.
@@ -255,6 +257,7 @@ impl Ui {
             before_sleep: Screen::Home,
             pressed: None,
             notice: None,
+            pressed_key: None,
             battery: Warning::None,
             battery_level: None,
             menu: 0,
@@ -617,7 +620,27 @@ impl Ui {
         Action::Redraw { full: false }
     }
 
+    /// A tap on a key of the keyboard marks the key as pressed, so the driver can show it before the key's action
+    /// runs. Returns whether a key was marked; `handle` clears the mark.
+    pub fn press_feedback(&mut self, input: Input) -> bool {
+        let Input::Tap(x, y) = input else { return false };
+        let keys = match self.screen {
+            Screen::Password => self.layout.keyboard_keys(self.password.layer),
+            Screen::NetworkName => self.layout.keyboard_keys_with(self.network_name.layer, "Next"),
+            Screen::SshPassword => self.layout.keyboard_keys_with(self.ssh_password.layer, "Set"),
+            _ => return false,
+        };
+        match keys.into_iter().find(|(_, r)| r.contains(x, y)) {
+            Some((_, r)) => {
+                self.pressed_key = Some(r);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn handle(&mut self, input: Input) -> Action {
+        self.pressed_key = None;
         match input {
             Input::Sleep => {
                 if self.screen != Screen::Sleep {
@@ -1088,6 +1111,23 @@ mod tests {
         let rows: Vec<_> = u.layout.page_sections(Page::Device).into_iter().flat_map(|s| s.rows).collect();
         let restart = rows.iter().find(|r| r.row == Row::Restart).expect("the restart row is on the Device page");
         assert_eq!(u.handle(centre(restart.buttons[0].1)), Action::Device(DeviceCmd::RestartLauncher));
+    }
+
+    #[test]
+    fn a_key_tap_is_marked_pressed_until_its_action_runs() {
+        use primitive_keyboard::Key;
+        let mut u = ui(1);
+        u.screen = Screen::NetworkName;
+        let (_, r) = u.layout.keyboard_keys_with(u.network_name.layer, "Next").into_iter().find(|(d, _)| d.key == Key::Char('a')).unwrap();
+        let tap = Input::Tap(r.x as f32 + 5.0, r.y as f32 + 5.0);
+        assert!(u.press_feedback(tap), "a key under the finger is marked");
+        assert_eq!(u.pressed_key, Some(r));
+        u.handle(tap);
+        assert_eq!(u.pressed_key, None, "the action clears the mark");
+        assert_eq!(u.network_name.string(), "a");
+        // A tap outside the keyboard marks nothing.
+        u.screen = Screen::Settings;
+        assert!(!u.press_feedback(tap));
     }
 
     #[test]
