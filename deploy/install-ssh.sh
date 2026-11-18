@@ -39,7 +39,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "connecting to root@$HOST:$PORT"
-$SSH 'mkdir -p /mnt/us/launcher/fonts /mnt/us/launcher/cache /mnt/us/launcher/icons /mnt/us/launcher/screensavers /mnt/us/documents'
+$SSH 'mkdir -p /mnt/us/launcher/fonts /mnt/us/launcher/cache /mnt/us/launcher/icons /mnt/us/launcher/screensavers /mnt/us/launcher/ssh/bin /mnt/us/launcher/ssh/lib /mnt/us/documents'
 
 upload() {
     $SSH "cat > '$2.new' && sync && mv '$2.new' '$2'" < "$1"
@@ -58,11 +58,18 @@ sync_file() {
 sync_file "$BIN" /mnt/us/launcher/kl-launcher
 sync_file "$HERE/deploy/supervisor.sh" /mnt/us/launcher/supervisor.sh
 sync_file "$HERE/deploy/ssh.sh" /mnt/us/launcher/ssh.sh
+sync_file "$HERE/deploy/dns.sh" /mnt/us/launcher/dns.sh
 sync_file "$HERE/deploy/boot.sh" /mnt/us/launcher/boot.sh
 sync_file "$HERE/deploy/holder.lua" /mnt/us/launcher/holder.lua
 sync_file "$HERE/deploy/run-koreader.sh" /mnt/us/launcher/run-koreader.sh
 sync_file "$HERE/deploy/apps.toml.example" /mnt/us/launcher/apps.toml.example
 sync_file "$ENTRY_TMP" /mnt/us/documents/Launcher.sh
+# The SSH server: Dropbear and its zlib, copied by SHA-256 like the rest. The host key is kept across installs. The
+# first install that has none copies the one an earlier install used (Primitive Browser's, or KOReader's), so the
+# server keeps its identity. A password set by an earlier build is kept too.
+sync_file "$HERE/assets/device/armv7/dropbear" /mnt/us/launcher/ssh/bin/dropbear
+sync_file "$HERE/assets/device/armv7/libz.so.1" /mnt/us/launcher/ssh/lib/libz.so.1
+$SSH 'mkdir -p /mnt/us/launcher/ssh/bin /mnt/us/launcher/ssh/lib; chmod 755 /mnt/us/launcher/ssh/bin/dropbear 2>/dev/null || true; if [ ! -f /mnt/us/launcher/ssh/dropbear_ed25519_host_key ]; then for k in /mnt/us/browser/ssh/dropbear_ed25519_host_key /mnt/us/koreader/settings/SSH/dropbear_ed25519_host_key; do if [ -f "$k" ]; then cp "$k" /mnt/us/launcher/ssh/dropbear_ed25519_host_key && echo "SSH host key kept from $k"; break; fi; done; fi; if [ -f /mnt/us/browser/dns/default.script.original ] && [ ! -f /mnt/us/launcher/dns/default.script.original ]; then mkdir -p /mnt/us/launcher/dns && cp /mnt/us/browser/dns/default.script.original /mnt/us/launcher/dns/default.script.original && echo "DNS original kept from the browser"; fi; if [ -f /mnt/us/browser/ssh/password.txt ] && [ ! -f /mnt/us/launcher/ssh/password-set ]; then mkdir -p /mnt/us/launcher/ssh && : > /mnt/us/launcher/ssh/password-set && echo "SSH password kept from the browser"; fi'
 for font in NotoSans-Regular.ttf NotoSans-Bold.ttf NOTO-LICENSE.txt; do
     sync_file "$HERE/assets/fonts/$font" "/mnt/us/launcher/fonts/$font"
 done

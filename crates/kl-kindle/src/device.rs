@@ -115,9 +115,9 @@ fn system() -> primitive_quick::Stats {
     primitive_quick::read(meter, "/mnt/us")
 }
 
-/// Whether the SSH server started by `ssh.sh` (Primitive Browser's dropbear) is running.
+/// Whether the SSH server started by `ssh.sh` is running (its pid file).
 fn ssh_running() -> bool {
-    std::fs::read_to_string("/tmp/dropbear_browser.pid")
+    std::fs::read_to_string("/tmp/dropbear_launcher.pid")
         .ok()
         .and_then(|p| p.trim().parse::<i32>().ok())
         // SAFETY: signal 0 only checks that the process exists.
@@ -126,6 +126,14 @@ fn ssh_running() -> bool {
 
 pub fn status(settings: &Settings) -> Status {
     let storage = free_storage();
+    let ip = wlan_ip();
+    let ssh = ssh_running();
+    // The connect command, shown while the server runs (the address is the Kindle's Wi-Fi address).
+    let ssh_address = match (ssh, ip.as_str()) {
+        (false, _) => String::new(),
+        (true, "not connected") => "no Wi-Fi address yet".into(),
+        (true, ip) => format!("ssh -p 2222 root@{ip}"),
+    };
     let rotation = settings.rotation;
     let sleep_launcher = settings.sleep_screen_launcher;
     let (clock, date, _) = local_time();
@@ -152,10 +160,13 @@ pub fn status(settings: &Settings) -> Status {
         wifi_signal: lipc_text(WIFID, "signalStrength").and_then(|t| kl_core::wifi::parse_signal(&t)),
         light: get_int(POWERD, "flIntensity").unwrap_or(0).min(LEVEL_MAX),
         warmth: get_int(POWERD, "currentAmberLevel").unwrap_or(0).min(LEVEL_MAX),
-        ssh: ssh_running(),
+        ssh,
+        ssh_address,
+        ssh_password_set: ssh_password_set(),
+        public_dns: public_dns(),
         rotation,
         memory: mem_available(),
-        ip: wlan_ip(),
+        ip,
         system: system(),
         storage,
     }
@@ -423,16 +434,73 @@ pub fn set_autostart(dir: &str, on: bool) {
     log(&format!("autostart {}", if on { "on" } else { "off" }));
 }
 
-pub fn set_ssh(dir: &str, on: bool) {
-    let script = format!("{dir}/ssh.sh");
-    let result = Command::new("/bin/sh")
-        .args([script.as_str(), if on { "start" } else { "stop" }])
-        .stdin(Stdio::null())
-        .output();
-    match result {
-        Ok(out) => log(&format!("ssh.sh {}: {} {}", if on { "start" } else { "stop" }, out.status, String::from_utf8_lossy(&out.stdout).trim())),
-        Err(e) => log(&format!("ssh.sh: {e}")),
+/// Run one of the launcher's scripts (in `dir`) with `arg`, and `input` on its stdin. Returns whether it succeeded
+/// and what it printed, on one line. The output is logged; `input` (a password) never is.
+fn run_script(dir: &str, script: &str, arg: &str, input: Option<&str>) -> (bool, String) {
+    use std::io::Write;
+    let path = format!("{dir}/{script}");
+    let child = Command::new("/bin/sh")
+        .args([path.as_str(), arg])
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(e) => {
+            log(&format!("{script} {arg}: {e}"));
+            return (false, format!("could not run {script}"));
+        }
+    };
+    if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
+        let _ = writeln!(stdin, "{text}");
     }
+    match child.wait_with_output() {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
+            log(&format!("{script} {arg}: {} {text}", out.status));
+            (out.status.success(), text)
+        }
+        Err(e) => {
+            log(&format!("{script} {arg}: {e}"));
+            (false, format!("{script} did not finish"))
+        }
+    }
+}
+
+/// Start or stop the SSH server (`ssh.sh`): from Settings > SSH & DNS and the quick settings' SSH switch.
+pub fn set_ssh(dir: &str, on: bool) {
+    run_script(dir, "ssh.sh", if on { "start" } else { "stop" }, None);
+}
+
+/// Check the SSH server (`ssh.sh check`): its process, the port and the firewall, as one line.
+pub fn check_ssh(dir: &str) -> String {
+    let (_, text) = run_script(dir, "ssh.sh", "check", None);
+    text
+}
+
+/// Set the root password for SSH (`ssh.sh password`), with the password on stdin.
+pub fn set_ssh_password(dir: &str, password: &str) -> Result<(), String> {
+    match run_script(dir, "ssh.sh", "password", Some(password)) {
+        (true, _) => Ok(()),
+        (false, text) if text.is_empty() => Err("could not set the password".into()),
+        (false, text) => Err(text),
+    }
+}
+
+/// Public DNS on or off (`dns.sh`), from Settings > SSH & DNS.
+pub fn set_public_dns(dir: &str, on: bool) {
+    run_script(dir, "dns.sh", if on { "public" } else { "restore" }, None);
+}
+
+/// Whether public DNS (1.1.1.1 and 8.8.8.8) is in use: the device's resolver file names it.
+fn public_dns() -> bool {
+    std::fs::read_to_string("/etc/resolv.conf").is_ok_and(|t| t.contains("1.1.1.1"))
+}
+
+/// Whether a root password for SSH has been set from the launcher (the flag `ssh.sh password` writes).
+fn ssh_password_set() -> bool {
+    Path::new(&launcher_dir()).join("ssh/password-set").exists()
 }
 
 /// Map a `lipc-wait-event` line to an input. Lines look like `goingToScreenSaver 2`, or with the source

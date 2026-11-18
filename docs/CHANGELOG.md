@@ -3,6 +3,18 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.2.21
+
+- The SSH server is the launcher's own: Dropbear and its zlib ship in the package (`ssh/bin`, `ssh/lib`), and the host key
+  stays in `ssh/` across installs. The first install copies the key and the password flag from the browser's files, so
+  nothing is lost. Primitive Browser no longer ships or runs an SSH server.
+- Public DNS is the launcher's: `dns.sh`, with its backup in `dns/`; the first install keeps the browser's backup.
+- Settings has a page for SSH & DNS, under Network. SSH: the switch (the quick settings' SSH switch does the same),
+  the root password (set on the keyboard), the connect command while the server runs, and a check of the server.
+  DNS: public DNS on or off (1.1.1.1 and 8.8.8.8), with the network's own settings kept for Restore.
+- SSH opens the Kindle's firewall for port 2222 when it starts and closes it when it stops.
+- Primitive Browser's Diagnostics page is gone; its SSH and DNS features are here.
+
 ## 0.2.20
 
 - Quick settings has a System section: CPU, memory and storage, each with an icon, a bar and its value. The status

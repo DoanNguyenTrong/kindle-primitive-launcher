@@ -30,8 +30,8 @@ certutil -hashfile primitive-launcher-<version>.zip SHA256    # Windows
 
 ## Install over SSH (developers)
 
-With the SSH server running on the Kindle (Primitive Browser's Diagnostics, KOReader, or the launcher's
-Settings), build and install from a checkout:
+With the SSH server running on the Kindle (start it in the launcher's Settings > SSH & DNS, or with the quick
+settings' SSH switch), build and install from a checkout:
 
 ```sh
 cargo zigbuild --release -p kl-kindle --target armv7-unknown-linux-musleabihf
@@ -48,8 +48,8 @@ KINDLE_HOST=<kindle-ip> sh deploy/install-ssh.sh
 - **Apps:** library entries in `documents/` (`*.sh`) appear by themselves. Others can be added in
   `launcher/apps.toml`; `launcher/apps.toml.example` shows how.
 - **Edit:** long-press an app to move it, change its icon (PNG files in `launcher/icons/`) or hide it.
-- **Settings:** frontlight, warmth, dark mode, Wi-Fi, screen turn, the opening animation, SSH and the sleep
-  screen.
+- **Settings:** frontlight, warmth, dark mode, Wi-Fi, SSH and public DNS (SSH & DNS), screen turn, the opening
+  animation and the sleep screen.
 
 Your settings are in `launcher/settings.txt` and `launcher/apps.toml`. The log is `launcher/log-launcher.txt`.
 

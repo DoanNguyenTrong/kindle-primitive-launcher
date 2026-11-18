@@ -27,13 +27,18 @@ command -v zip >/dev/null 2>&1 || { echo "zip is needed to make the package" >&2
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 L="$STAGE/$NAME/launcher"
-mkdir -p "$L/fonts" "$L/icons" "$L/screensavers" "$STAGE/$NAME/documents"
+mkdir -p "$L/fonts" "$L/icons" "$L/screensavers" "$L/ssh/bin" "$L/ssh/lib" "$L/ssh/licenses" "$STAGE/$NAME/documents"
 
 cp "$BIN" "$L/kl-launcher"
 chmod 755 "$L/kl-launcher"
-for f in supervisor.sh ssh.sh boot.sh holder.lua run-koreader.sh apps.toml.example; do
+for f in supervisor.sh ssh.sh dns.sh boot.sh holder.lua run-koreader.sh apps.toml.example; do
     cp "deploy/$f" "$L/$f"
 done
+# The SSH server (Dropbear and its zlib, with their licences). The host key and the password flag are not in the package.
+cp assets/device/armv7/dropbear "$L/ssh/bin/"
+chmod 755 "$L/ssh/bin/dropbear"
+cp assets/device/armv7/libz.so.1 "$L/ssh/lib/"
+cp assets/device/licenses/DROPBEAR-LICENSE.txt assets/device/licenses/ZLIB-LICENSE.txt "$L/ssh/licenses/"
 cp assets/fonts/NotoSans-Regular.ttf assets/fonts/NotoSans-Bold.ttf assets/fonts/NOTO-LICENSE.txt "$L/fonts/"
 printf 'PNG files here can be chosen as app icons: long-press an app, then Change icon.\n' > "$L/icons/README.txt"
 printf 'PNG files here are shown on sleep when Settings > Sleep screen is "The launcher'"'"'s own".\n' > "$L/screensavers/README.txt"

@@ -334,6 +334,7 @@ impl Renderer {
             Screen::NetworkDetail => self.network_detail(ui),
             Screen::Password => self.password_screen(ui),
             Screen::NetworkName => self.network_name_screen(ui),
+            Screen::SshPassword => self.ssh_password_screen(ui),
             // The dialog is a pop-up over the grid, drawn last (below).
             Screen::ConfirmKindle => self.home(ui, status, &mut icon_blits),
             // A sleep picture replaces the text, except for a battery warning, which matters more.
@@ -928,6 +929,37 @@ impl Renderer {
         }
     }
 
+    /// The SSH password screen: the password field with its caret, the rule, and the keyboard whose Go key says Set.
+    fn ssh_password_screen(&mut self, ui: &Ui) {
+        let l = ui.layout;
+        let title = l.title();
+        self.text(Text { text: "SSH password", x: 40.0, y: 36.0, w: 800.0, size: 56.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), "Back", true);
+        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
+        self.text(Text { text: "Root password for SSH", x: MARGIN_X as f32, y: (title.bottom() + 24) as f32, w: 600.0, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+        let field = l.password_field();
+        self.rounded_frame(field, 20.0, 3, BLACK, WHITE);
+        let typed: String = ui.ssh_password.text.iter().collect();
+        let (text, gray) = if typed.is_empty() { ("Type the password".to_string(), 120) } else { (typed.clone(), BLACK) };
+        self.text(Text { text: &text, x: (field.x + 28) as f32, y: (field.y + 30) as f32, w: (field.w - 56) as f32, size: 40.0, bold: false, align: Align::Start, lines: 1, gray });
+        if !typed.is_empty() {
+            let before: String = ui.ssh_password.text[..ui.ssh_password.caret].iter().collect();
+            let x = field.x + 28 + self.text_width(&before, 40.0, false) as i32;
+            self.fill(Rect::new(x, field.y + 22, 3, 56), BLACK);
+        }
+        let note = "6 to 64 letters, digits or - _ . @ # % + = !, no spaces. Connect with the address on this page.";
+        self.text(Text { text: note, x: MARGIN_X as f32, y: (field.bottom() + 24) as f32, w: (l.width - 2 * MARGIN_X) as f32, size: 26.0, bold: false, align: Align::Start, lines: 2, gray: 85 });
+        let area = l.keyboard_area();
+        self.fill(Rect::new(area.x, area.y, area.w, primitive_keyboard::style::TOP_LINE as i32), primitive_keyboard::style::TOP_LINE_GRAY);
+        for (key, r) in l.keyboard_keys_with(ui.ssh_password.layer, "Set") {
+            self.key(&key, r);
+        }
+        if let Some(notice) = ui.notice.clone() {
+            let n = l.password_notice();
+            self.text(Text { text: &notice, x: n.x as f32, y: n.y as f32, w: n.w as f32, size: 28.0, bold: false, align: Align::Center, lines: 2, gray: BLACK });
+        }
+    }
+
     /// One key of the keyboard, in the shared look (`primitive-keyboard::style`, the same as Primitive Browser's
     /// keys): a light key with a thin grey outline, or an inked key with white text when it is on (Shift, Go).
     fn key(&mut self, key: &primitive_keyboard::KeyDef, r: Rect) {
@@ -1235,7 +1267,8 @@ fn page_value(page: kl_core::layout::Page, ui: &Ui, s: &Status) -> String {
         Page::Display => format!("Frontlight {} · Dark mode {} · Animation {}", s.light, onoff(s.dark_mode), onoff(s.animation)),
         Page::Sleep => if s.sleep_launcher { "The launcher's own".into() } else { "The Kindle's".into() },
         Page::Apps => format!("{} hidden", ui.hidden_count()),
-        Page::Device => format!("SSH {} · Start with the Kindle {}", onoff(s.ssh), onoff(s.autostart)),
+        Page::Connection => format!("SSH {} · Public DNS {}", onoff(s.ssh), onoff(s.public_dns)),
+        Page::Device => format!("Start with the Kindle {}", onoff(s.autostart)),
         Page::About => format!("Version {}", kl_core::VERSION),
     }
 }
@@ -1264,6 +1297,10 @@ fn row_value(row: Row, ui: &Ui, s: &Status) -> String {
             (false, Rotation::UpsideDown) => "Upside down (fixed)".into(),
         },
         Row::Ssh => if s.ssh { "Running".into() } else { "Off".into() },
+        Row::SshPassword => if s.ssh_password_set { "Set".into() } else { "Not set".into() },
+        Row::SshAddress => if s.ssh && !s.ssh_address.is_empty() { s.ssh_address.clone() } else { "Off".into() },
+        Row::SshCheck => "Tap to check".into(),
+        Row::PublicDns => if s.public_dns { "On: Cloudflare and Google".into() } else { "Off".into() },
         Row::Autostart => if s.autostart { "On".into() } else { "Off".into() },
         Row::SleepScreen => if s.sleep_launcher { "The launcher's own".into() } else { "The Kindle's".into() },
         Row::Hidden => match ui.hidden_count() {

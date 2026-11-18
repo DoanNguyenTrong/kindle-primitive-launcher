@@ -122,7 +122,10 @@ explains it. Design rules, with the sources and their limits: [settings-design.m
 - [x] Display page: frontlight and warmth (round buttons), dark mode, opening animation, screen rotation with a tap-to-turn value (v0.2.15).
 - [x] Sleep page: the sleep screen choice (v0.2.15).
 - [x] Apps page: hidden apps (Show all) (v0.2.15).
-- [x] Device page: start with the Kindle, SSH, Kindle UI (v0.2.15).
+- [x] Device page: start with the Kindle, Kindle UI (v0.2.15; SSH moved to its own page in v0.2.21).
+- [x] SSH & DNS page (v0.2.21): the SSH switch (the quick settings' SSH switch does the same), the root password,
+      the connect command while it runs, a check of the server, and public DNS (1.1.1.1, 8.8.8.8) with Restore.
+      Moved from the browser's Diagnostics page, which is gone. Device checks pending.
 - [ ] Device page: restart the launcher (not built; the launcher restarts itself after an install).
 - [x] About page: version, apps, memory, free storage, Wi-Fi address (v0.2.15).
 

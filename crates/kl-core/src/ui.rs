@@ -34,6 +34,8 @@ pub enum Screen {
     Password,
     /// The name of a network that is not in the list (a hidden network), typed on the keyboard.
     NetworkName,
+    /// The SSH server's root password, typed on the keyboard.
+    SshPassword,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -57,6 +59,8 @@ pub enum DeviceCmd {
     ToggleWifi,
     ToggleRotation,
     ToggleSsh,
+    /// Settings > DNS: public DNS on or off (the network's servers back).
+    ToggleDns,
     ToggleAutostart,
     ToggleSleepScreen,
     /// Follow the device's turn again (Settings > Screen > Auto).
@@ -96,6 +100,11 @@ pub enum Action {
     JoinWifi { name: String, secured: bool, password: Option<String>, saved: bool },
     /// Forget a saved network (delete its profile).
     ForgetWifi(String),
+    /// Set the root password the SSH server checks, from the SSH password screen. The driver gives it to the
+    /// device on stdin only: it is not logged, kept, or put in a command line.
+    SetSshPassword(String),
+    /// Check the SSH server (its process, port and firewall): the driver shows the result in the notice.
+    CheckSsh,
 }
 
 /// What the status strip and Settings show. Filled by the driver.
@@ -113,6 +122,12 @@ pub struct Status {
     pub light: u32,
     pub warmth: u32,
     pub ssh: bool,
+    /// The address to connect to while SSH runs, e.g. "ssh -p 2222 root@192.168.1.28"; empty when off or unknown.
+    pub ssh_address: String,
+    /// Whether the root password for SSH has been set from the launcher (or by the browser before it).
+    pub ssh_password_set: bool,
+    /// Public DNS (1.1.1.1 and 8.8.8.8) is in use.
+    pub public_dns: bool,
     /// False while the launcher is off at boot (the DISABLE file exists).
     pub autostart: bool,
     /// The launcher's own sleep screen is on (the stock screensaver is unloaded).
@@ -135,12 +150,16 @@ pub struct Status {
 }
 
 impl Status {
-    /// Whether what the Settings screens show from the status differs: Wi-Fi, SSH and the start-up switch.
+    /// Whether what the Settings screens show from the status differs: Wi-Fi, SSH and its password and address,
+    /// public DNS, and the start-up switch.
     pub fn settings_differs(&self, other: &Status) -> bool {
         self.wifi_on != other.wifi_on
             || self.wifi_state != other.wifi_state
             || self.wifi_signal != other.wifi_signal
             || self.ssh != other.ssh
+            || self.ssh_address != other.ssh_address
+            || self.ssh_password_set != other.ssh_password_set
+            || self.public_dns != other.public_dns
             || self.autostart != other.autostart
     }
 
@@ -162,6 +181,16 @@ pub const MIN_PASSWORD: usize = 8;
 pub const MAX_PASSWORD: usize = 63;
 /// The longest network name (SSID).
 pub const MAX_NAME: usize = 32;
+/// The SSH root password: 6 to 64 characters of letters, digits and - _ . @ # % + = ! (no spaces).
+pub const MIN_SSH_PASSWORD: usize = 6;
+pub const MAX_SSH_PASSWORD: usize = 64;
+
+/// Whether `pw` is an acceptable SSH password. Only these characters can reach the device's shell or chpasswd, so
+/// nothing in it can change what the launcher runs.
+pub fn valid_ssh_password(pw: &str) -> bool {
+    (MIN_SSH_PASSWORD..=MAX_SSH_PASSWORD).contains(&pw.chars().count())
+        && pw.chars().all(|c| c.is_ascii_alphanumeric() || "-_.@#%+=!".contains(c))
+}
 
 /// A horizontal swipe longer than this (pixels) turns the page.
 const SWIPE_MIN: f32 = 150.0;
@@ -206,6 +235,8 @@ pub struct Ui {
     /// password then joins it as an open network).
     pub network_name: primitive_keyboard::Editor,
     pub wifi_hidden: bool,
+    /// The SSH password being typed (kept here only until Set; never logged).
+    pub ssh_password: primitive_keyboard::Editor,
 }
 
 impl Ui {
@@ -239,6 +270,7 @@ impl Ui {
             show_password: false,
             network_name: primitive_keyboard::Editor::new(MAX_NAME),
             wifi_hidden: false,
+            ssh_password: primitive_keyboard::Editor::new(MAX_SSH_PASSWORD),
         }
     }
 
@@ -612,6 +644,7 @@ impl Ui {
             Screen::NetworkDetail => self.network_detail(input),
             Screen::Password => self.password_screen(input),
             Screen::NetworkName => self.network_name_screen(input),
+            Screen::SshPassword => self.ssh_password_screen(input),
             Screen::ConfirmKindle => self.confirm(input),
             Screen::AppMenu => self.app_menu(input),
             Screen::Extensions => self.extensions_list(input),
@@ -731,6 +764,33 @@ impl Ui {
 
     /// The password screen: type the password on the keyboard (its Go key joins), show or hide it. Back returns to
     /// the network screen.
+    /// The SSH password: type it on the keyboard, then Set gives it to the driver. Back returns to the SSH & DNS page.
+    /// The password is not shown after this screen and is never logged.
+    fn ssh_password_screen(&mut self, input: Input) -> Action {
+        match input {
+            Input::PageBack => self.go(Screen::Page(Page::Connection)),
+            Input::Tap(x, y) => {
+                if self.layout.done_button().inset(-20).contains(x, y) {
+                    return self.go(Screen::Page(Page::Connection));
+                }
+                let Some(key) = self.layout.keyboard_key_at(self.ssh_password.layer, x, y) else { return Action::None };
+                if self.ssh_password.press(key) != primitive_keyboard::Press::Go {
+                    return Action::Redraw { full: false };
+                }
+                let password = self.ssh_password.string();
+                if !valid_ssh_password(&password) {
+                    self.notice = Some(format!("Use {MIN_SSH_PASSWORD} to {MAX_SSH_PASSWORD} letters, digits or - _ . @ # % + = !, no spaces."));
+                    return Action::Redraw { full: false };
+                }
+                self.ssh_password = primitive_keyboard::Editor::new(MAX_SSH_PASSWORD);
+                self.notice = Some("Setting the SSH password…".into());
+                self.screen = Screen::Page(Page::Connection);
+                Action::SetSshPassword(password)
+            }
+            _ => Action::None,
+        }
+    }
+
     fn password_screen(&mut self, input: Input) -> Action {
         let Some(net) = self.wifi_target.clone() else { return self.go(Screen::Settings) };
         let back = if self.wifi_hidden { Screen::NetworkName } else { Screen::NetworkDetail };
@@ -872,6 +932,12 @@ impl Ui {
                 Some(Button::Wifi) => Action::Device(DeviceCmd::ToggleWifi),
                 Some(Button::Rotation) => Action::Device(DeviceCmd::ToggleRotation),
                 Some(Button::Ssh) => Action::Device(DeviceCmd::ToggleSsh),
+                Some(Button::PublicDns) => Action::Device(DeviceCmd::ToggleDns),
+                Some(Button::SshCheck) => Action::CheckSsh,
+                Some(Button::SshPassword) => {
+                    self.ssh_password = primitive_keyboard::Editor::new(MAX_SSH_PASSWORD);
+                    self.go(Screen::SshPassword)
+                }
                 Some(Button::Autostart) => Action::Device(DeviceCmd::ToggleAutostart),
                 Some(Button::ShowHidden) => self.show_all(),
                 Some(Button::SleepScreen) => Action::Device(DeviceCmd::ToggleSleepScreen),
@@ -984,6 +1050,44 @@ mod tests {
     }
 
     #[test]
+    fn connection_page_gives_ssh_and_dns_commands_and_a_password_screen() {
+        use primitive_keyboard::Key;
+        use crate::layout::Row;
+        let mut u = ui(1);
+        u.screen = Screen::Page(Page::Connection);
+        let rows: Vec<_> = u.layout.page_sections(Page::Connection).into_iter().flat_map(|s| s.rows).collect();
+        let button = |rw: Row| rows.iter().find(|x| x.row == rw).unwrap().buttons.first().map(|b| b.1);
+        assert_eq!(u.handle(centre(button(Row::Ssh).unwrap())), Action::Device(DeviceCmd::ToggleSsh));
+        assert_eq!(u.handle(centre(button(Row::PublicDns).unwrap())), Action::Device(DeviceCmd::ToggleDns));
+        assert!(button(Row::SshAddress).is_none(), "the address is only shown");
+        // Set with three letters asks for at least six; six letters go to the driver.
+        u.handle(centre(button(Row::SshPassword).unwrap()));
+        assert_eq!(u.screen, Screen::SshPassword);
+        let key = |u: &Ui, k: Key| u.layout.keyboard_keys(u.ssh_password.layer).into_iter().find(|(d, _)| d.key == k).unwrap().1;
+        for c in ['a', 'b', 'c'] {
+            u.handle(centre(key(&u, Key::Char(c))));
+        }
+        u.handle(centre(key(&u, Key::Go)));
+        assert!(u.notice.as_deref().unwrap().contains("6 to 64"));
+        assert_eq!(u.screen, Screen::SshPassword);
+        for c in ['d', 'e', 'f'] {
+            u.handle(centre(key(&u, Key::Char(c))));
+        }
+        assert_eq!(u.handle(centre(key(&u, Key::Go))), Action::SetSshPassword("abcdef".into()));
+        assert_eq!(u.screen, Screen::Page(Page::Connection), "the password is set from the SSH & DNS page");
+    }
+
+    #[test]
+    fn ssh_passwords_have_safe_characters_and_length() {
+        assert!(valid_ssh_password("abc123"));
+        assert!(valid_ssh_password("Kindle-2026_x.@#%+=!"));
+        assert!(!valid_ssh_password("short"));
+        assert!(!valid_ssh_password("has space1"));
+        assert!(!valid_ssh_password("semi;colon1"));
+        assert!(!valid_ssh_password(&"a".repeat(65)));
+    }
+
+    #[test]
     fn status_strip_opens_settings_and_buttons_give_device_commands() {
         let mut u = ui(1);
         u.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 40.0 });
@@ -992,7 +1096,7 @@ mod tests {
         u.handle(centre(all));
         assert_eq!(u.screen, Screen::Settings);
         // The Settings list opens the Display page, whose rows give the device commands.
-        let (display, r) = u.layout.settings_home_rows()[1];
+        let (display, r) = *u.layout.settings_home_rows().iter().find(|(p, _)| *p == Page::Display).unwrap();
         assert_eq!(display, Page::Display);
         u.handle(centre(r));
         assert_eq!(u.screen, Screen::Page(Page::Display));

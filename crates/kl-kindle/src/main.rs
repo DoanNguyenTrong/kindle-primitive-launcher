@@ -46,6 +46,8 @@ pub enum Ev {
     Wifi(kl_core::wifi::WifiInfo),
     /// A Wi-Fi join or forget finished: whether it worked, and what to tell the user.
     WifiResult { ok: bool, message: String },
+    /// A background SSH job finished (set the password, check the server): what to tell the user.
+    Notice(String),
 }
 
 /// Join a network on a thread, then send the result and a fresh scan. The password is passed on, never logged.
@@ -60,6 +62,14 @@ fn start_wifi_join(tx: Sender<Ev>, name: String, secured: bool, password: Option
         log(&format!("join {name}: {}", if ok { "connected" } else { "failed" }));
         let _ = tx.send(Ev::WifiResult { ok, message });
         let _ = tx.send(Ev::Wifi(device::wifi_info()));
+    });
+}
+
+/// Run an SSH job on a thread (with the launcher's folder), then send its message to the event loop as a notice.
+fn start_ssh_job(tx: Sender<Ev>, job: impl FnOnce(&str) -> String + Send + 'static) {
+    thread::spawn(move || {
+        let message = job(&device::launcher_dir());
+        let _ = tx.send(Ev::Notice(message));
     });
 }
 
@@ -347,6 +357,11 @@ fn main() {
                 status = device::status(&settings);
                 Action::Redraw { full: false }
             }
+            Ev::Notice(message) => {
+                ui.notice = Some(message);
+                status = device::status(&settings);
+                Action::Redraw { full: false }
+            }
             Ev::Background { name, line, ok } => {
                 log(&format!("background end {name}: ok={ok} {line}"));
                 ui.background_done();
@@ -386,7 +401,7 @@ fn main() {
                     } else {
                         Action::None
                     }
-                } else if matches!(ui.screen, Screen::Settings | Screen::Page(_) | Screen::NetworkDetail | Screen::Password | Screen::NetworkName) {
+                } else if matches!(ui.screen, Screen::Settings | Screen::Page(_) | Screen::NetworkDetail | Screen::Password | Screen::NetworkName | Screen::SshPassword) {
                     // The Settings screens show Wi-Fi, SSH and the start-up switch: redraw when those change.
                     let fresh = device::status(&settings);
                     let changed = status.settings_differs(&fresh);
@@ -502,6 +517,17 @@ fn main() {
             }
             Action::ForgetWifi(name) => {
                 start_wifi_forget(tx.clone(), name);
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::SetSshPassword(password) => {
+                start_ssh_job(tx.clone(), move |dir| match device::set_ssh_password(dir, &password) {
+                    Ok(()) => "SSH password set".to_string(),
+                    Err(e) => format!("SSH password: {e}"),
+                });
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::CheckSsh => {
+                start_ssh_job(tx.clone(), |dir| format!("SSH: {}", device::check_ssh(dir)));
                 display.show(renderer.draw(&ui, &status), &settings, false);
             }
             Action::SetOrder(order) => {
@@ -634,6 +660,7 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::Warmth(step) => device::set_warmth((status.warmth as i32 + step).clamp(0, device::LEVEL_MAX as i32) as u32),
         DeviceCmd::ToggleWifi => device::set_wifi(!status.wifi_on),
         DeviceCmd::ToggleSsh => device::set_ssh(&dir.to_string_lossy(), !status.ssh),
+        DeviceCmd::ToggleDns => device::set_public_dns(&dir.to_string_lossy(), !status.public_dns),
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::ToggleSleepScreen => {
             settings.sleep_screen_launcher = !settings.sleep_screen_launcher;

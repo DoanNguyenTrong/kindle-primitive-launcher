@@ -43,6 +43,9 @@ fn demo_status() -> Status {
         light: 12,
         warmth: 6,
         ssh: false,
+        ssh_address: String::new(),
+        ssh_password_set: true,
+        public_dns: false,
         autostart: true,
         sleep_launcher: false,
         auto_rotation: true,
@@ -220,6 +223,19 @@ fn main() {
     off.wifi_on = false;
     off.ssh = true;
     write_png(&out.join("status-airplane-ssh.png"), W, H, &renderer.draw(&ui, &off));
+    // SSH on, with its connect command, public DNS on: the SSH & DNS page. Made-up address.
+    let mut ssh_on = demo_status();
+    ssh_on.ssh = true;
+    ssh_on.ssh_address = "ssh -p 2222 root@192.168.1.40".into();
+    ssh_on.public_dns = true;
+    ui.screen = kl_core::Screen::Page(kl_core::layout::Page::Connection);
+    write_png(&out.join("ssh-dns-on.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    // The SSH password screen, with a password typed (made up).
+    ui.screen = kl_core::Screen::SshPassword;
+    ui.ssh_password.text = "Sunny-day9".chars().collect();
+    ui.ssh_password.caret = ui.ssh_password.text.len();
+    write_png(&out.join("ssh-password.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    ui.ssh_password = primitive_keyboard::Editor::new(64);
     ui.handle(Input::Sleep);
     // The launcher's own sleep screen with a picture (the launcher icon stands in for one).
     match kl_render::sleep_image(std::path::Path::new("assets/launcher-icon.png"), W, H) {

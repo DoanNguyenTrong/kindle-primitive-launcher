@@ -50,6 +50,7 @@ pub fn zoom_steps(from: Rect, to: Rect, n: usize) -> Vec<Rect> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Wifi,
+    Connection,
     Display,
     Sleep,
     Apps,
@@ -65,11 +66,12 @@ pub struct Group {
 }
 
 impl Page {
-    pub const ALL: [Page; 6] = [Page::Wifi, Page::Display, Page::Sleep, Page::Apps, Page::Device, Page::About];
+    pub const ALL: [Page; 7] = [Page::Wifi, Page::Connection, Page::Display, Page::Sleep, Page::Apps, Page::Device, Page::About];
 
     pub fn title(self) -> &'static str {
         match self {
             Page::Wifi => "Wi-Fi & network",
+            Page::Connection => "SSH & DNS",
             Page::Display => "Display",
             Page::Sleep => "Sleep",
             Page::Apps => "Apps",
@@ -82,6 +84,18 @@ impl Page {
     pub fn groups(self) -> &'static [Group] {
         match self {
             Page::Wifi => &[Group { header: "Wi-Fi", rows: &[Row::Wifi], footer: "Turn Wi-Fi off in an airplane, or to save battery." }],
+            Page::Connection => &[
+                Group {
+                    header: "SSH",
+                    rows: &[Row::Ssh, Row::SshPassword, Row::SshAddress, Row::SshCheck],
+                    footer: "Off by default. Connect from a computer on the same Wi-Fi, with the address shown and the password you set. Quick settings' SSH switch does the same.",
+                },
+                Group {
+                    header: "DNS",
+                    rows: &[Row::PublicDns],
+                    footer: "On uses Cloudflare and Google (1.1.1.1, 8.8.8.8) instead of the network's servers. Off puts the network's own settings back.",
+                },
+            ],
             Page::Display => &[
                 Group { header: "Brightness", rows: &[Row::Frontlight, Row::Warmth], footer: "" },
                 Group { header: "Appearance", rows: &[Row::DarkMode], footer: "White on black for the launcher's screens. Pictures keep their colours." },
@@ -96,7 +110,6 @@ impl Page {
             Page::Apps => &[Group { header: "Grid", rows: &[Row::Hidden], footer: "Long-press an icon to hide it." }],
             Page::Device => &[
                 Group { header: "Startup", rows: &[Row::Autostart], footer: "Not active yet: the boot job comes in a later phase." },
-                Group { header: "Connection", rows: &[Row::Ssh], footer: "SSH on port 2222, for development. Off by default." },
                 Group { header: "Kindle", rows: &[Row::KindleUi], footer: "Opens the stock Kindle UI. It takes about a minute to start." },
             ],
             Page::About => &[],
@@ -106,7 +119,7 @@ impl Page {
 
 /// The Settings list: its groups, each a header, a card of pages, and nothing under it.
 pub const HOME_GROUPS: &[(&str, &[Page])] = &[
-    ("Network", &[Page::Wifi]),
+    ("Network", &[Page::Wifi, Page::Connection]),
     ("Display", &[Page::Display, Page::Sleep]),
     ("System", &[Page::Apps, Page::Device]),
     ("About", &[Page::About]),
@@ -137,6 +150,9 @@ pub enum Button {
     Rotation,
     RotationAuto,
     Ssh,
+    SshPassword,
+    SshCheck,
+    PublicDns,
     Autostart,
     ShowHidden,
     SleepScreen,
@@ -177,6 +193,10 @@ pub enum Row {
     Rotation,
     Animation,
     Ssh,
+    SshPassword,
+    SshAddress,
+    SshCheck,
+    PublicDns,
     Autostart,
     Hidden,
     SleepScreen,
@@ -184,7 +204,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 11] = [
+    pub const ALL: [Row; 15] = [
         Row::Frontlight,
         Row::Warmth,
         Row::DarkMode,
@@ -192,6 +212,10 @@ impl Row {
         Row::Rotation,
         Row::Animation,
         Row::Ssh,
+        Row::SshPassword,
+        Row::SshAddress,
+        Row::SshCheck,
+        Row::PublicDns,
         Row::Autostart,
         Row::Hidden,
         Row::SleepScreen,
@@ -206,7 +230,11 @@ impl Row {
             Row::Animation => "Opening animation",
             Row::Wifi => "Wi-Fi",
             Row::Rotation => "Rotation",
-            Row::Ssh => "SSH (port 2222)",
+            Row::Ssh => "SSH server (port 2222)",
+            Row::SshPassword => "Password",
+            Row::SshAddress => "Connect with",
+            Row::SshCheck => "Check the server",
+            Row::PublicDns => "Public DNS",
             Row::Autostart => "Start with the Kindle",
             Row::Hidden => "Hidden apps",
             Row::SleepScreen => "Sleep screen",
@@ -325,6 +353,10 @@ fn row_buttons(l: &Layout, row: Row, r: Rect) -> Vec<(Button, Rect)> {
         Row::DarkMode => vec![(Button::DarkMode, r)],
         Row::Animation => vec![(Button::Animation, r)],
         Row::Ssh => vec![(Button::Ssh, r)],
+        Row::SshPassword => vec![(Button::SshPassword, r)],
+        Row::SshAddress => vec![],
+        Row::SshCheck => vec![(Button::SshCheck, r)],
+        Row::PublicDns => vec![(Button::PublicDns, r)],
         Row::Autostart => vec![(Button::Autostart, r)],
         Row::SleepScreen => vec![(Button::SleepScreen, r)],
     }
