@@ -71,6 +71,17 @@ pub enum Button {
     Animation,
 }
 
+/// The cards of quick settings, in two columns: toggles, and All settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickTile {
+    Airplane,
+    AutoRotate,
+    DarkMode,
+    Animation,
+    Ssh,
+    AllSettings,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Frontlight,
@@ -133,7 +144,8 @@ pub struct Layout {
     pub rows: i32,
 }
 
-pub const STATUS_H: i32 = 112;
+/// The status bar and the quick settings header have the same height, so their clock, Wi-Fi and battery line up.
+pub const STATUS_H: i32 = 120;
 /// The row of page dots (and notices) at the bottom of the home screen.
 pub const FOOTER_H: i32 = 90;
 pub const MARGIN: i32 = 40;
@@ -146,6 +158,19 @@ const LABEL_GAP: i32 = 12;
 /// Label text size and line height under icons (one line).
 pub const LABEL_SIZE: f32 = 30.0;
 pub const LABEL_LINE: i32 = 40;
+/// Quick settings, as Primitive Browser's panel: a sheet from the top edge with the clock, Wi-Fi and battery, two
+/// level rows of 25 steps (− and + at the ends), a grid of cards and a Close handle.
+const QUICK_HEAD_H: i32 = STATUS_H;
+/// The row of round icon buttons, with their small captions.
+const QUICK_BUTTONS_H: i32 = 170;
+/// The diameter of a round icon button.
+const QUICK_BUTTON_D: i32 = 100;
+const QUICK_ROW_H: i32 = 156;
+const QUICK_HANDLE_H: i32 = 72;
+const QUICK_SIDE: i32 = 28;
+const QUICK_NUDGE: i32 = 72;
+/// The level rows' range: 25 steps, 0 to 24 (the Kindle's frontlight and warmth levels).
+pub const QUICK_LEVEL_MAX: u32 = 24;
 /// The app menu (long press): a box beside the icon, one row per action under the app's name.
 const MENU_W: i32 = 600;
 const MENU_ROW_H: i32 = 100;
@@ -278,6 +303,91 @@ impl Layout {
         Rect::new(MARGIN, top, self.width - 2 * MARGIN, self.height - top - MARGIN)
     }
 
+    /// Quick settings: a sheet from the top edge.
+    pub fn quick_panel(&self) -> Rect {
+        let h = QUICK_HEAD_H + QUICK_BUTTONS_H + 2 * QUICK_ROW_H + 20 + QUICK_HANDLE_H;
+        Rect::new(0, 0, self.width, h)
+    }
+
+    /// The clock and date, top left (the status bar and quick settings).
+    pub fn header_clock(&self) -> Rect {
+        Rect::new(QUICK_SIDE, 0, 400, QUICK_HEAD_H)
+    }
+
+    /// The battery, top right (the status bar and quick settings).
+    pub fn header_battery(&self) -> Rect {
+        Rect::new(self.width - QUICK_SIDE - 128, (QUICK_HEAD_H - 56) / 2, 128, 56)
+    }
+
+    /// The Wi-Fi icon, left of the battery (the status bar and quick settings): a tap in quick settings turns Wi-Fi on
+    /// or off.
+    pub fn header_wifi(&self) -> Rect {
+        let b = self.header_battery();
+        Rect::new(b.x - 26 - 64, (QUICK_HEAD_H - 64) / 2, 64, 64)
+    }
+
+    /// Level row `i` (0 brightness, 1 warmth), under the icon buttons.
+    pub fn quick_row(&self, i: usize) -> Rect {
+        Rect::new(0, QUICK_HEAD_H + QUICK_BUTTONS_H + i as i32 * QUICK_ROW_H, self.width, QUICK_ROW_H)
+    }
+
+    /// The − button of level row `i`.
+    pub fn quick_minus(&self, i: usize) -> Rect {
+        let r = self.quick_row(i);
+        Rect::new(QUICK_SIDE, r.y + 74, QUICK_NUDGE, QUICK_NUDGE)
+    }
+
+    /// The + button of level row `i`.
+    pub fn quick_plus(&self, i: usize) -> Rect {
+        let r = self.quick_row(i);
+        Rect::new(self.width - QUICK_SIDE - QUICK_NUDGE, r.y + 74, QUICK_NUDGE, QUICK_NUDGE)
+    }
+
+    /// The 25 steps of level row `i`, between the buttons.
+    pub fn quick_bar(&self, i: usize) -> Rect {
+        let minus = self.quick_minus(i);
+        let gap = 12;
+        Rect::new(minus.right() + gap, minus.y, self.width - 2 * (QUICK_SIDE + QUICK_NUDGE + gap), QUICK_NUDGE)
+    }
+
+    /// The level (0 to `QUICK_LEVEL_MAX`) of the step under (`x`, `y`) on row `i`'s bar, or `None` off the bar.
+    pub fn quick_step(&self, i: usize, x: f32, y: f32) -> Option<u32> {
+        let bar = self.quick_bar(i);
+        let zone = Rect::new(bar.x, bar.y - 16, bar.w, bar.h + 32);
+        if !zone.contains(x, y) {
+            return None;
+        }
+        let t = ((x - bar.x as f32) / bar.w as f32).clamp(0.0, 0.9999);
+        Some((t * (QUICK_LEVEL_MAX + 1) as f32) as u32)
+    }
+
+    /// The six round icon buttons in one row, under the header: Airplane, Auto-rotate, Dark mode, Animation, SSH,
+    /// All settings. Each slot is a column of the row; the circle is `QUICK_BUTTON_D` wide, centred in it.
+    pub fn quick_buttons(&self) -> [(QuickTile, Rect); 6] {
+        let slot = (self.width - 2 * QUICK_SIDE) / 6;
+        let at = |i: i32| Rect::new(QUICK_SIDE + i * slot, QUICK_HEAD_H, slot, QUICK_BUTTONS_H);
+        [
+            (QuickTile::Airplane, at(0)),
+            (QuickTile::AutoRotate, at(1)),
+            (QuickTile::DarkMode, at(2)),
+            (QuickTile::Animation, at(3)),
+            (QuickTile::Ssh, at(4)),
+            (QuickTile::AllSettings, at(5)),
+        ]
+    }
+
+    /// The circle of a quick settings button, inside its slot.
+    pub fn quick_button_circle(&self, slot: Rect) -> Rect {
+        let d = QUICK_BUTTON_D;
+        Rect::new(slot.x + (slot.w - d) / 2, slot.y + 8, d, d)
+    }
+
+    /// The Close handle at the foot of quick settings.
+    pub fn quick_handle(&self) -> Rect {
+        let p = self.quick_panel();
+        Rect::new(0, p.bottom() - QUICK_HANDLE_H, p.w, QUICK_HANDLE_H)
+    }
+
     /// The app menu's box for an icon at `anchor` with `actions` rows under the name row: below the icon
     /// when it fits, else above it; inside the screen.
     pub fn menu_box(&self, anchor: Rect, actions: usize) -> Rect {
@@ -389,6 +499,20 @@ mod tests {
         assert!(steps[0].w > icon.w && steps[0].w < steps[1].w);
         // Eased out: the first step covers more than a third of the way.
         assert!(steps[0].w - icon.w > (l.width - icon.w) / 3);
+    }
+
+    #[test]
+    fn quick_settings_fit_on_the_screen() {
+        let l = oasis();
+        let p = l.quick_panel();
+        assert!(p.bottom() < l.height - 400, "panel {p:?}");
+        for (_, slot) in l.quick_buttons() {
+            let c = l.quick_button_circle(slot);
+            assert!(c.x >= 0 && c.right() <= l.width && c.bottom() <= l.quick_row(0).y, "button {c:?}");
+        }
+        assert!(l.quick_bar(1).bottom() <= l.quick_row(1).bottom());
+        assert!(l.quick_plus(0).right() <= l.width - QUICK_SIDE);
+        assert!(l.header_wifi().right() < l.header_battery().x);
     }
 
     #[test]

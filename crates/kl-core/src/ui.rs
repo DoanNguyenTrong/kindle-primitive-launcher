@@ -8,7 +8,7 @@ use crate::{
     apps::{extensions_app, sort_key, App, IconSource, Launch},
     kual::MenuItem,
     battery::{self, Warning},
-    layout::{Button, Layout, Rect},
+    layout::{Button, Layout, QuickTile, Rect},
     settings::Rotation,
 };
 
@@ -24,13 +24,16 @@ pub enum Screen {
     AppMenu,
     /// The KUAL extensions list, with submenus.
     Extensions,
+    /// Quick settings, dropped down from the status bar.
+    QuickSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Input {
     Tap(f32, f32),
     LongTap(f32, f32),
-    Swipe { dx: f32, dy: f32 },
+    /// A swipe: the distance moved, and the height where the finger went down (pixels).
+    Swipe { dx: f32, dy: f32, start_y: f32 },
     PageForward,
     PageBack,
     /// `powerd` is going to the screensaver.
@@ -52,6 +55,11 @@ pub enum DeviceCmd {
     AutoRotation,
     ToggleDarkMode,
     ToggleAnimation,
+    /// Quick settings' sliders: a level from 0 to 24.
+    SetLight(u32),
+    SetWarmth(u32),
+    /// Quick settings > Auto-rotate: off keeps the screen as it is now; on follows the turn again.
+    ToggleAutoRotation,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +93,8 @@ pub struct Status {
     pub wifi_on: bool,
     /// "connected", "not connected", "off", or empty when unknown.
     pub wifi_state: String,
+    /// Signal strength while connected: (level, out of), from `signalStrength` ("4/5").
+    pub wifi_signal: Option<(u32, u32)>,
     pub light: u32,
     pub warmth: u32,
     pub ssh: bool,
@@ -101,6 +111,20 @@ pub struct Status {
     pub rotation: Rotation,
     /// Free memory for the About text, e.g. "MemAvailable 312 MB".
     pub memory: String,
+}
+
+impl Status {
+    /// Whether what the status bar shows differs between two readings (the clock minute, battery, charging,
+    /// Wi-Fi and its signal, SSH). The bar is redrawn only then.
+    pub fn bar_differs(&self, other: &Status) -> bool {
+        self.clock != other.clock
+            || self.battery != other.battery
+            || self.charging != other.charging
+            || self.wifi_on != other.wifi_on
+            || self.wifi_state != other.wifi_state
+            || self.wifi_signal != other.wifi_signal
+            || self.ssh != other.ssh
+    }
 }
 
 /// A horizontal swipe longer than this (pixels) turns the page.
@@ -131,6 +155,8 @@ pub struct Ui {
     extensions: Vec<MenuItem>,
     ext_path: Vec<usize>,
     pub ext_page: usize,
+    /// Background jobs still running (shown in the status bar).
+    pub running: usize,
 }
 
 impl Ui {
@@ -155,7 +181,13 @@ impl Ui {
             extensions: Vec::new(),
             ext_path: Vec::new(),
             ext_page: 0,
+            running: 0,
         }
+    }
+
+    /// A background job ended (the driver got its last line).
+    pub fn background_done(&mut self) {
+        self.running = self.running.saturating_sub(1);
     }
 
     /// KUAL extension menus. When there are any, the Extensions tile joins the grid (with the built-ins).
@@ -209,6 +241,7 @@ impl Ui {
     /// Background mode: say it started; the driver runs it and shows its last line when it ends.
     fn run_background(&mut self, app: App) -> Action {
         self.notice = Some(format!("Running {}…", app.name));
+        self.running += 1;
         Action::RunBackground(app)
     }
 
@@ -233,7 +266,7 @@ impl Ui {
         match input {
             Input::PageForward => turn(self, 1),
             Input::PageBack => turn(self, -1),
-            Input::Swipe { dx, dy } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => turn(self, if dx < 0.0 { 1 } else { -1 }),
+            Input::Swipe { dx, dy, .. } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => turn(self, if dx < 0.0 { 1 } else { -1 }),
             Input::Tap(x, y) => {
                 if l.done_button().inset(-20).contains(x, y) {
                     if self.ext_path.pop().is_some() {
@@ -495,6 +528,7 @@ impl Ui {
             Screen::ConfirmKindle => self.confirm(input),
             Screen::AppMenu => self.app_menu(input),
             Screen::Extensions => self.extensions_list(input),
+            Screen::QuickSettings => self.quick(input),
             Screen::Sleep => Action::None,
         };
         if had_notice && action == Action::None {
@@ -509,14 +543,15 @@ impl Ui {
         match input {
             Input::PageForward => self.turn_page(1),
             Input::PageBack => self.turn_page(-1),
-            Input::Swipe { dx, dy } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => {
+            Input::Swipe { dx, dy, start_y } if dy > SWIPE_MIN && dy.abs() > dx.abs() * 1.5 && start_y <= l.status().bottom() as f32 + 40.0 => {
+                // Swipe down from the top edge: quick settings, as Primitive Browser.
+                self.go(Screen::QuickSettings)
+            }
+            Input::Swipe { dx, dy, .. } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => {
                 self.turn_page(if dx < 0.0 { 1 } else { -1 })
             }
             Input::LongTap(x, y) => self.home_long_tap(x, y),
             Input::Tap(x, y) => {
-                if l.status().contains(x, y) {
-                    return self.go(Screen::Settings);
-                }
                 if l.home_footer().contains(x, y) {
                     return self.turn_page(if x < (l.width / 2) as f32 { -1 } else { 1 });
                 }
@@ -537,15 +572,57 @@ impl Ui {
         }
     }
 
+    /// Quick settings: a button, a level button or step, or the Wi-Fi icon. A swipe up closes it (a tap does not).
+    fn quick(&mut self, input: Input) -> Action {
+        let l = self.layout;
+        match input {
+            Input::PageBack => self.go(Screen::Home),
+            Input::Swipe { dx, dy, .. } if dy < -SWIPE_MIN && dy.abs() > dx.abs() => self.go(Screen::Home),
+            Input::Tap(x, y) => {
+                // Quick settings is closed by a swipe up (or the back key), not by a tap.
+                if !l.quick_panel().contains(x, y) || l.quick_handle().contains(x, y) {
+                    return Action::None;
+                }
+                if l.header_wifi().inset(-12).contains(x, y) {
+                    return Action::Device(DeviceCmd::ToggleWifi);
+                }
+                if let Some((tile, _)) = l.quick_buttons().into_iter().find(|(_, slot)| slot.contains(x, y)) {
+                    return match tile {
+                        QuickTile::Airplane => Action::Device(DeviceCmd::ToggleWifi),
+                        QuickTile::AutoRotate => Action::Device(DeviceCmd::ToggleAutoRotation),
+                        QuickTile::DarkMode => Action::Device(DeviceCmd::ToggleDarkMode),
+                        QuickTile::Animation => Action::Device(DeviceCmd::ToggleAnimation),
+                        QuickTile::Ssh => Action::Device(DeviceCmd::ToggleSsh),
+                        QuickTile::AllSettings => self.go(Screen::Settings),
+                    };
+                }
+                for row in 0..2 {
+                    let level = |step: i32| if row == 0 { DeviceCmd::Light(step) } else { DeviceCmd::Warmth(step) };
+                    if l.quick_minus(row).inset(-10).contains(x, y) {
+                        return Action::Device(level(-1));
+                    }
+                    if l.quick_plus(row).inset(-10).contains(x, y) {
+                        return Action::Device(level(1));
+                    }
+                    if let Some(to) = l.quick_step(row, x, y) {
+                        return Action::Device(if row == 0 { DeviceCmd::SetLight(to) } else { DeviceCmd::SetWarmth(to) });
+                    }
+                }
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
     fn settings(&mut self, input: Input) -> Action {
         match input {
             Input::PageBack => self.go(Screen::Home),
             Input::Tap(x, y) => match self.layout.settings_button_at(x, y) {
                 Some(Button::Done) => self.go(Screen::Home),
-                Some(Button::LightDown) => Action::Device(DeviceCmd::Light(-1)),
-                Some(Button::LightUp) => Action::Device(DeviceCmd::Light(1)),
-                Some(Button::WarmDown) => Action::Device(DeviceCmd::Warmth(-1)),
-                Some(Button::WarmUp) => Action::Device(DeviceCmd::Warmth(1)),
+                Some(Button::LightDown) => Action::Device(DeviceCmd::Light(-2)),
+                Some(Button::LightUp) => Action::Device(DeviceCmd::Light(2)),
+                Some(Button::WarmDown) => Action::Device(DeviceCmd::Warmth(-2)),
+                Some(Button::WarmUp) => Action::Device(DeviceCmd::Warmth(2)),
                 Some(Button::Wifi) => Action::Device(DeviceCmd::ToggleWifi),
                 Some(Button::Rotation) => Action::Device(DeviceCmd::ToggleRotation),
                 Some(Button::Ssh) => Action::Device(DeviceCmd::ToggleSsh),
@@ -629,9 +706,9 @@ mod tests {
         assert_eq!(u.handle(Input::PageForward), Action::Redraw { full: false });
         assert_eq!(u.page, 1);
         assert_eq!(u.handle(Input::PageForward), Action::None);
-        assert_eq!(u.handle(Input::Swipe { dx: 300.0, dy: 20.0 }), Action::Redraw { full: false });
+        assert_eq!(u.handle(Input::Swipe { dx: 300.0, dy: 20.0, start_y: 500.0 }), Action::Redraw { full: false });
         assert_eq!(u.page, 0);
-        assert_eq!(u.handle(Input::Swipe { dx: -100.0, dy: 0.0 }), Action::None, "too short");
+        assert_eq!(u.handle(Input::Swipe { dx: -100.0, dy: 0.0, start_y: 500.0 }), Action::None, "too short");
         assert_eq!(u.page_apps().count(), 9);
     }
 
@@ -663,11 +740,14 @@ mod tests {
     #[test]
     fn status_strip_opens_settings_and_buttons_give_device_commands() {
         let mut u = ui(1);
-        u.handle(Input::Tap(600.0, 40.0));
+        u.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 40.0 });
+        assert_eq!(u.screen, Screen::QuickSettings, "the status bar opens quick settings");
+        let all = u.layout.quick_button_circle(u.layout.quick_buttons()[5].1);
+        u.handle(centre(all));
         assert_eq!(u.screen, Screen::Settings);
         let rows = u.layout.settings_rows();
         let row = |r: crate::layout::Row| rows.iter().find(|x| x.row == r).unwrap().buttons[0].1;
-        assert_eq!(u.handle(centre(rows[0].buttons[1].1)), Action::Device(DeviceCmd::Light(1)));
+        assert_eq!(u.handle(centre(rows[0].buttons[1].1)), Action::Device(DeviceCmd::Light(2)));
         assert_eq!(u.handle(centre(row(crate::layout::Row::Wifi))), Action::Device(DeviceCmd::ToggleWifi));
         assert_eq!(u.handle(centre(row(crate::layout::Row::Rotation))), Action::Device(DeviceCmd::ToggleRotation));
         assert_eq!(u.handle(centre(row(crate::layout::Row::DarkMode))), Action::Device(DeviceCmd::ToggleDarkMode));
@@ -677,7 +757,7 @@ mod tests {
     #[test]
     fn sleep_ignores_input_and_wake_restores_the_screen() {
         let mut u = ui(1);
-        u.handle(Input::Tap(600.0, 40.0));
+        u.screen = Screen::Settings;
         assert_eq!(u.handle(Input::Sleep), Action::Redraw { full: true });
         assert_eq!(u.handle(Input::PageForward), Action::None);
         assert_eq!(u.handle(Input::Sleep), Action::Redraw { full: true });
@@ -873,6 +953,56 @@ mod tests {
         assert!(matches!(press(&mut u, Button::MenuLater), Action::SetOrder(_)));
         assert_eq!(u.page, 1);
         assert_eq!(u.menu_anchor(), u.layout.icon(0));
+    }
+
+    #[test]
+    fn quick_settings_cards_levels_and_closing() {
+        let mut u = ui(1);
+        u.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 40.0 });
+        assert_eq!(u.screen, Screen::QuickSettings);
+        let layout = u.layout;
+        let buttons = layout.quick_buttons();
+        let card = |t: QuickTile| layout.quick_button_circle(buttons.iter().find(|(x, _)| *x == t).unwrap().1);
+        assert_eq!(u.handle(centre(card(QuickTile::Airplane))), Action::Device(DeviceCmd::ToggleWifi));
+        assert_eq!(u.handle(centre(card(QuickTile::AutoRotate))), Action::Device(DeviceCmd::ToggleAutoRotation));
+        assert_eq!(u.handle(centre(card(QuickTile::DarkMode))), Action::Device(DeviceCmd::ToggleDarkMode));
+        assert_eq!(u.handle(centre(card(QuickTile::Animation))), Action::Device(DeviceCmd::ToggleAnimation));
+        assert_eq!(u.handle(centre(card(QuickTile::Ssh))), Action::Device(DeviceCmd::ToggleSsh));
+        assert_eq!(u.handle(centre(card(QuickTile::AllSettings))), Action::Redraw { full: false });
+        assert_eq!(u.screen, Screen::Settings);
+        u.screen = Screen::QuickSettings;
+        assert_eq!(u.handle(centre(u.layout.quick_minus(0))), Action::Device(DeviceCmd::Light(-1)));
+        assert_eq!(u.handle(centre(u.layout.quick_plus(1))), Action::Device(DeviceCmd::Warmth(1)));
+        let bar = u.layout.quick_bar(0);
+        let y = (bar.y + bar.h / 2) as f32;
+        assert_eq!(u.handle(Input::Tap(bar.x as f32 + 1.0, y)), Action::Device(DeviceCmd::SetLight(0)));
+        assert_eq!(u.handle(Input::Tap(bar.right() as f32 - 1.0, y)), Action::Device(DeviceCmd::SetLight(24)));
+        let wifi = u.layout.header_wifi();
+        assert_eq!(u.handle(centre(wifi)), Action::Device(DeviceCmd::ToggleWifi));
+        // Taps do not close it (the handle and outside the sheet are ignored); a swipe up does.
+        assert_eq!(u.handle(centre(u.layout.quick_handle())), Action::None);
+        assert_eq!(u.handle(Input::Tap(600.0, 1600.0)), Action::None);
+        assert_eq!(u.screen, Screen::QuickSettings);
+        u.handle(Input::Swipe { dx: 10.0, dy: -400.0, start_y: 600.0 });
+        assert_eq!(u.screen, Screen::Home);
+        // Swipe down from the middle of the screen does not open it; from the top edge does.
+        u.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 600.0 });
+        assert_eq!(u.screen, Screen::Home);
+        u.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 40.0 });
+        assert_eq!(u.screen, Screen::QuickSettings);
+    }
+
+    #[test]
+    fn background_jobs_are_counted_for_the_status_bar() {
+        let mut u = ui(0);
+        let mut job = script("job.sh");
+        job.background = true;
+        u.apps.insert(0, job);
+        assert!(matches!(u.handle(centre(u.layout.cell(0))), Action::RunBackground(_)));
+        assert_eq!(u.running, 1);
+        u.background_done();
+        u.background_done();
+        assert_eq!(u.running, 0);
     }
 
     #[test]

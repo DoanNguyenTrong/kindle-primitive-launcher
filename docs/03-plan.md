@@ -19,7 +19,7 @@ checks on the Kindle. Device builds bump the patch version; a new phase starts a
 | [M0 Device spikes](#m0-device-spikes) | 0 | 8 of 9 answered; S5 (USB) open |
 | [M1 Launcher with the framework stopped](#m1-launcher-with-the-framework-stopped) | 1 / 0.1.x | Done, Gate 1 passed |
 | [M2 Home screen, Apple style](#m2-home-screen-apple-style) | 2 / 0.2.x | **Done**, confirmed on the Kindle (v0.2.5) |
-| [M3 Status bar](#m3-status-bar) | 2 / 0.2.x | Icons done (Mac) |
+| [M3 Status bar](#m3-status-bar) | 2 / 0.2.x | **Done**, awaiting the user's device check (v0.2.13) |
 | [M4 Settings pages](#m4-settings-pages) | 2 / 0.2.x | Single page exists; pages not started |
 | [M5 Wi-Fi networks](#m5-wi-fi-networks) | 2 / 0.2.x | API found (S3); not started |
 | [M6 System duties](#m6-system-duties) | 2 / 0.2.x | Auto-rotation confirmed; battery warnings (Mac); USB waits for S5 |
@@ -91,18 +91,21 @@ feedback only where you touch. No dock: only the grid.
 
 ## M3 Status bar
 
-Phase 2. A bar like the stock Kindle's: several indicators, each with its own state, and a tap opens
-quick settings.
+Phase 2. A bar like the stock Kindle's: several indicators, each with its own state. Tapping the bar does not
+open quick settings; a swipe down from the top edge does.
 
-- [x] Battery icon with level, number and charging bolt (from Primitive Browser) (Mac).
-- [x] Wi-Fi icon with a slash when off, "Not connected" when on without a network (Mac).
-- [ ] Wi-Fi signal strength: 0–5 bars from `signalStrength`.
-- [ ] Indicator list: each item (Wi-Fi, airplane mode, SSH, background job, USB, battery warning) has its
-      own state and is shown only when it matters.
-- [ ] Layout: indicators on the left, clock in the centre, battery on the right.
-- [ ] Tap the bar: quick settings drop down (airplane mode, Wi-Fi, rotation, frontlight and warmth
-      sliders, "All settings").
-- [ ] State follows events (Wi-Fi connects, charger in/out), not only the once-a-minute refresh.
+- [x] Date and time on the left; indicators, Wi-Fi and battery on the right, the same places as in quick settings (v0.2.12).
+- [x] Wi-Fi icon with signal strength: three arcs filled from `signalStrength` (4/5 shows three); a slash when off;
+      "No network" beside it when on without a network (v0.2.8).
+- [x] Indicators shown only when they matter: SSH, a running background job; the slashed Wi-Fi shows airplane mode (v0.2.8).
+- [x] Battery icon with level, number and charging bolt (from Primitive Browser).
+- [x] Quick settings: a swipe down from the top edge opens a sheet like Primitive Browser's: clock and date,
+      Wi-Fi and battery, round icon buttons (Airplane, Auto-rotate, Dark mode, Animation, SSH, Settings), two
+      25-step level rows with − and +, and a swipe up to close (v0.2.8 to v0.2.11).
+- [x] Live state: battery, charging, Wi-Fi and clock are re-read every 5 s; the bar is redrawn only when it
+      would show something new (v0.2.13).
+
+Not in M3, later: Bluetooth (see "Later" below).
 
 ## M4 Settings pages
 
@@ -167,6 +170,16 @@ Phase 4, v0.4.x.
 - [x] The app list is written to the log at start (Mac).
 - [ ] KUAL `status`, `checked` and model `if` checks.
 - [ ] Research only: never start the framework at boot (M6c), after Phase 3 is stable for weeks.
+
+---
+
+## Later
+
+Not scheduled. Each item is picked up when the user asks for it.
+
+- [ ] **Bluetooth.** The Oasis 3 has the stock Bluetooth service (`com.lab126.btfd`), which reports Bluetooth
+      off (`BTstate` 0), and no Bluetooth radio shows in the kernel, so the hardware is unconfirmed. To do: check
+      the radio from the stock UI, then decide on a status bar indicator and whether to pair from the launcher.
 
 ---
 

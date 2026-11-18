@@ -136,12 +136,19 @@ pub fn status(settings: &Settings) -> Status {
         animation: settings.animation,
         wifi_on,
         wifi_state,
+        wifi_signal: lipc_text(WIFID, "signalStrength").and_then(|t| kl_core::wifi::parse_signal(&t)),
         light: get_int(POWERD, "flIntensity").unwrap_or(0).min(LEVEL_MAX),
         warmth: get_int(POWERD, "currentAmberLevel").unwrap_or(0).min(LEVEL_MAX),
         ssh: ssh_running(),
         rotation,
         memory: mem_available(),
     }
+}
+
+/// A property's text, or `None` when it cannot be read.
+fn lipc_text(service: &str, prop: &str) -> Option<String> {
+    let text = get_text(service, prop);
+    (!text.is_empty()).then_some(text)
 }
 
 pub fn set_light(level: u32) {

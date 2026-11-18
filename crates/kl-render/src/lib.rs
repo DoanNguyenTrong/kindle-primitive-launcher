@@ -9,7 +9,7 @@ pub mod image;
 use std::collections::HashMap;
 
 use kl_core::{
-    layout::{Button, Rect, Row, LABEL_SIZE},
+    layout::{Button, QuickTile, Rect, Row, LABEL_SIZE, QUICK_LEVEL_MAX},
     App, IconSource, Launch, Layout, Rotation, Screen, Status, Ui,
 };
 use parley::{FontContext, FontWeight, LayoutContext, PositionedLayoutItem, StyleProperty};
@@ -23,6 +23,19 @@ pub use image::GrayImage;
 
 const BLACK: u8 = 0;
 const WHITE: u8 = 255;
+/// The Wi-Fi icon's lit arcs for a status: None for Wi-Fi off (the slash), the signal's arcs when connected,
+/// and no arcs while Wi-Fi is on without a network.
+fn wifi_lit(s: &Status) -> Option<usize> {
+    match (s.wifi_on, s.wifi_state == "connected") {
+        (false, _) => None,
+        (true, false) => Some(0),
+        (true, true) => Some(match s.wifi_signal {
+            Some((level, max)) => kl_core::wifi::arcs(level, max),
+            None => 3,
+        }),
+    }
+}
+
 /// Pop-ups (the app menu, the Kindle UI dialog): corner radius, and the white margin around them.
 const POPUP_RADIUS: f32 = 28.0;
 const POPUP_HALO: i32 = 10;
@@ -32,6 +45,12 @@ const WIFI_ARC_OUTER: &str = "M2.5 9 A14 14 0 0 1 21.5 9";
 const WIFI_ARC_MIDDLE: &str = "M5.5 12.5 A9.5 9.5 0 0 1 18.5 12.5";
 const WIFI_ARC_INNER: &str = "M8.5 16 A5 5 0 0 1 15.5 16";
 const BOLT: &str = "M8 0 L1 12 H6 L4 22 L13 9 H8 Z";
+/// Airplane mode: the Material Design "flight" icon (24-unit grid, Apache License 2.0).
+const PLANE: &str = "M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z";
+/// Auto-rotate: two arcs with arrow heads (24-unit grid, stroked).
+const ROTATE: [&str; 4] = ["M4 12 A8 8 0 0 1 17.7 6.3", "M18 2 V7 H13", "M20 12 A8 8 0 0 1 6.3 17.7", "M6 22 V17 H11"];
+/// Wi-Fi arcs above the signal strength.
+const UNLIT: u8 = 187;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Align {
@@ -166,16 +185,18 @@ impl Renderer {
     }
 
     /// The Wi-Fi icon from Primitive Browser (`kb-app/src/ui.rs`, "wifi" and "wifi-off"): three arcs and a dot
-    /// on a 24-unit grid, stroke 2, with a slash when Wi-Fi is off.
-    fn wifi_icon(&mut self, x: f64, y: f64, size: f64, on: bool) {
-        for arc in [WIFI_ARC_OUTER, WIFI_ARC_MIDDLE, WIFI_ARC_INNER] {
-            self.stroke_icon(arc, x, y, size, 2.0, BLACK);
+    /// on a 24-unit grid, stroke 2. `lit` arcs (from the inside, by signal strength) are black and the rest light
+    /// gray; `None` draws the slash of Wi-Fi off.
+    fn wifi_icon(&mut self, x: f64, y: f64, size: f64, lit: Option<usize>) {
+        let shown = lit.unwrap_or(3);
+        for (i, arc) in [WIFI_ARC_INNER, WIFI_ARC_MIDDLE, WIFI_ARC_OUTER].iter().enumerate() {
+            self.stroke_icon(arc, x, y, size, 2.0, if i < shown { BLACK } else { UNLIT });
         }
         let k = size / 24.0;
         self.ctx.set_paint(gray(BLACK));
         let dot = kurbo::Circle::new((x + 12.0 * k, y + 19.5 * k), 1.6 * k).to_path(0.1);
         self.ctx.fill_path(&dot);
-        if !on {
+        if lit.is_none() {
             // A white gap under the slash keeps it readable over the arcs.
             self.stroke_icon("M3 3 L21 21", x, y, size, 5.0, WHITE);
             self.stroke_icon("M3 3 L21 21", x, y, size, 2.4, BLACK);
@@ -315,6 +336,8 @@ impl Renderer {
             }
             Screen::AppMenu => self.app_menu(ui, status, &mut icon_blits),
             Screen::Extensions => self.extensions(ui),
+            // The panel is a pop-up over the home screen, drawn last (below).
+            Screen::QuickSettings => self.home(ui, status, &mut icon_blits),
         }
         let width = self.width as usize;
         let mut out = self.finish_gray();
@@ -338,21 +361,26 @@ impl Renderer {
         let popup = match ui.screen {
             Screen::ConfirmKindle => Some(l.confirm_box()),
             Screen::AppMenu => Some(l.menu_box(ui.menu_anchor(), ui.menu_actions().len())),
+            Screen::QuickSettings => Some(l.quick_panel()),
             _ => None,
         };
+        // Quick settings is a sheet from the top edge: square, with no margin.
+        let sheet = ui.screen == Screen::QuickSettings;
+        let (radius, halo) = if sheet { (0.0, 0) } else { (POPUP_RADIUS, POPUP_HALO) };
         if let Some(b) = popup {
             self.ctx.reset();
             self.fill(l.screen(), WHITE);
             match ui.screen {
                 Screen::ConfirmKindle => self.confirm(&l),
+                Screen::QuickSettings => self.quick_panel(&l, status),
                 _ => self.app_menu_box(ui),
             }
             let layer = self.finish_gray();
-            image::copy_rounded(&mut out, &layer, width, (b.x - POPUP_HALO, b.y - POPUP_HALO, b.w + 2 * POPUP_HALO, b.h + 2 * POPUP_HALO), POPUP_RADIUS + POPUP_HALO as f32);
+            image::copy_rounded(&mut out, &layer, width, (b.x - halo, b.y - halo, b.w + 2 * halo, b.h + 2 * halo), radius + halo as f32);
         }
         if status.dark_mode && ui.screen != Screen::Sleep {
-            let halo = popup.map(|b| b.inset(-POPUP_HALO));
-            image::invert_except(&mut out, width, &pictures, halo.map(|h| (h.x, h.y, h.w, h.h)));
+            let over = popup.map(|b| (b.x - halo, b.y - halo, b.w + 2 * halo, b.h + 2 * halo));
+            image::invert_except(&mut out, width, &pictures, over);
         }
         // The pressed look: only the touched icon darkens.
         if let (Screen::Home, Some(r)) = (ui.screen, ui.pressed) {
@@ -388,38 +416,167 @@ impl Renderer {
         (out, halo)
     }
 
-    fn status_strip(&mut self, l: &Layout, s: &Status) {
+    /// The status bar, laid out like the quick settings header: the clock and date on the left; on the right the
+    /// indicators (SSH, a running background job), then Wi-Fi with its signal (a slash when off), then the battery.
+    fn status_strip(&mut self, l: &Layout, s: &Status, running: usize) {
         let r = l.status();
         let clock = if s.clock.is_empty() { "--:--" } else { s.clock.as_str() };
-        self.text(Text { text: clock, x: 40.0, y: 26.0, w: 300.0, size: 46.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        let c = l.header_clock();
+        self.text(Text { text: clock, x: c.x as f32, y: 14.0, w: 400.0, size: 52.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
         if !s.date.is_empty() {
-            self.text(Text { text: &s.date, x: 210.0, y: 38.0, w: 360.0, size: 34.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            self.text(Text { text: &s.date, x: c.x as f32, y: 76.0, w: 400.0, size: 24.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
         }
-        // Battery and Wi-Fi icons as in Primitive Browser, at the right of the strip.
-        let bx = r.right() - 40 - 128;
         if let Some(level) = s.battery {
-            self.battery_icon(bx, (r.h - 56) / 2, level, s.charging);
+            let b = l.header_battery();
+            self.battery_icon(b.x, b.y, level, s.charging);
         }
-        let wifi_size = 48.0;
-        let wx = bx as f64 - 28.0 - wifi_size;
-        self.wifi_icon(wx, (r.h as f64 - wifi_size) / 2.0, wifi_size, s.wifi_on);
-        // While Wi-Fi is on but not connected, say so beside the icon.
-        let note = match (s.wifi_on, s.wifi_state.as_str()) {
-            (true, "connected") | (false, _) => String::new(),
-            (true, "") => "Wi-Fi …".to_string(),
-            (true, other) => capitalise(other),
-        };
-        if !note.is_empty() {
-            let nw = 320.0;
-            self.text(Text { text: &note, x: (wx - 16.0) as f32 - nw, y: 38.0, w: nw, size: 30.0, bold: false, align: Align::End, lines: 1, gray: BLACK });
+        let w = l.header_wifi();
+        self.wifi_icon(w.x as f64, w.y as f64, 64.0, wifi_lit(s));
+        // Text and badges to the left of Wi-Fi, from right to left.
+        let mut right = w.x - 20;
+        if s.wifi_on && s.wifi_state != "connected" {
+            let note = if s.wifi_state.is_empty() { "Wi-Fi …".to_string() } else { "No network".to_string() };
+            let width = self.text_width(&note, 30.0, false);
+            let left = right as f32 - width;
+            self.text(Text { text: &note, x: left, y: 44.0, w: width + 4.0, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            right = (left - 20.0) as i32;
         }
-        self.fill(Rect::new(0, r.bottom() - 4, r.w, 4), BLACK);
+        if running > 0 {
+            right -= self.badge_width("Running") as i32;
+            self.badge(right as f64, "Running");
+            right -= 12;
+        }
+        if s.ssh {
+            right -= self.badge_width("SSH") as i32;
+            self.badge(right as f64, "SSH");
+        }
+        self.fill(Rect::new(0, r.bottom() - 2, r.w, 2), BLACK);
+    }
+
+    /// The width a badge with `label` takes.
+    fn badge_width(&mut self, label: &str) -> f64 {
+        self.text_width(label, 26.0, true) as f64 + 24.0
+    }
+
+    /// A small outlined label in the status bar at `x`. Returns its width.
+    fn badge(&mut self, x: f64, label: &str) -> f64 {
+        let w = self.badge_width(label);
+        let r = Rect::new(x as i32, 38, w as i32, 44);
+        self.rounded_frame(r, 10.0, 3, BLACK, WHITE);
+        self.text(Text { text: label, x: (x + 12.0) as f32, y: 42.0, w: w as f32, size: 26.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        w
+    }
+
+    /// Quick settings, as Primitive Browser's panel: a white sheet from the top edge with the clock and date, the
+    /// Wi-Fi and battery icons, two level rows of 25 steps with round − and + buttons, a grid of cards, and a
+    /// Close handle.
+    fn quick_panel(&mut self, l: &Layout, s: &Status) {
+        let p = l.quick_panel();
+        self.fill(p, WHITE);
+        self.fill(Rect::new(0, p.bottom() - 3, p.w, 3), BLACK);
+        let clock = if s.clock.is_empty() { "--:--" } else { s.clock.as_str() };
+        let c = l.header_clock();
+        self.text(Text { text: clock, x: c.x as f32, y: 14.0, w: 400.0, size: 52.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.text(Text { text: &s.date, x: c.x as f32, y: 76.0, w: 400.0, size: 24.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+        if let Some(level) = s.battery {
+            let b = l.header_battery();
+            self.battery_icon(b.x, b.y, level, s.charging);
+        }
+        let w = l.header_wifi();
+        self.wifi_icon(w.x as f64, w.y as f64, 64.0, wifi_lit(s));
+        // Round icon buttons, above the sliders: black with a white icon when on, outlined when off, with a small
+        // caption underneath.
+        for (tile, slot) in l.quick_buttons() {
+            let (label, on) = match tile {
+                QuickTile::Airplane => ("Airplane", !s.wifi_on),
+                QuickTile::AutoRotate => ("Auto-rotate", s.auto_rotation),
+                QuickTile::DarkMode => ("Dark mode", s.dark_mode),
+                QuickTile::Animation => ("Animation", s.animation),
+                QuickTile::Ssh => ("SSH", s.ssh),
+                QuickTile::AllSettings => ("Settings", false),
+            };
+            let (bg, fg) = if on { (BLACK, WHITE) } else { (WHITE, BLACK) };
+            let c = l.quick_button_circle(slot);
+            self.rounded_frame(c, c.w as f64 / 2.0, 3, BLACK, bg);
+            let size = 52.0;
+            let (cx, cy) = ((c.x + c.w / 2) as f64, (c.y + c.h / 2) as f64);
+            let (ix, iy) = (cx - size / 2.0, cy - size / 2.0);
+            match tile {
+                QuickTile::Airplane => self.fill_svg(PLANE, ix, iy, size / 24.0, fg),
+                QuickTile::AutoRotate => {
+                    for d in ROTATE {
+                        self.stroke_icon(d, ix, iy, size, 2.4, fg);
+                    }
+                }
+                QuickTile::DarkMode => {
+                    self.ctx.set_transform(Affine::IDENTITY);
+                    self.ctx.set_paint(gray(fg));
+                    self.ctx.fill_path(&kurbo::Circle::new((cx - 2.0, cy + 1.0), size * 0.42).to_path(0.1));
+                    self.ctx.set_paint(gray(bg));
+                    self.ctx.fill_path(&kurbo::Circle::new((cx + size * 0.2, cy - size * 0.12), size * 0.36).to_path(0.1));
+                }
+                QuickTile::Animation => {
+                    self.stroke_icon("M3 3 H21 V21 H3 Z", ix, iy, size, 2.4, fg);
+                    self.stroke_icon("M8 8 H16 V16 H8 Z", ix, iy, size, 2.4, fg);
+                }
+                QuickTile::Ssh => {
+                    self.text(Text { text: ">_", x: (cx - 30.0) as f32, y: (cy - 22.0) as f32, w: 80.0, size: 40.0, bold: true, align: Align::Start, lines: 1, gray: fg });
+                }
+                QuickTile::AllSettings => self.gear_in(cx, cy, size, fg, bg),
+            }
+            self.text(Text { text: label, x: slot.x as f32, y: (c.bottom() + 6) as f32, w: slot.w as f32, size: 24.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
+        }
+        for row in 0..2 {
+            let (icon, label, level) = if row == 0 { ("sun", "Brightness", s.light) } else { ("warm", "Warmth", s.warmth) };
+            let r = l.quick_row(row);
+            self.level_icon(icon, (r.x + 28) as f64, (r.y + 14) as f64, 40.0);
+            self.text(Text { text: label, x: (r.x + 92) as f32, y: (r.y + 18) as f32, w: 400.0, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            let value = level.to_string();
+            self.text(Text { text: &value, x: 0.0, y: (r.y + 22) as f32, w: (r.w - 28) as f32, size: 26.0, bold: false, align: Align::End, lines: 1, gray: 85 });
+            let bar = l.quick_bar(row);
+            let gap = 3;
+            let step = (bar.w - gap * QUICK_LEVEL_MAX as i32) / (QUICK_LEVEL_MAX as i32 + 1);
+            for n in 0..=QUICK_LEVEL_MAX as i32 {
+                let seg = Rect::new(bar.x + n * (step + gap), bar.y, step, bar.h);
+                if n <= level.min(QUICK_LEVEL_MAX) as i32 {
+                    self.rounded(seg, 6.0, BLACK);
+                } else {
+                    self.rounded_frame(seg, 6.0, 2, 189, WHITE);
+                }
+            }
+            self.round_button(l.quick_minus(row), false);
+            self.round_button(l.quick_plus(row), true);
+        }
+        let handle = l.quick_handle();
+        self.stroke_icon("M6 15 L12 9 L18 15", (handle.x + handle.w / 2 - 16) as f64, (handle.y + 8) as f64, 32.0, 2.4, BLACK);
+        self.text(Text { text: "Swipe up to close", x: handle.x as f32, y: (handle.y + 40) as f32, w: handle.w as f32, size: 24.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
+    }
+
+    /// A round button with a bar (−) or a bar and a bar (+) in its middle, as Primitive Browser's level rows.
+    fn round_button(&mut self, r: Rect, plus: bool) {
+        self.rounded_frame(r, r.w as f64 / 2.0, 2, BLACK, WHITE);
+        let (cx, cy) = (r.x + r.w / 2, r.y + r.h / 2);
+        self.fill(Rect::new(cx - 18, cy - 2, 36, 4), BLACK);
+        if plus {
+            self.fill(Rect::new(cx - 2, cy - 18, 4, 36), BLACK);
+        }
+    }
+
+    /// The sun (brightness) or the half-filled circle (warmth) of a level row, at (`x`, `y`), `size` pixels.
+    fn level_icon(&mut self, name: &str, x: f64, y: f64, size: f64) {
+        if name == "sun" {
+            self.stroke_icon("M12 7 A5 5 0 1 0 12 17 A5 5 0 1 0 12 7 Z", x, y, size, 2.0, BLACK);
+            self.stroke_icon("M12 2 V4 M12 20 V22 M2 12 H4 M20 12 H22 M4.9 4.9 L6.3 6.3 M17.7 17.7 L19.1 19.1 M4.9 19.1 L6.3 17.7 M17.7 6.3 L19.1 4.9", x, y, size, 2.0, BLACK);
+        } else {
+            self.stroke_icon("M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 Z", x, y, size, 2.0, BLACK);
+            self.fill_svg("M12 3 A9 9 0 0 1 12 21 Z", x, y, size / 24.0, BLACK);
+        }
     }
 
     /// The home screen: status bar, the page's icons with their names, and the page dots.
     fn home(&mut self, ui: &Ui, s: &Status, icon_blits: &mut Vec<(Rect, String)>) {
         let l = ui.layout;
-        self.status_strip(&l, s);
+        self.status_strip(&l, s, ui.running);
         let page: Vec<(usize, App)> = ui.page_apps().map(|(i, a)| (i, a.clone())).collect();
         for (slot, app) in page {
             self.app_icon(l.icon(slot), &app, icon_blits);
@@ -468,7 +625,12 @@ impl Renderer {
 
     /// Settings: a gear with eight teeth, centred at (`cx`, `cy`) on an icon of side `s`.
     fn gear(&mut self, cx: f64, cy: f64, s: f64) {
-        self.ctx.set_paint(gray(WHITE));
+        self.gear_in(cx, cy, s, WHITE, BLACK);
+    }
+
+    /// The gear in colour `fg`, with its hole in `bg`.
+    fn gear_in(&mut self, cx: f64, cy: f64, s: f64, fg: u8, bg: u8) {
+        self.ctx.set_paint(gray(fg));
         for i in 0..8 {
             let turn = Affine::translate((cx, cy)) * Affine::rotate(i as f64 * std::f64::consts::FRAC_PI_4);
             self.ctx.set_transform(turn);
@@ -477,7 +639,7 @@ impl Renderer {
         }
         self.ctx.set_transform(Affine::IDENTITY);
         self.ctx.fill_path(&kurbo::Circle::new((cx, cy), 0.27 * s).to_path(0.1));
-        self.ctx.set_paint(gray(BLACK));
+        self.ctx.set_paint(gray(bg));
         self.ctx.fill_path(&kurbo::Circle::new((cx, cy), 0.11 * s).to_path(0.1));
     }
 

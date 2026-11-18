@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/kl-core", "crates/kl-render", "crates/kl-kindle", "crates/kl-desktop"]
 
 [workspace.package]
-version = "0.2.7"
+version = "0.2.13"
 edition = "2021"
 license = "AGPL-3.0-only"
 

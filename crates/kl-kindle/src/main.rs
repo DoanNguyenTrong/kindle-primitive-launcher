@@ -286,13 +286,13 @@ fn main() {
 
     display.show(renderer.draw(&ui, &status), &settings, true);
     log(&format!("first screen after {} ms", started.elapsed().as_millis()));
-    let mut minute = device::local_time().2;
     let mut sleep_picture = 0usize;
 
     while let Ok(ev) = rx.recv() {
         let action = match ev {
             Ev::Background { name, line, ok } => {
                 log(&format!("background end {name}: ok={ok} {line}"));
+                ui.background_done();
                 let state = if ok { "done" } else { "failed" };
                 ui.notice = Some(if line.is_empty() { format!("{name}: {state}") } else { format!("{name}: {line}") });
                 if ui.screen == Screen::Sleep {
@@ -315,12 +315,19 @@ fn main() {
             }
             Ev::Tick => {
                 let _ = write_atomic(&run.join("heartbeat"), &now_secs().to_string());
-                let m = device::local_time().2;
-                if m != minute && ui.screen == Screen::Home {
-                    minute = m;
-                    status = device::status(&settings);
-                    ui.set_battery(status.battery, status.charging);
-                    Action::Redraw { full: false }
+                // Screens with the status bar re-read battery, charging, Wi-Fi and the clock every tick (5 s) and
+                // redraw only when the bar would show something new.
+                let shown = matches!(ui.screen, Screen::Home | Screen::QuickSettings | Screen::AppMenu | Screen::ConfirmKindle);
+                if shown {
+                    let fresh = device::status(&settings);
+                    let changed = status.bar_differs(&fresh);
+                    let warned = ui.set_battery(fresh.battery, fresh.charging);
+                    status = fresh;
+                    if changed || warned {
+                        Action::Redraw { full: false }
+                    } else {
+                        Action::None
+                    }
                 } else {
                     Action::None
                 }
@@ -527,8 +534,8 @@ fn png_files(dir: &Path) -> Vec<String> {
 
 fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir: &Path, run: &Path, settings_path: &Path) {
     match cmd {
-        DeviceCmd::Light(step) => device::set_light((status.light as i32 + step * 2).clamp(0, device::LEVEL_MAX as i32) as u32),
-        DeviceCmd::Warmth(step) => device::set_warmth((status.warmth as i32 + step * 2).clamp(0, device::LEVEL_MAX as i32) as u32),
+        DeviceCmd::Light(step) => device::set_light((status.light as i32 + step).clamp(0, device::LEVEL_MAX as i32) as u32),
+        DeviceCmd::Warmth(step) => device::set_warmth((status.warmth as i32 + step).clamp(0, device::LEVEL_MAX as i32) as u32),
         DeviceCmd::ToggleWifi => device::set_wifi(!status.wifi_on),
         DeviceCmd::ToggleSsh => device::set_ssh(&dir.to_string_lossy(), !status.ssh),
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
@@ -550,6 +557,22 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
                 settings.rotation = turn;
                 input::TURN.store(turn.turn(), Ordering::Relaxed);
                 let _ = write_atomic(&run.join("orientation"), turn.letter());
+            }
+            if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
+                log(&format!("settings: {e}"));
+            }
+        }
+        DeviceCmd::SetLight(level) => device::set_light(level),
+        DeviceCmd::SetWarmth(level) => device::set_warmth(level),
+        DeviceCmd::ToggleAutoRotation => {
+            // Quick settings' Auto-rotate: the same as Settings > Screen > Auto, from the device's turn.
+            settings.auto_rotation = !settings.auto_rotation;
+            if settings.auto_rotation {
+                if let Some(turn) = device::accelerometer_turn() {
+                    settings.rotation = turn;
+                    input::TURN.store(turn.turn(), Ordering::Relaxed);
+                    let _ = write_atomic(&run.join("orientation"), turn.letter());
+                }
             }
             if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
                 log(&format!("settings: {e}"));

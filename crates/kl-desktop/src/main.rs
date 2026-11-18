@@ -39,6 +39,7 @@ fn demo_status() -> Status {
         charging: false,
         wifi_on: true,
         wifi_state: "connected".into(),
+        wifi_signal: Some((4, 5)),
         light: 12,
         warmth: 6,
         ssh: false,
@@ -121,7 +122,7 @@ fn main() {
     ui.pressed = Some(ui.layout.icon(1));
     shot(&mut renderer, &ui, "home-pressed");
     ui.pressed = None;
-    ui.handle(Input::Tap(600.0, 40.0));
+    ui.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 40.0 });
     shot(&mut renderer, &ui, "settings");
     ui.screen = kl_core::Screen::ConfirmKindle;
     shot(&mut renderer, &ui, "confirm");
@@ -150,6 +151,16 @@ fn main() {
     ui.set_battery(Some(4), false);
     shot(&mut renderer, &ui, "sleep-battery");
     ui.set_battery(Some(90), false);
+    // Quick settings over the grid, and the status bar with Wi-Fi off and SSH on.
+    ui.screen = kl_core::Screen::Home;
+    ui.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 40.0 });
+    shot(&mut renderer, &ui, "quick-settings");
+    write_png(&out.join("dark-quick-settings.png"), W, H, &renderer.draw(&ui, &Status { dark_mode: true, ..demo_status() }));
+    ui.screen = kl_core::Screen::Home;
+    let mut off = demo_status();
+    off.wifi_on = false;
+    off.ssh = true;
+    write_png(&out.join("status-airplane-ssh.png"), W, H, &renderer.draw(&ui, &off));
     ui.handle(Input::Sleep);
     // The launcher's own sleep screen with a picture (the launcher icon stands in for one).
     match kl_render::sleep_image(std::path::Path::new("assets/launcher-icon.png"), W, H) {

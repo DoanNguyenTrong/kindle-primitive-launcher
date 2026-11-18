@@ -114,7 +114,7 @@ pub fn gesture(start: (f32, f32), end: (f32, f32), held: Duration) -> Input {
     } else if still {
         Input::LongTap(start.0, start.1)
     } else {
-        Input::Swipe { dx, dy }
+        Input::Swipe { dx, dy, start_y: start.1 }
     }
 }
 
@@ -202,6 +202,6 @@ mod tests {
         let short = Duration::from_millis(100);
         assert_eq!(gesture((10.0, 10.0), (20.0, 15.0), short), Input::Tap(10.0, 10.0));
         assert_eq!(gesture((10.0, 10.0), (20.0, 15.0), Duration::from_secs(1)), Input::LongTap(10.0, 10.0));
-        assert_eq!(gesture((500.0, 10.0), (100.0, 30.0), short), Input::Swipe { dx: -400.0, dy: 20.0 });
+        assert_eq!(gesture((500.0, 10.0), (100.0, 30.0), short), Input::Swipe { dx: -400.0, dy: 20.0, start_y: 10.0 });
     }
 }

@@ -350,7 +350,7 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "kl-core"
-version = "0.2.7"
+version = "0.2.13"
 dependencies = [
  "serde_json",
  "toml",
@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "kl-desktop"
-version = "0.2.7"
+version = "0.2.13"
 dependencies = [
  "kl-core",
  "kl-render",
@@ -367,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "kl-kindle"
-version = "0.2.7"
+version = "0.2.13"
 dependencies = [
  "kl-core",
  "kl-render",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "kl-render"
-version = "0.2.7"
+version = "0.2.13"
 dependencies = [
  "kl-core",
  "parley",

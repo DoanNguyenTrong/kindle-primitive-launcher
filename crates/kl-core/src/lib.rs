@@ -13,6 +13,7 @@ pub mod scriptlet;
 pub mod settings;
 pub mod tz;
 pub mod ui;
+pub mod wifi;
 
 pub use apps::{discover, App, IconSource, Launch};
 pub use config::Config;
