@@ -145,6 +145,11 @@ framework_stop() {
     else
         stop lab126_gui >> "$LOG" 2>&1
         pause_us 1250000
+        # Stopping the framework starts the stock boot actions again, and their progress bar (BootActionsApplication,
+        # drawn by animator) would draw over the launcher: stop them as well.
+        stop bootactions >> "$LOG" 2>&1 || true
+        killall -q -s KILL animator 2>/dev/null || true
+        killall -q -s KILL BootActionsApplication 2>/dev/null || true
     fi
     install_traps
     log "framework stopped after $(( $(date +%s) - t0 ))s"
