@@ -40,6 +40,8 @@ pub enum Ev {
     Tick,
     /// The USB state changed (the cable, or the drive shown on a computer).
     Usb(kl_core::Usb),
+    /// Draw the drive-mode screen again: the stock system draws its own USB screen when the drive goes to the computer.
+    UsbRedraw,
     /// The device was turned (auto-rotation, after the debouncer).
     Turn(Rotation),
     /// A background app ended: its name, last output line and whether it succeeded.
@@ -339,6 +341,15 @@ fn main() {
                     if t.send(Ev::Usb(now)).is_err() {
                         return;
                     }
+                    // Drive mode: the stock system draws its own USB screen soon after; draw ours over it again.
+                    if now == kl_core::Usb::Drive {
+                        for secs in [2, 3] {
+                            thread::sleep(Duration::from_secs(secs));
+                            if t.send(Ev::UsbRedraw).is_err() {
+                                return;
+                            }
+                        }
+                    }
                 }
                 thread::sleep(Duration::from_secs(1));
             }
@@ -430,6 +441,13 @@ fn main() {
                     } else {
                         Action::None
                     }
+                } else {
+                    Action::None
+                }
+            }
+            Ev::UsbRedraw => {
+                if ui.usb == kl_core::Usb::Drive {
+                    Action::Redraw { full: true }
                 } else {
                     Action::None
                 }

@@ -55,12 +55,13 @@ fn sysfs_text(path: &str) -> String {
     std::fs::read_to_string(path).map(|t| t.trim().to_string()).unwrap_or_default()
 }
 
-/// The USB state: the cable (the charger's `online`) and whether `/mnt/us` is mounted (it is not while the drive is
-/// on a computer).
+/// The USB state: the cable (the charger's `online`) and whether the storage partition is mounted on the Kindle. That
+/// partition is `/mnt/base-us` (vfat); `/mnt/us` is a FUSE layer over it that stays mounted. While the drive is on a
+/// computer, `/mnt/base-us` is not mounted.
 pub fn usb_state() -> kl_core::Usb {
     let cable_in = sysfs_text(profile::ACTIVE.charger_online) == "1";
     let mounted = std::fs::read_to_string("/proc/mounts")
-        .map(|m| m.lines().any(|l| l.split_whitespace().nth(1) == Some("/mnt/us")))
+        .map(|m| m.lines().any(|l| l.split_whitespace().nth(1) == Some("/mnt/base-us")))
         .unwrap_or(true);
     kl_core::Usb::from_device(cable_in, mounted)
 }

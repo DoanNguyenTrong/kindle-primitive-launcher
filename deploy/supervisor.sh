@@ -288,7 +288,7 @@ usb_watch() {
     last=""
     while kill -0 "$1" 2>/dev/null; do
         cable=$(cat /sys/class/power_supply/max77796-charger/online 2>/dev/null)
-        mounted=$(grep -c " /mnt/us " /proc/mounts 2>/dev/null)
+        mounted=$(grep -c " /mnt/base-us " /proc/mounts 2>/dev/null)
         vstate=$(awk '{print $3}' /proc/$(pidof volumd 2>/dev/null)/stat 2>/dev/null)
         lp=$(cat "$LAUNCHER_PID" 2>/dev/null)
         lalive=no
