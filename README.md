@@ -68,6 +68,39 @@ is used only when you ask for it, or when something goes wrong.
 
 The full steps, upgrades and removal are in the [install guide](docs/INSTALL.md).
 
+## Why it is better
+
+- **A clean screen.** One grid of your apps replaces the stock home, with its library shelves, store and banners. Only
+  what you use is on the screen, and e-ink redraws just the part that changed.
+- **Less memory.** With the stock framework stopped, apps have about 140 MB more memory on the Oasis 3
+  ([device notes](docs/device-notes.md)).
+- **Quicker to be useful at boot (opt-in).** With the boot start on, the launcher opens when the stock start-up animation
+  has finished, instead of waiting for the stock home screen.
+- **One place for settings.** Wi-Fi and networks, SSH and DNS, display, sleep, device and about, in pages you can read
+  at a glance, and a quick panel from the top edge with the same controls.
+
+## Screenshots
+
+The screenshots are from the desktop build of the same code, with demo values. They are not photos of a device.
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/quick-settings.png" alt="Quick settings" width="240"><br><sub>Quick settings, with CPU, memory and storage</sub></td>
+    <td align="center"><img src="docs/images/settings-display.png" alt="Display settings" width="240"><br><sub>Display settings</sub></td>
+    <td align="center"><img src="docs/images/settings-wi-fi-network.png" alt="Wi-Fi settings" width="240"><br><sub>Wi-Fi and the networks in range</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/wifi-long-list.png" alt="A long list of Wi-Fi networks" width="240"><br><sub>A long list of networks, with scrolling</sub></td>
+    <td align="center"><img src="docs/images/network-name.png" alt="Joining a network by name" width="240"><br><sub>Joining a hidden network by name</sub></td>
+    <td align="center"><img src="docs/images/keyboard-pressed.png" alt="The on-screen keyboard with a key pressed" width="240"><br><sub>The on-screen keyboard, with a key pressed</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/ssh-dns-on.png" alt="SSH and DNS settings" width="240"><br><sub>SSH and DNS settings</sub></td>
+    <td align="center"><img src="docs/images/settings-device.png" alt="Device settings" width="240"><br><sub>Device settings</sub></td>
+    <td align="center"><img src="docs/images/usb-drive.png" alt="USB drive mode" width="240"><br><sub>USB drive mode, with the cable</sub></td>
+  </tr>
+</table>
+
 ## Highlights
 
 | | |
@@ -89,16 +122,17 @@ The full steps, upgrades and removal are in the [install guide](docs/INSTALL.md)
 | Kindle Oasis 3 (1264 × 1680, firmware 5.18.2) | ✅ Verified on hardware |
 | Other Kindle models | 🛠️ Not supported yet |
 
-**Current version: 0.2.7.** Each device build is a new patch version; each phase starts a new minor version.
+**Current version: 0.3.12.** Each device build is a new patch version; each phase starts a new minor version.
 Hardware observations are in the [device notes](docs/device-notes.md).
 
 ## Limits
 
 - Verified on the Oasis 3 only.
-- The launcher does not start at boot yet: open *Launcher* from the library after a restart.
-- While the launcher runs, the Kindle charges over USB but is not a USB drive. Use the Kindle UI for USB.
-- Wi-Fi can be switched on and off, and the Kindle joins networks it already knows. Joining a new network still
-  needs the Kindle UI.
+- Starting at boot is opt-in and still being tested (M7): open *Launcher* from the library after a restart.
+- USB: plugging the cable in shows the drive on the computer with the launcher's drive-mode picture; ejecting returns
+  to the grid. Only the Oasis 3 is tested.
+- Wi-Fi can be switched on and off, and networks can be joined with a password, including hidden networks. Enterprise
+  networks are not supported yet.
 - Returning to the Kindle UI takes about a minute: that is the stock framework starting.
 - Amazon content (the store, purchased books, Whispersync) is in the Kindle UI only.
 
@@ -108,12 +142,12 @@ The milestones and their checklists are in the [plan](docs/03-plan.md).
 
 - [x] M1: the launcher with the framework stopped (apps, sleep and wake, the Kindle UI round trip)
 - [x] M2: the home screen in the style of a phone (grid, pages, tap feedback, animation, dark mode, pop-ups)
-- [ ] M3: a status bar like the stock Kindle's, with Wi-Fi signal bars and quick settings
-- [ ] M4: Settings in pages (Wi-Fi, Display, Sleep, Apps, Device, About)
-- [ ] M5: Wi-Fi networks: scan, join with a password on an on-screen keyboard, forget
-- [ ] M6: USB drive mode from the launcher, network time
+- [x] M3: a status bar like the stock Kindle's, with Wi-Fi signal bars and quick settings
+- [x] M4: Settings in pages (Wi-Fi, Display, Sleep, Apps, Device, About; SSH and DNS)
+- [x] M5: Wi-Fi networks: scan, join with a password or by name, forget (enterprise networks skipped for now)
+- [x] M6: USB drive mode from the launcher (network time was not needed)
 - [ ] M7: start at boot (opt-in), with reboot tests
-- [ ] M8: the rest of KUAL (`status`, `checked`, model checks)
+- [ ] M8: the rest of KUAL (`status`, `checked`); model checks are in
 
 <details>
 <summary><b>Using the launcher</b></summary>

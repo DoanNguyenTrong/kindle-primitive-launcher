@@ -3,11 +3,52 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.3.12
+
+- Stopping the framework also stops the stock boot actions and their progress bar, so the bar no longer draws over
+  the launcher.
+
+## 0.3.11
+
+- The boot guard stops the stock boot animation (`animator`) before the launcher takes the screen.
+
+## 0.3.10
+
+- The boot guard waits for the stock progress bar (the splash job) to finish again. Stopping it early delayed the
+  stock UI and the launcher after it.
+
+## 0.3.7
+
+- The boot guard waits for the stock progress bar to finish before the launcher starts, so the bar does not draw
+  over the launcher.
+
 ## 0.3.6
 
 - USB: plugging the cable in shows the drive on the computer and the launcher's drive-mode picture in place of the
   stock USB screen; ejecting returns to the grid. The launcher and its supervisor no longer hold `/mnt/us`, which the
   Kindle unmounts for the drive, so they keep running through it.
+
+## 0.3.5
+
+- Nothing of the launcher holds `/mnt/us` while it runs: the supervisor runs from `/`, the launcher logs through a pipe,
+  the library entry runs from a copy, and the SSH server runs from a copy in `/var/tmp`.
+
+## 0.3.4
+
+- The drive-mode screen shows the picture `assets/usb-drive-mode.png`.
+
+## 0.3.3
+
+- The launcher reads the USB state each second (cable in, charging, or the drive shown on a computer). While the drive
+  is shown, its screen is drawn and taps are ignored.
+
+## 0.3.1
+
+- KUAL menus: an item's `if` of the form `"Model" -m` or `-m!` shows it on that model (the Oasis 3 is KindleOasis3).
+
+## 0.3.0
+
+- Phase 3 starts: system duties (USB, boot). The supervisor and the Kindle UI return are kept as in 0.2.x.
 
 ## 0.3.2
 
