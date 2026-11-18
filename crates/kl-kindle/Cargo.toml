@@ -9,6 +9,7 @@ name = "kl-launcher"
 path = "src/main.rs"
 
 [dependencies]
+primitive-quick = { path = "../../tools/crates/primitive-quick" }
 kl-core = { path = "../kl-core" }
 kl-render = { path = "../kl-render" }
 libc.workspace = true

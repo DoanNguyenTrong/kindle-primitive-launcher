@@ -3,6 +3,15 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.2.20
+
+- Quick settings has a System section: CPU, memory and storage, each with an icon, a bar and its value. The status
+  bar no longer shows them. The icons and figures are shared with Primitive Browser (`primitive-quick`).
+- Wi-Fi: "Other…" joins a network that does not show in the list (name, then password; an empty password joins an
+  open network). With Wi-Fi off the list says so, and turning Wi-Fi on from the page starts a scan.
+- The keyboard takes its keys, spacing and colours from the shared keyboard (`primitive-keyboard`), as in Primitive
+  Browser.
+
 ## 0.2.7
 
 - The first published release. The release workflow installs zig and cargo-zigbuild with setup actions (pinned

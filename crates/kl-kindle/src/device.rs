@@ -103,6 +103,18 @@ fn mem_available() -> String {
         .unwrap_or_default()
 }
 
+/// CPU, memory and storage for quick settings (the shared reader). The CPU share needs the previous reading, kept
+/// here between calls.
+fn system() -> primitive_quick::Stats {
+    static METER: std::sync::Mutex<Option<primitive_quick::CpuMeter>> = std::sync::Mutex::new(None);
+    let mut guard = match METER.lock() {
+        Ok(g) => g,
+        Err(_) => return primitive_quick::Stats::default(),
+    };
+    let meter = guard.get_or_insert_with(primitive_quick::CpuMeter::new);
+    primitive_quick::read(meter, "/mnt/us")
+}
+
 /// Whether the SSH server started by `ssh.sh` (Primitive Browser's dropbear) is running.
 fn ssh_running() -> bool {
     std::fs::read_to_string("/tmp/dropbear_browser.pid")
@@ -113,6 +125,7 @@ fn ssh_running() -> bool {
 }
 
 pub fn status(settings: &Settings) -> Status {
+    let storage = free_storage();
     let rotation = settings.rotation;
     let sleep_launcher = settings.sleep_screen_launcher;
     let (clock, date, _) = local_time();
@@ -142,6 +155,9 @@ pub fn status(settings: &Settings) -> Status {
         ssh: ssh_running(),
         rotation,
         memory: mem_available(),
+        ip: wlan_ip(),
+        system: system(),
+        storage,
     }
 }
 
@@ -149,6 +165,172 @@ pub fn status(settings: &Settings) -> Status {
 fn lipc_text(service: &str, prop: &str) -> Option<String> {
     let text = get_text(service, prop);
     (!text.is_empty()).then_some(text)
+}
+
+/// Scan for Wi-Fi networks and read the connected one from `com.lab126.wifid`: a scan takes a few seconds, so this
+/// blocks; the driver runs it on its own thread. With Wi-Fi off there is nothing to scan.
+pub fn wifi_info() -> kl_core::wifi::WifiInfo {
+    if get_int(WIFID, "enable") != Some(1) {
+        return kl_core::wifi::WifiInfo::default();
+    }
+    let _ = Command::new("lipc-set-prop").args([WIFID, "scan", "1"]).stderr(Stdio::null()).status();
+    // The scan starts after the request; scanState reads "idle" when it is done (about 12 s at most).
+    thread::sleep(Duration::from_secs(2));
+    for _ in 0..20 {
+        if get_text(WIFID, "scanState") == "idle" {
+            break;
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    let scan = Command::new("sh")
+        .arg("-c")
+        .arg("echo '{}' | lipc-hash-prop -n com.lab126.wifid scanList")
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let report = get_text(WIFID, "711");
+    // A network is saved when the Kindle has a profile for it (the connected one may have been forgotten).
+    let saved: Vec<String> = saved_profiles().into_iter().map(|(_, n)| n).collect();
+    let mut current = kl_core::wifi::parse_current(&report);
+    if let Some(c) = current.as_mut() {
+        c.known = saved.contains(&c.name);
+    }
+    let networks = kl_core::wifi::parse_scan(&scan)
+        .into_iter()
+        .map(|n| kl_core::wifi::Network { known: saved.contains(&n.name), ..n })
+        .collect();
+    kl_core::wifi::WifiInfo { current, networks }
+}
+
+/// The saved profiles from the tool, with their passwords (see `saved_profile_list`).
+fn saved_profile_list() -> Vec<kl_core::wifi::SavedProfile> {
+    let text = Command::new("sh")
+        .arg("-c")
+        .arg("echo '{}' | lipc-hash-prop -n com.lab126.wifid profileData")
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    kl_core::wifi::parse_saved_profiles(&text)
+}
+
+/// The saved profiles: network ID and name.
+fn saved_profiles() -> Vec<(u32, String)> {
+    saved_profile_list().into_iter().map(|p| (p.id, p.name)).collect()
+}
+
+/// The network ID of the saved profile named `name`, if there is one.
+fn profile_id(name: &str) -> Option<u32> {
+    saved_profiles().into_iter().find(|(_, n)| n == name).map(|(id, _)| id)
+}
+
+/// Delete a saved profile by its network ID.
+fn delete_profile(id: u32) -> bool {
+    Command::new("lipc-set-prop")
+        .args(["-i", WIFID, "deleteProfile", &id.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Save a profile for a network with its password (`password` for a secured network), on the tool's input.
+fn create_profile(name: &str, secured: bool, password: Option<&str>) -> bool {
+    let input = kl_core::wifi::profile_input(name, if secured { password } else { None });
+    let Ok(mut child) = Command::new("lipc-hash-prop")
+        .args([WIFID, "createProfile"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(input.as_bytes());
+    }
+    child.wait().is_ok_and(|s| s.success())
+}
+
+/// Save (when the network is not saved yet) and connect to a network. A new profile replaces an old one with the
+/// same name; if the join then fails, the old profile (and its password) is put back, so the Kindle keeps what it had.
+/// Passwords go to the tool on its input only: never on a command line, never logged. Blocks while the connection is
+/// made (up to about 40 s), so the driver runs it on its own thread. Succeeds when the connected network is `name`.
+pub fn join_network(name: &str, secured: bool, password: Option<&str>, saved: bool) -> Result<(), String> {
+    let previous = saved_profile_list().into_iter().find(|p| p.name == name);
+    if !saved {
+        if let Some(old) = &previous {
+            delete_profile(old.id);
+        }
+        if !create_profile(name, secured, password) {
+            restore(previous.as_ref());
+            return Err("the network could not be saved".into());
+        }
+    }
+    let _ = Command::new("lipc-set-prop")
+        .args([CMD, "ensureConnection", &format!("wifi:{name}")])
+        .stderr(Stdio::null())
+        .status();
+    // Wait for the connection to report this network: the report (property 711) names the current AP.
+    for _ in 0..80 {
+        thread::sleep(Duration::from_millis(500));
+        let report = get_text(WIFID, "711");
+        if kl_core::wifi::parse_current(&report).is_some_and(|n| n.name == name) {
+            return Ok(());
+        }
+    }
+    log(&format!("join {name}: not connected, connection state {}", get_text(WIFID, "cmState")));
+    if !saved {
+        restore(previous.as_ref());
+        return Err("it did not connect: check the password. The saved password was put back.".into());
+    }
+    Err("it did not connect: check the password, and that the network is in range".into())
+}
+
+/// Put an old profile back after a failed join (its password was kept in memory, and is not logged).
+fn restore(previous: Option<&kl_core::wifi::SavedProfile>) {
+    if let Some(old) = previous {
+        if create_profile(&old.name, old.secured, old.psk.as_deref()) {
+            log(&format!("restored the saved profile for {}", old.name));
+        }
+    }
+}
+
+/// Forget a saved network: delete its profile.
+pub fn forget_network(name: &str) -> Result<(), String> {
+    match profile_id(name) {
+        Some(id) if delete_profile(id) => Ok(()),
+        Some(_) => Err("it could not be forgotten".into()),
+        None => Err("it is not saved".into()),
+    }
+}
+
+/// The Wi-Fi address (`ifconfig wlan0`), or "not connected".
+pub fn wlan_ip() -> String {
+    Command::new("ifconfig")
+        .arg("wlan0")
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|o| kl_core::wifi::parse_ip(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_else(|| "not connected".into())
+}
+
+/// Free space on the Kindle's user partition (`/mnt/us`), e.g. "2.1 GB free".
+pub fn free_storage() -> String {
+    let Ok(path) = std::ffi::CString::new("/mnt/us") else { return "unknown".into() };
+    // SAFETY: statvfs fills the struct it is given; the path is a valid C string.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+        return "unknown".into();
+    }
+    let bytes = st.f_bavail as u64 * st.f_frsize as u64;
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB free", bytes as f64 / 1e9)
+    } else {
+        format!("{} MB free", bytes / 1_000_000)
+    }
 }
 
 pub fn set_light(level: u32) {

@@ -50,6 +50,9 @@ fn demo_status() -> Status {
         animation: true,
         rotation: Rotation::Upright,
         memory: "MemAvailable 312 MB".into(),
+        ip: "192.168.1.28".into(),
+        storage: "2.1 GB free".into(),
+        system: primitive_quick::Stats { cpu: Some(12), ram: Some((180, 512)), storage: Some((1_100_000_000, 6_100_000_000)) },
     }
 }
 
@@ -122,8 +125,64 @@ fn main() {
     ui.pressed = Some(ui.layout.icon(1));
     shot(&mut renderer, &ui, "home-pressed");
     ui.pressed = None;
-    ui.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 40.0 });
+    ui.screen = kl_core::Screen::Settings;
     shot(&mut renderer, &ui, "settings");
+    // Demo networks for the Wi-Fi page (made-up names).
+    let net = |name: &str, level: u32, secured: bool, known: bool| kl_core::wifi::Network { name: name.into(), level, max: 5, secured, known };
+    // A long list (made-up names) to check scrolling: 30 networks, mixed signal, locks and saved ones.
+    let mut networks: Vec<kl_core::wifi::Network> = (1..=30)
+        .map(|i| net(&format!("Network {i:02}"), 1 + (i * 7) % 5, i % 3 != 0, i % 5 == 0))
+        .collect();
+    networks.push(net("Office 5G", 2, true, true));
+    let demo_wifi = kl_core::wifi::WifiInfo { current: Some(net("Home Network", 4, true, true)), networks };
+    ui.set_wifi(demo_wifi);
+    ui.screen = kl_core::Screen::Page(kl_core::layout::Page::Wifi);
+    shot(&mut renderer, &ui, "wifi-long-list");
+    let off = Status { wifi_on: false, wifi_state: "off".into(), ..demo_status() };
+    let saved = std::mem::take(&mut ui.wifi);
+    write_png(&out.join("wifi-off.png"), W, H, &renderer.draw(&ui, &off));
+    ui.wifi = saved;
+    for _ in 0..3 {
+        ui.handle(Input::Swipe { dx: 0.0, dy: -400.0, start_y: 900.0 });
+    }
+    shot(&mut renderer, &ui, "wifi-long-list-scrolled");
+    ui.wifi_scroll = 0;
+    ui.wifi_target = Some(net("Cafe Corner", 4, true, false));
+    ui.screen = kl_core::Screen::NetworkDetail;
+    shot(&mut renderer, &ui, "network-detail");
+    ui.wifi_target = Some(net("Home Network", 4, true, true));
+    shot(&mut renderer, &ui, "network-detail-saved");
+    ui.wifi_target = Some(net("Cafe Corner", 4, true, false));
+    ui.screen = kl_core::Screen::Password;
+    ui.password.text = "Sunny day".chars().collect();
+    ui.password.caret = ui.password.text.len();
+    shot(&mut renderer, &ui, "password");
+    ui.show_password = true;
+    shot(&mut renderer, &ui, "password-shown");
+    ui.show_password = false;
+    ui.password = primitive_keyboard::Editor::new(63);
+    // A network that is not in the list: its name, then the password screen with the open-network hint.
+    ui.screen = kl_core::Screen::NetworkName;
+    ui.network_name.text = "Garden Shed".chars().collect();
+    ui.network_name.caret = ui.network_name.text.len();
+    shot(&mut renderer, &ui, "network-name");
+    ui.wifi_hidden = true;
+    ui.wifi_target = Some(net("Garden Shed", 0, true, false));
+    ui.screen = kl_core::Screen::Password;
+    shot(&mut renderer, &ui, "password-hidden");
+    ui.wifi_hidden = false;
+    ui.network_name = primitive_keyboard::Editor::new(32);
+    ui.screen = kl_core::Screen::Settings;
+    for page in kl_core::layout::Page::ALL {
+        ui.screen = kl_core::Screen::Page(page);
+        if page == kl_core::layout::Page::Wifi {
+            shot(&mut renderer, &ui, "settings-wi-fi-network");
+            continue;
+        }
+        let name = format!("settings-{}", page.title().to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-"));
+        shot(&mut renderer, &ui, &name);
+    }
+    ui.screen = kl_core::Screen::Settings;
     ui.screen = kl_core::Screen::ConfirmKindle;
     shot(&mut renderer, &ui, "confirm");
     // Dark mode: the grid, Settings and the dialog, white on black; pictures keep their look.

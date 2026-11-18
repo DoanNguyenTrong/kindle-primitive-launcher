@@ -42,6 +42,52 @@ pub enum Ev {
     Turn(Rotation),
     /// A background app ended: its name, last output line and whether it succeeded.
     Background { name: String, line: String, ok: bool },
+    /// A Wi-Fi scan finished.
+    Wifi(kl_core::wifi::WifiInfo),
+    /// A Wi-Fi join or forget finished: whether it worked, and what to tell the user.
+    WifiResult { ok: bool, message: String },
+}
+
+/// Join a network on a thread, then send the result and a fresh scan. The password is passed on, never logged.
+fn start_wifi_join(tx: Sender<Ev>, name: String, secured: bool, password: Option<String>, saved: bool) {
+    thread::spawn(move || {
+        log(&format!("join {name} (saved: {saved}, secured: {secured})"));
+        let result = device::join_network(&name, secured, password.as_deref(), saved);
+        let (ok, message) = match result {
+            Ok(()) => (true, format!("Connected to {name}")),
+            Err(e) => (false, e),
+        };
+        log(&format!("join {name}: {}", if ok { "connected" } else { "failed" }));
+        let _ = tx.send(Ev::WifiResult { ok, message });
+        let _ = tx.send(Ev::Wifi(device::wifi_info()));
+    });
+}
+
+/// Forget a saved network on a thread, then send the result and a fresh scan.
+fn start_wifi_forget(tx: Sender<Ev>, name: String) {
+    thread::spawn(move || {
+        let (ok, message) = match device::forget_network(&name) {
+            Ok(()) => (true, format!("Forgot {name}")),
+            Err(e) => (false, e),
+        };
+        log(&format!("forget {name}: {ok}"));
+        let _ = tx.send(Ev::WifiResult { ok, message });
+        let _ = tx.send(Ev::Wifi(device::wifi_info()));
+    });
+}
+
+/// Scan for Wi-Fi on a thread and send the result to the event loop.
+fn start_wifi_scan(tx: Sender<Ev>) {
+    start_wifi_scan_after(tx, 0);
+}
+
+/// Scan after `secs` seconds (Wi-Fi just turned on needs a moment to come up).
+fn start_wifi_scan_after(tx: Sender<Ev>, secs: u64) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(secs));
+        let info = device::wifi_info();
+        let _ = tx.send(Ev::Wifi(info));
+    });
 }
 
 pub fn log(msg: &str) {
@@ -290,6 +336,17 @@ fn main() {
 
     while let Ok(ev) = rx.recv() {
         let action = match ev {
+            Ev::Wifi(info) => {
+                ui.set_wifi(info);
+                // The Wi-Fi state (connected or not) is read again, so the rows show what the scan shows.
+                status = device::status(&settings);
+                Action::Redraw { full: false }
+            }
+            Ev::WifiResult { ok, message } => {
+                ui.set_join_result(ok, message);
+                status = device::status(&settings);
+                Action::Redraw { full: false }
+            }
             Ev::Background { name, line, ok } => {
                 log(&format!("background end {name}: ok={ok} {line}"));
                 ui.background_done();
@@ -320,10 +377,21 @@ fn main() {
                 let shown = matches!(ui.screen, Screen::Home | Screen::QuickSettings | Screen::AppMenu | Screen::ConfirmKindle);
                 if shown {
                     let fresh = device::status(&settings);
-                    let changed = status.bar_differs(&fresh);
+                    // Quick settings also shows CPU, memory and storage: redraw it when those change.
+                    let changed = status.bar_differs(&fresh) || (ui.screen == Screen::QuickSettings && status.system != fresh.system);
                     let warned = ui.set_battery(fresh.battery, fresh.charging);
                     status = fresh;
                     if changed || warned {
+                        Action::Redraw { full: false }
+                    } else {
+                        Action::None
+                    }
+                } else if matches!(ui.screen, Screen::Settings | Screen::Page(_) | Screen::NetworkDetail | Screen::Password | Screen::NetworkName) {
+                    // The Settings screens show Wi-Fi, SSH and the start-up switch: redraw when those change.
+                    let fresh = device::status(&settings);
+                    let changed = status.settings_differs(&fresh);
+                    status = fresh;
+                    if changed {
                         Action::Redraw { full: false }
                     } else {
                         Action::None
@@ -354,7 +422,18 @@ fn main() {
                     };
                     renderer.set_sleep_image(picture);
                 }
-                ui.handle(input)
+                let before = ui.screen;
+                let action = ui.handle(input);
+                // A Settings page opens with a fresh status: the About text shows the current address and storage.
+                if matches!(ui.screen, Screen::Page(_)) && ui.screen != before {
+                    status = device::status(&settings);
+                }
+                // The Wi-Fi page scans when it opens.
+                if ui.screen == Screen::Page(kl_core::layout::Page::Wifi) && ui.screen != before {
+                    ui.wifi_scanning = true;
+                    start_wifi_scan(tx.clone());
+                }
+                action
             }
         };
         match action {
@@ -413,6 +492,18 @@ fn main() {
                 run_background(app, tx.clone());
                 display.show(renderer.draw(&ui, &status), &settings, false);
             }
+            Action::ScanWifi => {
+                start_wifi_scan(tx.clone());
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::JoinWifi { name, secured, password, saved } => {
+                start_wifi_join(tx.clone(), name, secured, password, saved);
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::ForgetWifi(name) => {
+                start_wifi_forget(tx.clone(), name);
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
             Action::SetOrder(order) => {
                 save_apps_toml(&dir, &mut ui, "order", |c| {
                     for (id, place) in &order {
@@ -442,6 +533,11 @@ fn main() {
             }
             Action::Device(cmd) => {
                 run_device(cmd, &mut status, &mut settings, &dir, &run, &settings_path);
+                // Wi-Fi turned on from the Wi-Fi page: look for networks once it is up.
+                if cmd == DeviceCmd::ToggleWifi && status.wifi_on && ui.screen == Screen::Page(kl_core::layout::Page::Wifi) {
+                    ui.wifi_scanning = true;
+                    start_wifi_scan_after(tx.clone(), 4);
+                }
                 let full = matches!(cmd, DeviceCmd::ToggleRotation | DeviceCmd::AutoRotation | DeviceCmd::ToggleDarkMode);
                 display.show(renderer.draw(&ui, &status), &settings, full);
             }

@@ -8,7 +8,7 @@ use crate::{
     apps::{extensions_app, sort_key, App, IconSource, Launch},
     kual::MenuItem,
     battery::{self, Warning},
-    layout::{Button, Layout, QuickTile, Rect},
+    layout::{Button, Layout, Page, QuickTile, Rect},
     settings::Rotation,
 };
 
@@ -26,6 +26,14 @@ pub enum Screen {
     Extensions,
     /// Quick settings, dropped down from the status bar.
     QuickSettings,
+    /// One page of Settings (Settings > page; Back returns to the Settings list).
+    Page(Page),
+    /// One network from the Wi-Fi scan: connect, or forget a saved one.
+    NetworkDetail,
+    /// The password of a new secured network, typed on the on-screen keyboard.
+    Password,
+    /// The name of a network that is not in the list (a hidden network), typed on the keyboard.
+    NetworkName,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -81,6 +89,13 @@ pub enum Action {
     SetIcon { id: String, icon: Option<String> },
     /// Run an app while the launcher stays in front (background mode); the driver shows its last output line.
     RunBackground(App),
+    /// Scan for Wi-Fi networks (the Wi-Fi page's Scan button, or opening the page). The driver sends the result back.
+    ScanWifi,
+    /// Join a network. `saved`: the Kindle has a profile for it, so only the connection is asked for; otherwise the
+    /// profile is saved first (with the password, for a secured network). The password is never logged.
+    JoinWifi { name: String, secured: bool, password: Option<String>, saved: bool },
+    /// Forget a saved network (delete its profile).
+    ForgetWifi(String),
 }
 
 /// What the status strip and Settings show. Filled by the driver.
@@ -111,9 +126,24 @@ pub struct Status {
     pub rotation: Rotation,
     /// Free memory for the About text, e.g. "MemAvailable 312 MB".
     pub memory: String,
+    /// The Wi-Fi address (About), or "not connected".
+    pub ip: String,
+    /// CPU, memory and storage, shown in quick settings (read by the driver).
+    pub system: primitive_quick::Stats,
+    /// Free storage on the Kindle's user partition (About), e.g. "2.1 GB free".
+    pub storage: String,
 }
 
 impl Status {
+    /// Whether what the Settings screens show from the status differs: Wi-Fi, SSH and the start-up switch.
+    pub fn settings_differs(&self, other: &Status) -> bool {
+        self.wifi_on != other.wifi_on
+            || self.wifi_state != other.wifi_state
+            || self.wifi_signal != other.wifi_signal
+            || self.ssh != other.ssh
+            || self.autostart != other.autostart
+    }
+
     /// Whether what the status bar shows differs between two readings (the clock minute, battery, charging,
     /// Wi-Fi and its signal, SSH). The bar is redrawn only then.
     pub fn bar_differs(&self, other: &Status) -> bool {
@@ -126,6 +156,12 @@ impl Status {
             || self.ssh != other.ssh
     }
 }
+
+/// The shortest and longest Wi-Fi password (WPA2-PSK).
+pub const MIN_PASSWORD: usize = 8;
+pub const MAX_PASSWORD: usize = 63;
+/// The longest network name (SSID).
+pub const MAX_NAME: usize = 32;
 
 /// A horizontal swipe longer than this (pixels) turns the page.
 const SWIPE_MIN: f32 = 150.0;
@@ -157,6 +193,19 @@ pub struct Ui {
     pub ext_page: usize,
     /// Background jobs still running (shown in the status bar).
     pub running: usize,
+    /// The Wi-Fi page: the networks from the last scan, whether a scan is running, and the list's scroll.
+    pub wifi: crate::wifi::WifiInfo,
+    pub wifi_scanning: bool,
+    pub wifi_scroll: usize,
+    /// The network the network screen or password screen is for.
+    pub wifi_target: Option<crate::wifi::Network>,
+    /// The password being typed (the shared editor: text, caret, keyboard layer), and whether it is shown.
+    pub password: primitive_keyboard::Editor,
+    pub show_password: bool,
+    /// The name of a hidden network being typed, and whether the password screen is for a hidden network (an empty
+    /// password then joins it as an open network).
+    pub network_name: primitive_keyboard::Editor,
+    pub wifi_hidden: bool,
 }
 
 impl Ui {
@@ -182,6 +231,14 @@ impl Ui {
             ext_path: Vec::new(),
             ext_page: 0,
             running: 0,
+            wifi: crate::wifi::WifiInfo::default(),
+            wifi_scanning: false,
+            wifi_scroll: 0,
+            wifi_target: None,
+            password: primitive_keyboard::Editor::new(MAX_PASSWORD),
+            show_password: false,
+            network_name: primitive_keyboard::Editor::new(MAX_NAME),
+            wifi_hidden: false,
         }
     }
 
@@ -236,6 +293,27 @@ impl Ui {
 
     pub fn ext_pages(&self) -> usize {
         self.layout.list_pages(self.ext_items().len())
+    }
+
+    /// The Wi-Fi page's networks, from the last scan. Set by the driver.
+    pub fn set_wifi(&mut self, info: crate::wifi::WifiInfo) {
+        let current = info.current.as_ref().map(|c| c.name.clone());
+        let networks = info.networks.into_iter().filter(|n| Some(&n.name) != current.as_ref()).collect();
+        self.wifi = crate::wifi::WifiInfo { current: info.current, networks };
+        // The network screen shows the network as it is now (saved or not, connected or not).
+        if let Some(name) = self.wifi_target.as_ref().map(|t| t.name.clone()) {
+            let fresh = self.wifi.current.iter().chain(self.wifi.networks.iter()).find(|n| n.name == name).cloned();
+            if let Some(fresh) = fresh {
+                self.wifi_target = Some(fresh);
+            }
+        }
+        self.wifi_scanning = false;
+        self.wifi_scroll = self.wifi_scroll.min(self.wifi_max_scroll());
+    }
+
+    /// How far the scan list can scroll: its networks, less the rows that fit.
+    fn wifi_max_scroll(&self) -> usize {
+        self.wifi.networks.len().saturating_sub(self.layout.wifi_area().visible)
     }
 
     /// Background mode: say it started; the driver runs it and shows its last line when it ends.
@@ -299,6 +377,11 @@ impl Ui {
     /// The icon files "Change icon" cycles through.
     pub fn set_icon_choices(&mut self, choices: Vec<String>) {
         self.icon_choices = choices;
+    }
+
+    /// The Wi-Fi scan list on the Wi-Fi page (networks other than the current one).
+    pub fn wifi_networks(&self) -> &[crate::wifi::Network] {
+        &self.wifi.networks
     }
 
     /// The app the app menu edits.
@@ -524,7 +607,11 @@ impl Ui {
         let had_notice = self.notice.take().is_some();
         let action = match self.screen {
             Screen::Home => self.home(input),
-            Screen::Settings => self.settings(input),
+            Screen::Settings => self.settings_home(input),
+            Screen::Page(page) => self.settings_page(input, page),
+            Screen::NetworkDetail => self.network_detail(input),
+            Screen::Password => self.password_screen(input),
+            Screen::NetworkName => self.network_name_screen(input),
             Screen::ConfirmKindle => self.confirm(input),
             Screen::AppMenu => self.app_menu(input),
             Screen::Extensions => self.extensions_list(input),
@@ -614,11 +701,170 @@ impl Ui {
         }
     }
 
-    fn settings(&mut self, input: Input) -> Action {
+    /// The network screen: Connect (or Enter the password for a new secured network), Forget for a saved one, and
+    /// Back to the Wi-Fi page.
+    fn network_detail(&mut self, input: Input) -> Action {
+        let Some(net) = self.wifi_target.clone() else { return self.go(Screen::Settings) };
+        match input {
+            Input::PageBack => self.go(Screen::Page(Page::Wifi)),
+            Input::Tap(x, y) => {
+                if self.layout.done_button().inset(-20).contains(x, y) {
+                    return self.go(Screen::Page(Page::Wifi));
+                }
+                if self.layout.net_connect().inset(-12).contains(x, y) {
+                    if net.secured && !net.known {
+                        self.password = primitive_keyboard::Editor::new(MAX_PASSWORD);
+                        self.show_password = false;
+                        self.wifi_hidden = false;
+                        return self.go(Screen::Password);
+                    }
+                    return self.join(net.name, net.secured, None, net.known);
+                }
+                if net.known && self.layout.net_forget().inset(-12).contains(x, y) {
+                    return Action::ForgetWifi(net.name);
+                }
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// The password screen: type the password on the keyboard (its Go key joins), show or hide it. Back returns to
+    /// the network screen.
+    fn password_screen(&mut self, input: Input) -> Action {
+        let Some(net) = self.wifi_target.clone() else { return self.go(Screen::Settings) };
+        let back = if self.wifi_hidden { Screen::NetworkName } else { Screen::NetworkDetail };
+        match input {
+            Input::PageBack => self.go(back),
+            Input::Tap(x, y) => {
+                if self.layout.done_button().inset(-20).contains(x, y) {
+                    return self.go(back);
+                }
+                if self.layout.password_show().inset(-12).contains(x, y) {
+                    self.show_password = !self.show_password;
+                    return Action::Redraw { full: false };
+                }
+                let Some(key) = self.layout.keyboard_key_at(self.password.layer, x, y) else { return Action::None };
+                match self.password.press(key) {
+                    primitive_keyboard::Press::Go => {
+                        if self.wifi_hidden && self.password.text.is_empty() {
+                            return self.join(net.name, false, None, false);
+                        }
+                        if self.password.text.len() < MIN_PASSWORD {
+                            self.notice = Some(format!("A Wi-Fi password has at least {MIN_PASSWORD} characters."));
+                            return Action::Redraw { full: false };
+                        }
+                        let password = self.password.string();
+                        self.join(net.name, true, Some(password), false)
+                    }
+                    _ => Action::Redraw { full: false },
+                }
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// The name of a network that is not in the list: type it, then Next goes to its password (an empty password
+    /// joins it as an open network). Back returns to the Wi-Fi page.
+    fn network_name_screen(&mut self, input: Input) -> Action {
+        match input {
+            Input::PageBack => self.go(Screen::Page(Page::Wifi)),
+            Input::Tap(x, y) => {
+                if self.layout.done_button().inset(-20).contains(x, y) {
+                    return self.go(Screen::Page(Page::Wifi));
+                }
+                let Some(key) = self.layout.keyboard_key_at(self.network_name.layer, x, y) else { return Action::None };
+                if self.network_name.press(key) == primitive_keyboard::Press::Go {
+                    let name = self.network_name.string().trim().to_string();
+                    if name.is_empty() {
+                        self.notice = Some("Type the network's name.".into());
+                        return Action::Redraw { full: false };
+                    }
+                    self.wifi_target = Some(crate::wifi::Network { name, level: 0, max: 5, secured: true, known: false });
+                    self.wifi_hidden = true;
+                    self.password = primitive_keyboard::Editor::new(MAX_PASSWORD);
+                    self.show_password = false;
+                    return self.go(Screen::Password);
+                }
+                Action::Redraw { full: false }
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// Start joining: back on the Wi-Fi page while it connects (the driver reports the result).
+    fn join(&mut self, name: String, secured: bool, password: Option<String>, saved: bool) -> Action {
+        self.password = primitive_keyboard::Editor::new(MAX_PASSWORD);
+        self.notice = Some(format!("Connecting to {name}…"));
+        self.wifi_scanning = true;
+        self.screen = Screen::Page(Page::Wifi);
+        self.pressed = None;
+        Action::JoinWifi { name, secured, password, saved }
+    }
+
+    /// The result of a join, shown in the footer.
+    pub fn set_join_result(&mut self, ok: bool, message: String) {
+        self.notice = Some(if ok { message } else { format!("Could not connect: {message}") });
+    }
+
+    /// Settings: the list of pages. A tap on a page opens it; Done (or the back key) goes to the home screen.
+    fn settings_home(&mut self, input: Input) -> Action {
         match input {
             Input::PageBack => self.go(Screen::Home),
-            Input::Tap(x, y) => match self.layout.settings_button_at(x, y) {
-                Some(Button::Done) => self.go(Screen::Home),
+            Input::Tap(x, y) => {
+                if self.layout.done_button().inset(-20).contains(x, y) {
+                    return self.go(Screen::Home);
+                }
+                match self.layout.settings_home_at(x, y) {
+                    Some(page) => self.go(Screen::Page(page)),
+                    None => Action::None,
+                }
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// One page of Settings: its rows' buttons. Back (or the back key) returns to the Settings list.
+    fn settings_page(&mut self, input: Input, page: Page) -> Action {
+        match input {
+            Input::PageBack => self.go(Screen::Settings),
+            Input::Swipe { dy, dx, .. } if page == Page::Wifi && dy.abs() > SWIPE_MIN && dy.abs() > dx.abs() => {
+                // The list moves by about as many rows as the swipe covers (at least one).
+                let rows = ((dy.abs() / crate::layout::NETWORK_H as f32) as usize).max(1);
+                let next = if dy < 0.0 { self.wifi_scroll + rows } else { self.wifi_scroll.saturating_sub(rows) };
+                self.wifi_scroll = next.min(self.wifi_max_scroll());
+                Action::Redraw { full: false }
+            }
+            Input::Tap(x, y) if page == Page::Wifi && self.layout.wifi_area().current.contains(x, y) => {
+                // The connected network: its screen, where it can be forgotten.
+                match self.wifi.current.clone() {
+                    Some(net) => {
+                        self.wifi_target = Some(net);
+                        self.go(Screen::NetworkDetail)
+                    }
+                    None => Action::None,
+                }
+            }
+            Input::Tap(x, y) if page == Page::Wifi && self.layout.scan_at(x, y) => {
+                self.wifi_scanning = true;
+                Action::ScanWifi
+            }
+            Input::Tap(x, y) if page == Page::Wifi && self.layout.wifi_other().inset(-12).contains(x, y) => {
+                self.network_name = primitive_keyboard::Editor::new(MAX_NAME);
+                self.go(Screen::NetworkName)
+            }
+            Input::Tap(x, y) if page == Page::Wifi && self.layout.network_at(x, y).is_some() => {
+                let index = self.wifi_scroll + self.layout.network_at(x, y).unwrap_or(0);
+                match self.wifi.networks.get(index).cloned() {
+                    Some(net) => {
+                        self.wifi_target = Some(net);
+                        self.go(Screen::NetworkDetail)
+                    }
+                    None => Action::None,
+                }
+            }
+            Input::Tap(x, y) => match self.layout.settings_button_at(page, x, y) {
+                Some(Button::Done) => self.go(Screen::Settings),
                 Some(Button::LightDown) => Action::Device(DeviceCmd::Light(-2)),
                 Some(Button::LightUp) => Action::Device(DeviceCmd::Light(2)),
                 Some(Button::WarmDown) => Action::Device(DeviceCmd::Warmth(-2)),
@@ -745,13 +991,27 @@ mod tests {
         let all = u.layout.quick_button_circle(u.layout.quick_buttons()[5].1);
         u.handle(centre(all));
         assert_eq!(u.screen, Screen::Settings);
-        let rows = u.layout.settings_rows();
-        let row = |r: crate::layout::Row| rows.iter().find(|x| x.row == r).unwrap().buttons[0].1;
+        // The Settings list opens the Display page, whose rows give the device commands.
+        let (display, r) = u.layout.settings_home_rows()[1];
+        assert_eq!(display, Page::Display);
+        u.handle(centre(r));
+        assert_eq!(u.screen, Screen::Page(Page::Display));
+        let rows: Vec<_> = u.layout.page_sections(Page::Display).into_iter().flat_map(|s| s.rows).collect();
+        let row = |rw: crate::layout::Row| rows.iter().find(|x| x.row == rw).unwrap().buttons[0].1;
         assert_eq!(u.handle(centre(rows[0].buttons[1].1)), Action::Device(DeviceCmd::Light(2)));
-        assert_eq!(u.handle(centre(row(crate::layout::Row::Wifi))), Action::Device(DeviceCmd::ToggleWifi));
         assert_eq!(u.handle(centre(row(crate::layout::Row::Rotation))), Action::Device(DeviceCmd::ToggleRotation));
         assert_eq!(u.handle(centre(row(crate::layout::Row::DarkMode))), Action::Device(DeviceCmd::ToggleDarkMode));
-        assert_eq!(u.handle(centre(row(crate::layout::Row::Animation))), Action::Device(DeviceCmd::ToggleAnimation));
+        // Wi-Fi and Animation are on their own pages.
+        u.handle(Input::PageBack);
+        assert_eq!(u.screen, Screen::Settings);
+        u.handle(Input::PageBack);
+        assert_eq!(u.screen, Screen::Home);
+        u.screen = Screen::Page(Page::Wifi);
+        let wifi = u.layout.page_sections(Page::Wifi)[0].rows[0].buttons[0].1;
+        assert_eq!(u.handle(centre(wifi)), Action::Device(DeviceCmd::ToggleWifi));
+        u.screen = Screen::Page(Page::Display);
+        let anim = u.layout.page_sections(Page::Display).into_iter().flat_map(|s| s.rows).find(|r| r.row == crate::layout::Row::Animation).unwrap().buttons[0].1;
+        assert_eq!(u.handle(centre(anim)), Action::Device(DeviceCmd::ToggleAnimation));
     }
 
     #[test]
@@ -956,6 +1216,163 @@ mod tests {
     }
 
     #[test]
+    fn the_wifi_page_scans_lists_the_networks_and_scrolls() {
+        use crate::wifi::{Network, WifiInfo};
+        let net = |name: &str, level: u32| Network { name: name.into(), level, max: 5, secured: true, known: false };
+        let mut u = ui(1);
+        u.screen = Screen::Page(Page::Wifi);
+        let scan = u.layout.wifi_area().scan;
+        assert_eq!(u.handle(centre(scan)), Action::ScanWifi);
+        assert!(u.wifi_scanning);
+        let current = Network { known: true, ..net("Current", 4) };
+        let mut networks: Vec<Network> = (0..30).map(|i| net(&format!("Net {i:02}"), 3)).collect();
+        networks.push(current.clone());
+        u.set_wifi(WifiInfo { current: Some(current), networks });
+        assert!(!u.wifi_scanning);
+        assert_eq!(u.wifi_networks().len(), 30, "the current network is not repeated in the list");
+        let visible = u.layout.wifi_area().visible;
+        assert!((6..30).contains(&visible), "a long list needs scrolling: {visible} rows fit");
+        // A swipe moves about as many rows as it covers; the list stops at its end.
+        u.handle(Input::Swipe { dx: 0.0, dy: -400.0, start_y: 900.0 });
+        assert_eq!(u.wifi_scroll, 3, "400 px covers three rows");
+        for _ in 0..40 {
+            u.handle(Input::Swipe { dx: 0.0, dy: -400.0, start_y: 900.0 });
+        }
+        assert_eq!(u.wifi_scroll, 30 - visible, "scrolls to the last network and stops");
+        u.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 900.0 });
+        assert_eq!(u.wifi_scroll, 30 - visible - 3);
+        // Scrolled back to the top, the first network is row 0 of the list.
+        for _ in 0..40 {
+            u.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 900.0 });
+        }
+        assert_eq!(u.wifi_scroll, 0);
+        let row = u.layout.network_row(0);
+        u.handle(centre(row));
+        assert_eq!(u.screen, Screen::NetworkDetail, "a network opens its screen");
+        assert_eq!(u.wifi_target.as_ref().map(|n| n.name.as_str()), Some("Net 00"));
+    }
+
+    #[test]
+    fn the_network_screen_follows_a_forget() {
+        use crate::wifi::{Network, WifiInfo};
+        let saved = Network { name: "Home".into(), level: 4, max: 5, secured: true, known: true };
+        let mut u = ui(1);
+        u.set_wifi(WifiInfo { current: None, networks: vec![saved.clone()] });
+        u.screen = Screen::Page(Page::Wifi);
+        u.handle(centre(u.layout.network_row(0)));
+        // The forget finishes: the scan now says the network is not saved.
+        let forgotten = Network { known: false, ..saved };
+        u.set_wifi(WifiInfo { current: None, networks: vec![forgotten] });
+        assert_eq!(u.screen, Screen::NetworkDetail);
+        // Connect now asks for the password, as it does for any new secured network.
+        u.handle(centre(u.layout.net_connect()));
+        assert_eq!(u.screen, Screen::Password, "a forgotten secured network asks for its password again");
+    }
+
+    #[test]
+    fn a_hidden_network_is_joined_by_name_with_or_without_a_password() {
+        use primitive_keyboard::Key;
+        let mut u = ui(1);
+        u.screen = Screen::Page(Page::Wifi);
+        u.handle(centre(u.layout.wifi_other()));
+        assert_eq!(u.screen, Screen::NetworkName);
+        let key_at = |u: &Ui, k: Key, layer: primitive_keyboard::Layer| -> crate::layout::Rect {
+            u.layout.keyboard_keys(layer).into_iter().find(|(d, _)| d.key == k).unwrap().1
+        };
+        // Next with no name asks for one.
+        let go = key_at(&u, Key::Go, u.network_name.layer);
+        u.handle(centre(go));
+        assert!(u.notice.as_deref().unwrap().contains("name"));
+        for c in ['l', 'a', 'b'] {
+            let r = key_at(&u, Key::Char(c), u.network_name.layer);
+            u.handle(centre(r));
+        }
+        u.handle(centre(go));
+        assert_eq!(u.screen, Screen::Password);
+        assert_eq!(u.wifi_target.as_ref().unwrap().name, "lab");
+        // An empty password joins it as an open network.
+        match u.handle(centre(go)) {
+            Action::JoinWifi { name, secured, password, saved } => {
+                assert_eq!((name.as_str(), secured, saved), ("lab", false, false));
+                assert_eq!(password, None);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_connected_network_opens_its_screen_to_be_forgotten() {
+        use crate::wifi::{Network, WifiInfo};
+        let current = Network { name: "Home".into(), level: 4, max: 5, secured: true, known: true };
+        let mut u = ui(1);
+        u.set_wifi(WifiInfo { current: Some(current), networks: vec![] });
+        u.screen = Screen::Page(Page::Wifi);
+        u.handle(centre(u.layout.wifi_area().current));
+        assert_eq!(u.screen, Screen::NetworkDetail);
+        assert_eq!(u.handle(centre(u.layout.net_forget())), Action::ForgetWifi("Home".into()));
+    }
+
+    #[test]
+    fn a_new_secured_network_asks_for_a_password_then_joins() {
+        use crate::wifi::{Network, WifiInfo};
+        use primitive_keyboard::{Key, Layer};
+        let net = Network { name: "Cafe".into(), level: 4, max: 5, secured: true, known: false };
+        let mut u = ui(1);
+        u.set_wifi(WifiInfo { current: None, networks: vec![net.clone()] });
+        u.screen = Screen::Page(Page::Wifi);
+        u.handle(centre(u.layout.network_row(0)));
+        assert_eq!(u.screen, Screen::NetworkDetail);
+        u.handle(centre(u.layout.net_connect()));
+        assert_eq!(u.screen, Screen::Password, "a new secured network asks for its password");
+        let key_at = |u: &Ui, k: Key| -> crate::layout::Rect {
+            u.layout.keyboard_keys(u.password.layer).into_iter().find(|(d, _)| d.key == k).unwrap().1
+        };
+        let go = key_at(&u, Key::Go);
+        for c in ['a', 'b', 'c'] {
+            let r = key_at(&u, Key::Char(c));
+            u.handle(centre(r));
+        }
+        assert_eq!(u.password.string(), "abc");
+        // A short password is refused with a notice.
+        assert_eq!(u.handle(centre(go)), Action::Redraw { full: false });
+        assert!(u.notice.as_deref().unwrap().contains("at least"));
+        // Shift makes the next letter a capital, then turns off.
+        let shift = key_at(&u, Key::Shift);
+        u.handle(centre(shift));
+        assert_eq!(u.password.layer, Layer::Upper);
+        let d = key_at(&u, Key::Char('D'));
+        u.handle(centre(d));
+        assert_eq!(u.password.string(), "abcD");
+        assert_eq!(u.password.layer, Layer::Lower, "one capital, then back to lower");
+        for c in ['e', 'f', 'g', 'h'] {
+            let r = key_at(&u, Key::Char(c));
+            u.handle(centre(r));
+        }
+        match u.handle(centre(go)) {
+            Action::JoinWifi { name, secured, password, saved } => {
+                assert_eq!((name.as_str(), secured, saved), ("Cafe", true, false));
+                assert_eq!(password.as_deref(), Some("abcDefgh"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(u.password.text.is_empty(), "the password is not kept after joining");
+        assert_eq!(u.screen, Screen::Page(Page::Wifi));
+    }
+
+    #[test]
+    fn a_saved_network_connects_without_a_password_and_can_be_forgotten() {
+        use crate::wifi::{Network, WifiInfo};
+        let saved = Network { name: "Home".into(), level: 3, max: 5, secured: true, known: true };
+        let mut u = ui(1);
+        u.set_wifi(WifiInfo { current: None, networks: vec![saved] });
+        u.screen = Screen::Page(Page::Wifi);
+        u.handle(centre(u.layout.network_row(0)));
+        assert_eq!(u.handle(centre(u.layout.net_connect())), Action::JoinWifi { name: "Home".into(), secured: true, password: None, saved: true });
+        u.screen = Screen::NetworkDetail;
+        assert_eq!(u.handle(centre(u.layout.net_forget())), Action::ForgetWifi("Home".into()));
+    }
+
+    #[test]
     fn quick_settings_cards_levels_and_closing() {
         let mut u = ui(1);
         u.handle(Input::Swipe { dx: 0.0, dy: 400.0, start_y: 40.0 });
@@ -1027,7 +1444,8 @@ mod tests {
     fn the_autostart_row_toggles_the_boot_switch() {
         let mut u = ui(1);
         u.screen = Screen::Settings;
-        let row = u.layout.settings_rows().into_iter().find(|r| r.row == crate::layout::Row::Autostart).unwrap();
+        u.screen = Screen::Page(Page::Device);
+        let row = u.layout.page_sections(Page::Device).into_iter().flat_map(|s| s.rows).find(|r| r.row == crate::layout::Row::Autostart).unwrap();
         let (_, rect) = row.buttons[0];
         assert_eq!(u.handle(Input::Tap(rect.x as f32 + 10.0, rect.y as f32 + 10.0)), Action::Device(DeviceCmd::ToggleAutostart));
     }

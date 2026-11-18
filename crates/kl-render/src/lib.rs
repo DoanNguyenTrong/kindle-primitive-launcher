@@ -23,6 +23,14 @@ pub use image::GrayImage;
 
 const BLACK: u8 = 0;
 const WHITE: u8 = 255;
+/// The horizontal margin of the Settings cards.
+const MARGIN_X: i32 = 40;
+
+/// The switch's rectangle in a row: at the right, centred vertically.
+fn switch_rect(r: Rect) -> Rect {
+    Rect::new(r.right() - 40 - kl_core::layout::SWITCH_W, r.y + (r.h - kl_core::layout::SWITCH_H) / 2, kl_core::layout::SWITCH_W, kl_core::layout::SWITCH_H)
+}
+
 /// The Wi-Fi icon's lit arcs for a status: None for Wi-Fi off (the slash), the signal's arcs when connected,
 /// and no arcs while Wi-Fi is on without a network.
 fn wifi_lit(s: &Status) -> Option<usize> {
@@ -45,10 +53,6 @@ const WIFI_ARC_OUTER: &str = "M2.5 9 A14 14 0 0 1 21.5 9";
 const WIFI_ARC_MIDDLE: &str = "M5.5 12.5 A9.5 9.5 0 0 1 18.5 12.5";
 const WIFI_ARC_INNER: &str = "M8.5 16 A5 5 0 0 1 15.5 16";
 const BOLT: &str = "M8 0 L1 12 H6 L4 22 L13 9 H8 Z";
-/// Airplane mode: the Material Design "flight" icon (24-unit grid, Apache License 2.0).
-const PLANE: &str = "M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z";
-/// Auto-rotate: two arcs with arrow heads (24-unit grid, stroked).
-const ROTATE: [&str; 4] = ["M4 12 A8 8 0 0 1 17.7 6.3", "M18 2 V7 H13", "M20 12 A8 8 0 0 1 6.3 17.7", "M6 22 V17 H11"];
 /// Wi-Fi arcs above the signal strength.
 const UNLIT: u8 = 187;
 
@@ -325,7 +329,11 @@ impl Renderer {
         let mut icon_blits: Vec<(Rect, String)> = Vec::new();
         match ui.screen {
             Screen::Home => self.home(ui, status, &mut icon_blits),
-            Screen::Settings => self.settings(ui, status),
+            Screen::Settings => self.settings_home(ui, status),
+            Screen::Page(page) => self.settings_page(ui, status, page),
+            Screen::NetworkDetail => self.network_detail(ui),
+            Screen::Password => self.password_screen(ui),
+            Screen::NetworkName => self.network_name_screen(ui),
             // The dialog is a pop-up over the grid, drawn last (below).
             Screen::ConfirmKindle => self.home(ui, status, &mut icon_blits),
             // A sleep picture replaces the text, except for a battery warning, which matters more.
@@ -432,7 +440,7 @@ impl Renderer {
         }
         let w = l.header_wifi();
         self.wifi_icon(w.x as f64, w.y as f64, 64.0, wifi_lit(s));
-        // Text and badges to the left of Wi-Fi, from right to left.
+        // Text and badges to the left of Wi-Fi, laid out from right to left; `right` is the left edge of what is drawn.
         let mut right = w.x - 20;
         if s.wifi_on && s.wifi_state != "connected" {
             let note = if s.wifi_state.is_empty() { "Wi-Fi …".to_string() } else { "No network".to_string() };
@@ -501,35 +509,24 @@ impl Renderer {
             let size = 52.0;
             let (cx, cy) = ((c.x + c.w / 2) as f64, (c.y + c.h / 2) as f64);
             let (ix, iy) = (cx - size / 2.0, cy - size / 2.0);
-            match tile {
-                QuickTile::Airplane => self.fill_svg(PLANE, ix, iy, size / 24.0, fg),
-                QuickTile::AutoRotate => {
-                    for d in ROTATE {
-                        self.stroke_icon(d, ix, iy, size, 2.4, fg);
-                    }
-                }
-                QuickTile::DarkMode => {
-                    self.ctx.set_transform(Affine::IDENTITY);
-                    self.ctx.set_paint(gray(fg));
-                    self.ctx.fill_path(&kurbo::Circle::new((cx - 2.0, cy + 1.0), size * 0.42).to_path(0.1));
-                    self.ctx.set_paint(gray(bg));
-                    self.ctx.fill_path(&kurbo::Circle::new((cx + size * 0.2, cy - size * 0.12), size * 0.36).to_path(0.1));
-                }
-                QuickTile::Animation => {
-                    self.stroke_icon("M3 3 H21 V21 H3 Z", ix, iy, size, 2.4, fg);
-                    self.stroke_icon("M8 8 H16 V16 H8 Z", ix, iy, size, 2.4, fg);
-                }
-                QuickTile::Ssh => {
-                    self.text(Text { text: ">_", x: (cx - 30.0) as f32, y: (cy - 22.0) as f32, w: 80.0, size: 40.0, bold: true, align: Align::Start, lines: 1, gray: fg });
-                }
-                QuickTile::AllSettings => self.gear_in(cx, cy, size, fg, bg),
-            }
+            // The shared icons (`primitive-quick`), the same as Primitive Browser's panel.
+            let icon = match tile {
+                QuickTile::Airplane => primitive_quick::icons::PLANE,
+                QuickTile::AutoRotate => primitive_quick::icons::ROTATE,
+                QuickTile::DarkMode => primitive_quick::icons::MOON,
+                QuickTile::Animation => primitive_quick::icons::ANIMATION,
+                QuickTile::Ssh => primitive_quick::icons::SSH,
+                QuickTile::AllSettings => primitive_quick::icons::SETTINGS,
+            };
+            let _ = (cx, cy, bg);
+            self.draw_icon(icon, ix, iy, size, fg);
             self.text(Text { text: label, x: slot.x as f32, y: (c.bottom() + 6) as f32, w: slot.w as f32, size: 24.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
         }
         for row in 0..2 {
-            let (icon, label, level) = if row == 0 { ("sun", "Brightness", s.light) } else { ("warm", "Warmth", s.warmth) };
+            let (icon, label, level) =
+                if row == 0 { (primitive_quick::icons::SUN, "Brightness", s.light) } else { (primitive_quick::icons::WARMTH, "Warmth", s.warmth) };
             let r = l.quick_row(row);
-            self.level_icon(icon, (r.x + 28) as f64, (r.y + 14) as f64, 40.0);
+            self.draw_icon(icon, (r.x + 28) as f64, (r.y + 14) as f64, 40.0, BLACK);
             self.text(Text { text: label, x: (r.x + 92) as f32, y: (r.y + 18) as f32, w: 400.0, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
             let value = level.to_string();
             self.text(Text { text: &value, x: 0.0, y: (r.y + 22) as f32, w: (r.w - 28) as f32, size: 26.0, bold: false, align: Align::End, lines: 1, gray: 85 });
@@ -547,9 +544,42 @@ impl Renderer {
             self.round_button(l.quick_minus(row), false);
             self.round_button(l.quick_plus(row), true);
         }
+        self.quick_system(l, s);
         let handle = l.quick_handle();
         self.stroke_icon("M6 15 L12 9 L18 15", (handle.x + handle.w / 2 - 16) as f64, (handle.y + 8) as f64, 32.0, 2.4, BLACK);
         self.text(Text { text: "Swipe up to close", x: handle.x as f32, y: (handle.y + 40) as f32, w: handle.w as f32, size: 24.0, bold: false, align: Align::Center, lines: 1, gray: BLACK });
+    }
+
+    /// A shared icon (`primitive-quick`) at (`x`, `y`), `size` pixels, in gray `v`: its stroked paths, then its filled ones.
+    fn draw_icon(&mut self, icon: primitive_quick::Icon, x: f64, y: f64, size: f64, v: u8) {
+        for d in icon.stroke {
+            self.stroke_icon(d, x, y, size, 2.0, v);
+        }
+        for d in icon.fill {
+            self.fill_svg(d, x, y, size / 24.0, v);
+        }
+    }
+
+    /// The system section of quick settings: a header, then CPU, memory and storage, each with its icon, a bar of how
+    /// full it is, and its value.
+    fn quick_system(&mut self, l: &Layout, s: &Status) {
+        let header = l.quick_system_header();
+        self.text(Text { text: "System", x: 28.0 + 8.0, y: (header + 10) as f32, w: 400.0, size: 26.0, bold: true, align: Align::Start, lines: 1, gray: 60 });
+        for (i, row) in s.system.rows().iter().enumerate() {
+            let r = l.quick_stat_row(i);
+            self.draw_icon(row.icon, 28.0, (r.y + 18) as f64, 40.0, BLACK);
+            self.text(Text { text: row.label, x: 92.0, y: (r.y + 20) as f32, w: 200.0, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            self.text(Text { text: &row.value, x: 0.0, y: (r.y + 22) as f32, w: (r.w - 28) as f32, size: 26.0, bold: false, align: Align::End, lines: 1, gray: 85 });
+            let bar = Rect::new(280, r.y + 26, r.w - 280 - 340, 26);
+            self.rounded_frame(bar, 13.0, 2, BLACK, WHITE);
+            if let Some(f) = row.fraction {
+                let inner = bar.inset(5);
+                let w = (inner.w as f32 * f).round() as i32;
+                if w > 0 {
+                    self.rounded(Rect::new(inner.x, inner.y, w.max(inner.h), inner.h), inner.h as f64 / 2.0, BLACK);
+                }
+            }
+        }
     }
 
     /// A round button with a bar (−) or a bar and a bar (+) in its middle, as Primitive Browser's level rows.
@@ -562,16 +592,6 @@ impl Renderer {
         }
     }
 
-    /// The sun (brightness) or the half-filled circle (warmth) of a level row, at (`x`, `y`), `size` pixels.
-    fn level_icon(&mut self, name: &str, x: f64, y: f64, size: f64) {
-        if name == "sun" {
-            self.stroke_icon("M12 7 A5 5 0 1 0 12 17 A5 5 0 1 0 12 7 Z", x, y, size, 2.0, BLACK);
-            self.stroke_icon("M12 2 V4 M12 20 V22 M2 12 H4 M20 12 H22 M4.9 4.9 L6.3 6.3 M17.7 17.7 L19.1 19.1 M4.9 19.1 L6.3 17.7 M17.7 6.3 L19.1 4.9", x, y, size, 2.0, BLACK);
-        } else {
-            self.stroke_icon("M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 Z", x, y, size, 2.0, BLACK);
-            self.fill_svg("M12 3 A9 9 0 0 1 12 21 Z", x, y, size / 24.0, BLACK);
-        }
-    }
 
     /// The home screen: status bar, the page's icons with their names, and the page dots.
     fn home(&mut self, ui: &Ui, s: &Status, icon_blits: &mut Vec<(Rect, String)>) {
@@ -802,80 +822,337 @@ impl Renderer {
         }
     }
 
-    fn settings(&mut self, ui: &Ui, s: &Status) {
+    /// The network screen: the network's name, its details as rows, Connect, and Forget for a saved network.
+    fn network_detail(&mut self, ui: &Ui) {
         let l = ui.layout;
         let title = l.title();
-        self.text(Text { text: "Settings", x: 40.0, y: 32.0, w: 600.0, size: 56.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
-        self.button(l.done_button(), "Done", true);
+        let Some(net) = ui.wifi_target.clone() else { return };
+        let name_w = (l.done_button().x - 80) as f32;
+        self.text(Text { text: &net.name, x: 40.0, y: 36.0, w: name_w, size: 56.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), "Back", true);
         self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
-        for row in l.settings_rows() {
-            let value = match row.row {
-                Row::Frontlight => format!("{} / 24", s.light),
-                Row::Warmth => format!("{} / 24", s.warmth),
-                Row::Wifi => match (s.wifi_on, s.wifi_state.as_str()) {
-                    (false, _) => "Off".into(),
-                    (true, "") => "On".into(),
-                    (true, state) => capitalise(state),
-                },
-                Row::Rotation => match (s.auto_rotation, s.rotation) {
-                    (true, Rotation::Upright) => "Automatic: upright".into(),
-                    (true, Rotation::UpsideDown) => "Automatic: upside down".into(),
-                    (false, Rotation::Upright) => "Upright (fixed)".into(),
-                    (false, Rotation::UpsideDown) => "Upside down (fixed)".into(),
-                },
-                Row::Ssh => if s.ssh { "Running".into() } else { "Off".into() },
-                Row::Autostart => if s.autostart { "On: the launcher opens after boot".into() } else { "Off: the stock Kindle opens after boot".into() },
-                Row::SleepScreen => if s.sleep_launcher { "The launcher's own".into() } else { "The Kindle's".into() },
-                Row::Hidden => match ui.hidden_count() {
-                    0 => "None. Long-press to hide".into(),
-                    n => format!("{n} hidden"),
-                },
-                Row::KindleUi => "Stock Kindle, about a minute".into(),
-                Row::DarkMode => if s.dark_mode { "On: white on black".into() } else { "Off".into() },
-                Row::Animation => if s.animation { "On: a zoom when an app opens".into() } else { "Off".into() },
-            };
-            let r = row.rect;
-            self.text(Text { text: row.row.label(), x: r.x as f32, y: r.y as f32 + 14.0, w: 520.0, size: 38.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
-            self.text(Text { text: &value, x: r.x as f32, y: r.y as f32 + 64.0, w: 560.0, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
-            for (b, rect) in row.buttons {
-                // Minus and plus are drawn as bars: the bundled font has no minus sign.
-                if matches!(b, Button::LightDown | Button::WarmDown | Button::LightUp | Button::WarmUp) {
-                    self.button(rect, "", false);
-                    let (cx, cy) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
-                    self.fill(Rect::new(cx - 22, cy - 3, 44, 7), BLACK);
-                    if matches!(b, Button::LightUp | Button::WarmUp) {
-                        self.fill(Rect::new(cx - 3, cy - 22, 7, 44), BLACK);
-                    }
-                    continue;
-                }
-                let label = match b {
-                    Button::Wifi => if s.wifi_on { "Turn off" } else { "Turn on" },
-                    Button::Rotation => "Turn",
-                    Button::RotationAuto => "Auto",
-                    Button::Ssh => if s.ssh { "Stop" } else { "Start" },
-                    Button::Autostart => if s.autostart { "Turn off" } else { "Turn on" },
-                    Button::ShowHidden => "Show all",
-                    Button::SleepScreen => "Switch",
-                    Button::KindleUi => "Open",
-                    Button::DarkMode => if s.dark_mode { "Turn off" } else { "Turn on" },
-                    Button::Animation => if s.animation { "Turn off" } else { "Turn on" },
-                    _ => "",
-                };
-                self.button(rect, label, false);
+        let card = Rect::new(MARGIN_X, l.title().bottom() + 40, self.width as i32 - 2 * MARGIN_X, 3 * 96);
+        self.card(card);
+        let rows = [
+            ("Security", if net.secured { "Secured" } else { "Open" }.to_string()),
+            ("Signal", format!("{} of {}", net.level, net.max)),
+            ("Saved", if net.known { "Yes" } else { "No" }.to_string()),
+        ];
+        for (i, (key, value)) in rows.iter().enumerate() {
+            let r = Rect::new(card.x, card.y + i as i32 * 96, card.w, 96);
+            self.text(Text { text: key, x: (r.x + 32) as f32, y: (r.y + 32) as f32, w: 400.0, size: 32.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            self.text(Text { text: value, x: (r.x + 32) as f32, y: (r.y + 32) as f32, w: (r.w - 64) as f32, size: 32.0, bold: true, align: Align::End, lines: 1, gray: BLACK });
+            if i + 1 < rows.len() {
+                self.hairline(r.bottom() - 1, r.x + 32, r.right() - 32);
             }
-            self.fill(Rect::new(r.x, r.bottom() - 2, r.w, 2), BLACK);
         }
-        let a = l.about();
-        let about = format!(
-            "Primitive Launcher {}\n{} apps · {}\nFrom the Kindle UI, open “Launcher” in the library to come back.",
-            kl_core::VERSION,
-            ui.apps().len(),
-            if s.memory.is_empty() { "memory unknown" } else { &s.memory },
-        );
-        let mut y = a.y as f32;
-        for line in about.lines() {
-            y += self.text(Text { text: line, x: a.x as f32, y, w: a.w as f32, size: 32.0, bold: false, align: Align::Start, lines: 2, gray: BLACK }) + 6.0;
+        let connect = if net.secured && !net.known { "Enter password" } else { "Connect" };
+        self.button(l.net_connect(), connect, true);
+        if net.known {
+            self.button(l.net_forget(), "Forget this network", false);
         }
+        if let Some(notice) = ui.notice.clone() {
+            self.text(Text { text: &notice, x: MARGIN_X as f32, y: (l.height - 120) as f32, w: (l.width - 2 * MARGIN_X) as f32, size: 30.0, bold: false, align: Align::Start, lines: 2, gray: BLACK });
+        }
+    }
+
+    /// The password screen: the network's name, the password field with its caret, Show password, the keyboard (its
+    /// Go key joins), and the notice under it.
+    fn password_screen(&mut self, ui: &Ui) {
+        let l = ui.layout;
+        let title = l.title();
+        self.text(Text { text: "Password", x: 40.0, y: 36.0, w: 700.0, size: 56.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), "Back", true);
+        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
+        let name = ui.wifi_target.as_ref().map(|n| n.name.clone()).unwrap_or_default();
+        self.text(Text { text: &name, x: MARGIN_X as f32, y: (l.title().bottom() + 24) as f32, w: (l.width - 2 * MARGIN_X) as f32, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+        let field = l.password_field();
+        self.rounded_frame(field, 20.0, 3, BLACK, WHITE);
+        let typed = &ui.password.text;
+        let shown = if ui.show_password { typed.iter().collect::<String>() } else { "•".repeat(typed.len()) };
+        let (text, gray) = if typed.is_empty() { ("Type the password".to_string(), 120) } else { (shown, BLACK) };
+        self.text(Text { text: &text, x: (field.x + 28) as f32, y: (field.y + 30) as f32, w: (field.w - 56) as f32, size: 40.0, bold: false, align: Align::Start, lines: 1, gray });
+        // The caret: a bar at the caret's place in the text (on the typed characters).
+        let caret_chars = if ui.show_password { ui.password.text[..ui.password.caret].iter().collect::<String>() } else { "•".repeat(ui.password.caret) };
+        let caret_x = field.x + 28 + self.text_width(&caret_chars, 40.0, false) as i32;
+        if !typed.is_empty() {
+            self.fill(Rect::new(caret_x, field.y + 22, 3, 56), BLACK);
+        }
+        if ui.wifi_hidden {
+            self.text(Text { text: "Leave it empty for an open network.", x: MARGIN_X as f32, y: (l.password_notice().y - 60) as f32, w: (l.width - 2 * MARGIN_X) as f32, size: 26.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+        }
+        let show = l.password_show();
+        self.text(Text { text: "Show password", x: show.x as f32 + 8.0, y: (show.y + 20) as f32, w: 600.0, size: 32.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.switch(switch_rect(show), ui.show_password);
+        // The keyboard's area at the bottom, with the line above it, as in Primitive Browser.
+        let area = l.keyboard_area();
+        self.fill(Rect::new(area.x, area.y, area.w, primitive_keyboard::style::TOP_LINE as i32), primitive_keyboard::style::TOP_LINE_GRAY);
+        for (key, r) in l.keyboard_keys(ui.password.layer) {
+            self.key(&key, r);
+        }
+        if let Some(notice) = ui.notice.clone() {
+            let n = l.password_notice();
+            self.text(Text { text: &notice, x: n.x as f32, y: n.y as f32, w: n.w as f32, size: 28.0, bold: false, align: Align::Center, lines: 2, gray: BLACK });
+        }
+    }
+
+    /// The name screen for a network that is not in the list: the name field with its caret, a note, and the keyboard
+    /// whose Go key says Next.
+    fn network_name_screen(&mut self, ui: &Ui) {
+        let l = ui.layout;
+        let title = l.title();
+        self.text(Text { text: "Other network", x: 40.0, y: 36.0, w: 800.0, size: 56.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), "Back", true);
+        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
+        self.text(Text { text: "Network name", x: MARGIN_X as f32, y: (title.bottom() + 24) as f32, w: 600.0, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+        let field = l.password_field();
+        self.rounded_frame(field, 20.0, 3, BLACK, WHITE);
+        let typed: String = ui.network_name.text.iter().collect();
+        let (text, gray) = if typed.is_empty() { ("Type the name, as it is written".to_string(), 120) } else { (typed.clone(), BLACK) };
+        self.text(Text { text: &text, x: (field.x + 28) as f32, y: (field.y + 30) as f32, w: (field.w - 56) as f32, size: 40.0, bold: false, align: Align::Start, lines: 1, gray });
+        if !typed.is_empty() {
+            let before: String = ui.network_name.text[..ui.network_name.caret].iter().collect();
+            let x = field.x + 28 + self.text_width(&before, 40.0, false) as i32;
+            self.fill(Rect::new(x, field.y + 22, 3, 56), BLACK);
+        }
+        let note = "For a network that does not show in the list. Next asks for its password.";
+        self.text(Text { text: note, x: MARGIN_X as f32, y: (field.bottom() + 24) as f32, w: (l.width - 2 * MARGIN_X) as f32, size: 26.0, bold: false, align: Align::Start, lines: 2, gray: 85 });
+        let area = l.keyboard_area();
+        self.fill(Rect::new(area.x, area.y, area.w, primitive_keyboard::style::TOP_LINE as i32), primitive_keyboard::style::TOP_LINE_GRAY);
+        for (key, r) in l.keyboard_keys_with(ui.network_name.layer, "Next") {
+            self.key(&key, r);
+        }
+        if let Some(notice) = ui.notice.clone() {
+            let n = l.password_notice();
+            self.text(Text { text: &notice, x: n.x as f32, y: n.y as f32, w: n.w as f32, size: 28.0, bold: false, align: Align::Center, lines: 2, gray: BLACK });
+        }
+    }
+
+    /// One key of the keyboard, in the shared look (`primitive-keyboard::style`, the same as Primitive Browser's
+    /// keys): a light key with a thin grey outline, or an inked key with white text when it is on (Shift, Go).
+    fn key(&mut self, key: &primitive_keyboard::KeyDef, r: Rect) {
+        use primitive_keyboard::style::*;
+        let (fill, text) = if key.on { (INK_GRAY, WHITE) } else { (FILL_GRAY, INK_GRAY) };
+        let line = if key.on { INK_GRAY } else { BORDER_GRAY };
+        self.rounded_frame(r, RADIUS as f64, BORDER as i32, line, fill);
+        let size = label_size(&key.label) as f32;
+        self.text(Text { text: &key.label, x: r.x as f32, y: r.y as f32 + r.h as f32 / 2.0 - size * 0.7, w: r.w as f32, size, bold: false, align: Align::Center, lines: 1, gray: text });
+    }
+
+    /// Settings: the list of pages in groups. Each group is a header and one card; each page row shows its title, its
+    /// current value under it, and a chevron. Done returns to the grid.
+    fn settings_home(&mut self, ui: &Ui, s: &Status) {
+        let l = ui.layout;
+        self.text(Text { text: "Settings", x: 40.0, y: 36.0, w: 700.0, size: 64.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), "Done", true);
+        for (header, card, rows) in l.home_sections() {
+            if !header.is_empty() {
+                self.section_header(card.x, card.y - 44, header);
+            }
+            self.card(card);
+            let count = rows.len();
+            for (i, (page, r)) in rows.into_iter().enumerate() {
+                let value = page_value(page, ui, s);
+                self.text(Text { text: page.title(), x: (r.x + 32) as f32, y: (r.y + 22) as f32, w: (r.w - 120) as f32, size: 38.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+                self.text(Text { text: &value, x: (r.x + 32) as f32, y: (r.y + 72) as f32, w: (r.w - 120) as f32, size: 28.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+                self.text(Text { text: "›", x: (r.right() - 80) as f32, y: (r.y + 30) as f32, w: 50.0, size: 52.0, bold: true, align: Align::End, lines: 1, gray: BLACK });
+                if i + 1 < count {
+                    self.hairline(r.bottom() - 1, card.x + 32, card.right() - 32);
+                }
+            }
+        }
+    }
+
+    /// One page of Settings: its title and Back, then its sections (header, card of rows, footer). The Wi-Fi page
+    /// adds the current network and the scan list; About is key and value text.
+    fn settings_page(&mut self, ui: &Ui, s: &Status, page: kl_core::layout::Page) {
+        let l = ui.layout;
+        let title = l.title();
+        self.text(Text { text: page.title(), x: 40.0, y: 36.0, w: 900.0, size: 56.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), "Back", true);
+        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
+        if page == kl_core::layout::Page::About {
+            self.about_card(ui, s);
+            return;
+        }
+        for section in l.page_sections(page) {
+            self.section_header(section.card.x, section.header_y, section.header);
+            self.card(section.card);
+            let count = section.rows.len();
+            for (i, row) in section.rows.iter().enumerate() {
+                self.setting_row(ui, s, row);
+                if i + 1 < count {
+                    self.hairline(row.rect.bottom() - 1, row.rect.x + 32, row.rect.right() - 32);
+                }
+            }
+            if !section.footer.is_empty() {
+                self.text(Text { text: section.footer, x: section.card.x as f32 + 8.0, y: section.footer_y as f32, w: section.card.w as f32 - 16.0, size: 24.0, bold: false, align: Align::Start, lines: 2, gray: 85 });
+            }
+        }
+        if page == kl_core::layout::Page::Wifi {
+            self.wifi_list(ui, s);
+            if let Some(notice) = ui.notice.clone() {
+                let width = (l.width - 2 * MARGIN_X) as f32;
+                self.text(Text { text: &notice, x: MARGIN_X as f32, y: (l.height - 84) as f32, w: width, size: 28.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+            }
+        }
+    }
+
+    /// One setting row: its label and its value under it, and its control on the right: a switch for on/off, round
+    /// buttons for a level, a pill for "Show all", a chevron for something that opens.
+    fn setting_row(&mut self, ui: &Ui, s: &Status, row: &kl_core::layout::SettingsRow) {
+        let r = row.rect;
+        let value = row_value(row.row, ui, s);
+        let (label_w, text_x) = (r.w as f32 - 360.0, (r.x + 32) as f32);
+        self.text(Text { text: row.row.label(), x: text_x, y: (r.y + 20) as f32, w: label_w, size: 36.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.text(Text { text: &value, x: text_x, y: (r.y + 66) as f32, w: label_w, size: 27.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+        for &(b, rect) in &row.buttons {
+            match b {
+                Button::LightDown | Button::WarmDown => self.round_button(rect, false),
+                Button::LightUp | Button::WarmUp => self.round_button(rect, true),
+                Button::RotationAuto => self.switch(rect, s.auto_rotation),
+                Button::ShowHidden => self.button(rect, "Show all", false),
+                Button::KindleUi => self.chevron(r),
+                Button::Rotation => {}
+                Button::Wifi => self.switch(switch_rect(r), s.wifi_on),
+                Button::DarkMode => self.switch(switch_rect(r), s.dark_mode),
+                Button::Animation => self.switch(switch_rect(r), s.animation),
+                Button::Ssh => self.switch(switch_rect(r), s.ssh),
+                Button::Autostart => self.switch(switch_rect(r), s.autostart),
+                Button::SleepScreen => self.switch(switch_rect(r), s.sleep_launcher),
+                _ => {}
+            }
+        }
+    }
+
+    /// The Wi-Fi page's network sections: the current network, then the scan list with its Scan button.
+    fn wifi_list(&mut self, ui: &Ui, s: &Status) {
+        let l = ui.layout;
+        let area = l.wifi_area();
+        self.section_header(area.current.x, area.current_header, "Current network");
+        self.card(area.current);
+        match &ui.wifi.current {
+            Some(net) => {
+                let detail = format!("Connected · {} of {} signal{}", net.level, net.max, if net.secured { " · secured" } else { "" });
+                self.text(Text { text: &net.name, x: (area.current.x + 32) as f32, y: (area.current.y + 20) as f32, w: (area.current.w - 220) as f32, size: 36.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+                self.text(Text { text: &detail, x: (area.current.x + 32) as f32, y: (area.current.y + 66) as f32, w: (area.current.w - 220) as f32, size: 27.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+                let lit = kl_core::wifi::arcs(net.level, net.max);
+                self.wifi_icon((area.current.right() - 110) as f64, (area.current.y + 28) as f64, 56.0, Some(lit));
+                self.text(Text { text: "›", x: (area.current.right() - 52) as f32, y: (area.current.y + 30) as f32, w: 40.0, size: 52.0, bold: true, align: Align::End, lines: 1, gray: BLACK });
+            }
+            None => {
+                let text = if s.wifi_on { "Not connected" } else { "Wi-Fi is off" };
+                self.text(Text { text, x: (area.current.x + 32) as f32, y: (area.current.y + 40) as f32, w: area.current.w as f32 - 64.0, size: 36.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+            }
+        }
+        let total = ui.wifi_networks().len();
+        let heading = if total == 0 { "Networks".to_string() } else { format!("Networks · {total}") };
+        self.section_header(area.current.x, area.networks_header, &heading);
+        self.button(area.scan, if ui.wifi_scanning { "Scanning…" } else { "Scan" }, false);
+        self.button(l.wifi_other(), "Other…", false);
+        self.card(area.list);
+        let networks = ui.wifi_networks();
+        if networks.is_empty() {
+            let text = if !s.wifi_on {
+                "Wi-Fi is off. Turn it on to see the networks around."
+            } else if ui.wifi_scanning {
+                "Looking for networks…"
+            } else {
+                "No networks found. Tap Scan to look again."
+            };
+            self.text(Text { text, x: (area.list.x + 32) as f32, y: (area.list.y + 36) as f32, w: area.list.w as f32 - 64.0, size: 30.0, bold: false, align: Align::Start, lines: 2, gray: 85 });
+            return;
+        }
+        for i in 0..area.visible {
+            let Some(net) = networks.get(ui.wifi_scroll + i) else { break };
+            let r = l.network_row(i);
+            let name_w = (r.w - 260) as f32;
+            self.text(Text { text: &net.name, x: (r.x + 32) as f32, y: (r.y + 18) as f32, w: name_w, size: 34.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            if net.known {
+                self.text(Text { text: "Saved", x: (r.x + 32) as f32, y: (r.y + 60) as f32, w: name_w, size: 24.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+            }
+            if net.secured {
+                self.lock_icon((r.right() - 150) as f64, (r.y + 34) as f64);
+            }
+            self.wifi_icon((r.right() - 100) as f64, (r.y + 26) as f64, 52.0, Some(kl_core::wifi::arcs(net.level, net.max)));
+            if i + 1 < area.visible && ui.wifi_scroll + i + 1 < networks.len() {
+                self.hairline(r.bottom() - 1, r.x + 32, r.right() - 32);
+            }
+        }
+        // A scroll bar when the list is longer than the window: the thumb is the share of the list in view.
+        if networks.len() > area.visible {
+            let track = Rect::new(area.list.right() - 16, area.list.y + 16, 6, area.list.h - 32);
+            self.fill(track, 200);
+            let len = networks.len() as i32;
+            let shown = area.visible as i32;
+            let thumb_h = (track.h * shown / len).max(48);
+            let max_scroll = (len - shown).max(1);
+            let thumb_y = track.y + (track.h - thumb_h) * ui.wifi_scroll as i32 / max_scroll;
+            self.rounded(Rect::new(track.x, thumb_y, track.w, thumb_h), 3.0, BLACK);
+        }
+    }
+
+    /// The About page's card: the launcher's version, apps, memory, storage and Wi-Fi address, as key and value rows.
+    fn about_card(&mut self, ui: &Ui, s: &Status) {
+        let l = ui.layout;
+        let top = l.title().bottom() + 24;
+        self.section_header(MARGIN_X, top, "Launcher");
+        let card = Rect::new(MARGIN_X, top + 56, self.width as i32 - 2 * MARGIN_X, 5 * 96);
+        self.card(card);
+        let rows = [
+            ("Version", kl_core::VERSION.to_string()),
+            ("Apps", ui.apps().len().to_string()),
+            ("Memory", if s.memory.is_empty() { "unknown".into() } else { s.memory.clone() }),
+            ("Storage", s.storage.clone()),
+            ("Wi-Fi address", s.ip.clone()),
+        ];
+        for (i, (key, value)) in rows.iter().enumerate() {
+            let r = Rect::new(card.x, card.y + i as i32 * 96, card.w, 96);
+            self.text(Text { text: key, x: (r.x + 32) as f32, y: (r.y + 32) as f32, w: 400.0, size: 32.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            self.text(Text { text: value, x: (r.x + 32) as f32, y: (r.y + 32) as f32, w: (r.w - 64) as f32, size: 32.0, bold: true, align: Align::End, lines: 1, gray: BLACK });
+            if i + 1 < rows.len() {
+                self.hairline(r.bottom() - 1, r.x + 32, r.right() - 32);
+            }
+        }
+        self.text(Text { text: "From the Kindle UI, open “Launcher” in the library to come back.", x: (card.x + 8) as f32, y: (card.bottom() + 16) as f32, w: (card.w - 16) as f32, size: 24.0, bold: false, align: Align::Start, lines: 2, gray: 85 });
+    }
+
+    /// A section header above a card: small, bold, at `x`, `y`.
+    fn section_header(&mut self, x: i32, y: i32, text: &str) {
+        self.text(Text { text, x: (x + 8) as f32, y: (y + 8) as f32, w: 900.0, size: 26.0, bold: true, align: Align::Start, lines: 1, gray: 60 });
+    }
+
+    /// A card: a rounded outline with white inside (the grouped list's container).
+    fn card(&mut self, r: Rect) {
+        self.rounded_frame(r, 22.0, 2, BLACK, WHITE);
+    }
+
+    /// A hairline between rows, from `x0` to `x1` at `y`.
+    fn hairline(&mut self, y: i32, x0: i32, x1: i32) {
+        self.fill(Rect::new(x0, y, x1 - x0, 2), 200);
+    }
+
+    /// A switch: a pill with a knob, black and knob-right when on; outlined and knob-left when off.
+    fn switch(&mut self, r: Rect, on: bool) {
+        let radius = r.h as f64 / 2.0;
+        if on {
+            self.rounded(r, radius, BLACK);
+            self.rounded(Rect::new(r.right() - r.h + 6, r.y + 6, r.h - 12, r.h - 12), radius - 6.0, WHITE);
+        } else {
+            self.rounded_frame(r, radius, 3, BLACK, WHITE);
+            self.rounded(Rect::new(r.x + 6, r.y + 6, r.h - 12, r.h - 12), radius - 6.0, BLACK);
+        }
+    }
+
+    /// A disclosure chevron at the right of a row.
+    fn chevron(&mut self, r: Rect) {
+        self.text(Text { text: "›", x: (r.right() - 80) as f32, y: (r.y + 30) as f32, w: 50.0, size: 52.0, bold: true, align: Align::End, lines: 1, gray: BLACK });
+    }
+
+    /// A padlock (a secured network), at (`x`, `y`): a shackle over a body.
+    fn lock_icon(&mut self, x: f64, y: f64) {
+        self.rounded_frame(Rect::new(x as i32 + 5, y as i32, 14, 16), 7.0, 3, BLACK, WHITE);
+        self.rounded(Rect::new(x as i32, y as i32 + 14, 24, 20), 4.0, BLACK);
     }
 
     fn confirm(&mut self, l: &Layout) {
@@ -946,6 +1223,54 @@ impl Renderer {
         let message = warning.unwrap_or_default();
         self.text(Text { text: "Connect the charger", x: 0.0, y: s.h as f32 / 2.0 - 120.0, w: s.w as f32, size: 80.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
         self.text(Text { text: &message, x: 60.0, y: s.h as f32 / 2.0 + 20.0, w: s.w as f32 - 120.0, size: 40.0, bold: false, align: Align::Center, lines: 2, gray: BLACK });
+    }
+}
+
+/// The value a Settings list row shows for its page.
+fn page_value(page: kl_core::layout::Page, ui: &Ui, s: &Status) -> String {
+    use kl_core::layout::Page;
+    let onoff = |on: bool| if on { "on" } else { "off" };
+    match page {
+        Page::Wifi => wifi_word(s),
+        Page::Display => format!("Frontlight {} · Dark mode {} · Animation {}", s.light, onoff(s.dark_mode), onoff(s.animation)),
+        Page::Sleep => if s.sleep_launcher { "The launcher's own".into() } else { "The Kindle's".into() },
+        Page::Apps => format!("{} hidden", ui.hidden_count()),
+        Page::Device => format!("SSH {} · Start with the Kindle {}", onoff(s.ssh), onoff(s.autostart)),
+        Page::About => format!("Version {}", kl_core::VERSION),
+    }
+}
+
+/// The Wi-Fi state as a word: Off, On, or the network state.
+fn wifi_word(s: &Status) -> String {
+    match (s.wifi_on, s.wifi_state.as_str()) {
+        (false, _) => "Off".into(),
+        (true, "") => "On".into(),
+        (true, state) => capitalise(state),
+    }
+}
+
+/// The value a setting row shows.
+fn row_value(row: Row, ui: &Ui, s: &Status) -> String {
+    match row {
+        Row::Frontlight => format!("{} / 24", s.light),
+        Row::Warmth => format!("{} / 24", s.warmth),
+        Row::Wifi => wifi_word(s),
+        Row::DarkMode => if s.dark_mode { "On: white on black".into() } else { "Off".into() },
+        Row::Animation => if s.animation { "On: a zoom when an app opens".into() } else { "Off".into() },
+        Row::Rotation => match (s.auto_rotation, s.rotation) {
+            (true, Rotation::Upright) => "Automatic: upright".into(),
+            (true, Rotation::UpsideDown) => "Automatic: upside down".into(),
+            (false, Rotation::Upright) => "Upright (fixed)".into(),
+            (false, Rotation::UpsideDown) => "Upside down (fixed)".into(),
+        },
+        Row::Ssh => if s.ssh { "Running".into() } else { "Off".into() },
+        Row::Autostart => if s.autostart { "On".into() } else { "Off".into() },
+        Row::SleepScreen => if s.sleep_launcher { "The launcher's own".into() } else { "The Kindle's".into() },
+        Row::Hidden => match ui.hidden_count() {
+            0 => "None. Long-press to hide".into(),
+            n => format!("{n} hidden"),
+        },
+        Row::KindleUi => "Stock Kindle UI".into(),
     }
 }
 

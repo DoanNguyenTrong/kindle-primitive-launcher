@@ -45,6 +45,86 @@ pub fn zoom_steps(from: Rect, to: Rect, n: usize) -> Vec<Rect> {
         .collect()
 }
 
+/// The pages of Settings. The Settings list shows them in groups; a page is sections of setting rows, each with a
+/// header, a card, and a footer that explains it (Apple's grouped lists, adapted to e-ink).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Wifi,
+    Display,
+    Sleep,
+    Apps,
+    Device,
+    About,
+}
+
+/// One section of a page: its header, its rows in one card, and its footer.
+pub struct Group {
+    pub header: &'static str,
+    pub rows: &'static [Row],
+    pub footer: &'static str,
+}
+
+impl Page {
+    pub const ALL: [Page; 6] = [Page::Wifi, Page::Display, Page::Sleep, Page::Apps, Page::Device, Page::About];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Page::Wifi => "Wi-Fi & network",
+            Page::Display => "Display",
+            Page::Sleep => "Sleep",
+            Page::Apps => "Apps",
+            Page::Device => "Device",
+            Page::About => "About",
+        }
+    }
+
+    /// The sections of the page, top to bottom. About has none: its rows are key and value text.
+    pub fn groups(self) -> &'static [Group] {
+        match self {
+            Page::Wifi => &[Group { header: "Wi-Fi", rows: &[Row::Wifi], footer: "Turn Wi-Fi off in an airplane, or to save battery." }],
+            Page::Display => &[
+                Group { header: "Brightness", rows: &[Row::Frontlight, Row::Warmth], footer: "" },
+                Group { header: "Appearance", rows: &[Row::DarkMode], footer: "White on black for the launcher's screens. Pictures keep their colours." },
+                Group { header: "Motion", rows: &[Row::Animation], footer: "A card zooms out of the icon when an app opens." },
+                Group { header: "Screen", rows: &[Row::Rotation], footer: "Turns with the Kindle while Auto is on. Tap the value to set it by hand." },
+            ],
+            Page::Sleep => &[Group {
+                header: "Sleep screen",
+                rows: &[Row::SleepScreen],
+                footer: "On shows a picture from the launcher's screensavers folder. Off shows the Kindle's screensaver.",
+            }],
+            Page::Apps => &[Group { header: "Grid", rows: &[Row::Hidden], footer: "Long-press an icon to hide it." }],
+            Page::Device => &[
+                Group { header: "Startup", rows: &[Row::Autostart], footer: "Not active yet: the boot job comes in a later phase." },
+                Group { header: "Connection", rows: &[Row::Ssh], footer: "SSH on port 2222, for development. Off by default." },
+                Group { header: "Kindle", rows: &[Row::KindleUi], footer: "Opens the stock Kindle UI. It takes about a minute to start." },
+            ],
+            Page::About => &[],
+        }
+    }
+}
+
+/// The Settings list: its groups, each a header, a card of pages, and nothing under it.
+pub const HOME_GROUPS: &[(&str, &[Page])] = &[
+    ("Network", &[Page::Wifi]),
+    ("Display", &[Page::Display, Page::Sleep]),
+    ("System", &[Page::Apps, Page::Device]),
+    ("About", &[Page::About]),
+];
+
+/// A group of the Settings list: its header, its card, and the page rows in it.
+pub type HomeSection = (&'static str, Rect, Vec<(Page, Rect)>);
+
+/// A laid-out section of a page.
+pub struct Section {
+    pub header: &'static str,
+    pub footer: &'static str,
+    pub header_y: i32,
+    pub card: Rect,
+    pub footer_y: i32,
+    pub rows: Vec<SettingsRow>,
+}
+
 /// Controls on the Settings screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
@@ -69,6 +149,12 @@ pub enum Button {
     ConfirmOpen,
     DarkMode,
     Animation,
+    /// The Wi-Fi password screen: show or hide the password; join.
+    PasswordShow,
+    PasswordJoin,
+    /// The network screen: connect, or forget a saved network.
+    NetConnect,
+    NetForget,
 }
 
 /// The cards of quick settings, in two columns: toggles, and All settings.
@@ -119,7 +205,7 @@ impl Row {
             Row::DarkMode => "Dark mode",
             Row::Animation => "Opening animation",
             Row::Wifi => "Wi-Fi",
-            Row::Rotation => "Screen",
+            Row::Rotation => "Rotation",
             Row::Ssh => "SSH (port 2222)",
             Row::Autostart => "Start with the Kindle",
             Row::Hidden => "Hidden apps",
@@ -167,6 +253,9 @@ const QUICK_BUTTONS_H: i32 = 170;
 const QUICK_BUTTON_D: i32 = 100;
 const QUICK_ROW_H: i32 = 156;
 const QUICK_HANDLE_H: i32 = 72;
+/// The system section under the level rows: a header, then one row each for CPU, memory and storage.
+const QUICK_SYSTEM_TOP: i32 = 56;
+const QUICK_STAT_H: i32 = 76;
 const QUICK_SIDE: i32 = 28;
 const QUICK_NUDGE: i32 = 72;
 /// The level rows' range: 25 steps, 0 to 24 (the Kindle's frontlight and warmth levels).
@@ -177,9 +266,69 @@ const MENU_ROW_H: i32 = 100;
 const TITLE_H: i32 = 130;
 /// One row of the Extensions list.
 const LIST_ROW_H: i32 = 120;
-const ROW_H: i32 = 116;
-const BUTTON_W: i32 = 150;
-const WIDE_W: i32 = 300;
+/// One setting row (a switch, a value, or two round buttons), and one Settings list row (title and value).
+const ROW_H: i32 = 120;
+const HOME_ROW_H: i32 = 130;
+/// Settings sections: the first header's top, a header, the space after a footer, and the footer's height.
+const SECTION_TOP: i32 = 24;
+const SECTION_HEAD_H: i32 = 56;
+const SECTION_GAP: i32 = 24;
+/// The current network's card (one row), and one network of the scan list.
+const CURRENT_H: i32 = 112;
+/// One row of the Wi-Fi scan list (pixels).
+pub const NETWORK_H: i32 = 104;
+/// The switch of a toggle row: its size and its inset from the row's right edge.
+pub const SWITCH_W: i32 = 112;
+pub const SWITCH_H: i32 = 64;
+const SWITCH_INSET: i32 = 40;
+/// The round − and + buttons of a level row.
+const ROUND_D: i32 = 72;
+
+/// The space a section's footer takes (zero when it has none), with the gap after the section.
+fn section_foot(footer: &str) -> i32 {
+    if footer.is_empty() { SECTION_GAP } else { 76 + SECTION_GAP }
+}
+
+/// The keyboard's Go key on the password screen.
+const KEYBOARD_GO: &str = "Join";
+
+/// The Wi-Fi page's own area: the current network, and the scan list under its "Networks" header.
+pub struct WifiArea {
+    pub current_header: i32,
+    pub current: Rect,
+    pub networks_header: i32,
+    pub scan: Rect,
+    pub list: Rect,
+    /// How many networks fit in the list.
+    pub visible: usize,
+}
+
+/// The buttons of a setting row, in the row's rectangle: a switch on the right for on/off rows, round buttons for a
+/// level, the whole row for a row that opens or runs something, and the left part of a row with a switch for the
+/// rotation (the value turns the screen by hand).
+fn row_buttons(l: &Layout, row: Row, r: Rect) -> Vec<(Button, Rect)> {
+    let switch = Rect::new(r.right() - SWITCH_INSET - SWITCH_W, r.y + (r.h - SWITCH_H) / 2, SWITCH_W, SWITCH_H);
+    let round_y = r.y + (r.h - ROUND_D) / 2;
+    let plus = Rect::new(r.right() - SWITCH_INSET - ROUND_D, round_y, ROUND_D, ROUND_D);
+    let minus = Rect::new(plus.x - 12 - ROUND_D, round_y, ROUND_D, ROUND_D);
+    let _ = l;
+    match row {
+        Row::Frontlight => vec![(Button::LightDown, minus), (Button::LightUp, plus)],
+        Row::Warmth => vec![(Button::WarmDown, minus), (Button::WarmUp, plus)],
+        Row::Rotation => vec![
+            (Button::Rotation, Rect::new(r.x, r.y, r.w - SWITCH_W - 2 * SWITCH_INSET, r.h)),
+            (Button::RotationAuto, switch),
+        ],
+        Row::Hidden => vec![(Button::ShowHidden, Rect::new(r.right() - SWITCH_INSET - 200, r.y + (r.h - SWITCH_H) / 2, 200, SWITCH_H))],
+        Row::KindleUi => vec![(Button::KindleUi, r)],
+        Row::Wifi => vec![(Button::Wifi, r)],
+        Row::DarkMode => vec![(Button::DarkMode, r)],
+        Row::Animation => vec![(Button::Animation, r)],
+        Row::Ssh => vec![(Button::Ssh, r)],
+        Row::Autostart => vec![(Button::Autostart, r)],
+        Row::SleepScreen => vec![(Button::SleepScreen, r)],
+    }
+}
 const BUTTON_H: i32 = 100;
 
 impl Layout {
@@ -263,49 +412,97 @@ impl Layout {
         Rect::new(self.width - MARGIN - 200, (TITLE_H - BUTTON_H) / 2, 200, BUTTON_H)
     }
 
-    pub fn settings_rows(&self) -> Vec<SettingsRow> {
-        let right = self.width - MARGIN;
-        let top = TITLE_H + 30;
-        Row::ALL
+    /// The sections of a Settings page, laid out one under another, each with its header and footer.
+    pub fn page_sections(&self, page: Page) -> Vec<Section> {
+        let w = self.width - 2 * MARGIN;
+        let mut y = TITLE_H + SECTION_TOP;
+        page.groups()
             .iter()
-            .enumerate()
-            .map(|(i, &row)| {
-                let rect = Rect::new(MARGIN, top + i as i32 * ROW_H, self.width - 2 * MARGIN, ROW_H);
-                let by = rect.y + (ROW_H - BUTTON_H) / 2;
-                let pair = |a, b| {
-                    vec![
-                        (a, Rect::new(right - 2 * BUTTON_W - 24, by, BUTTON_W, BUTTON_H)),
-                        (b, Rect::new(right - BUTTON_W, by, BUTTON_W, BUTTON_H)),
-                    ]
-                };
-                let wide = |b| vec![(b, Rect::new(right - WIDE_W, by, WIDE_W, BUTTON_H))];
-                let buttons = match row {
-                    Row::Frontlight => pair(Button::LightDown, Button::LightUp),
-                    Row::Warmth => pair(Button::WarmDown, Button::WarmUp),
-                    Row::Wifi => wide(Button::Wifi),
-                    Row::DarkMode => wide(Button::DarkMode),
-                    Row::Animation => wide(Button::Animation),
-                    Row::Rotation => pair(Button::Rotation, Button::RotationAuto),
-                    Row::Ssh => wide(Button::Ssh),
-                    Row::Autostart => wide(Button::Autostart),
-                    Row::Hidden => wide(Button::ShowHidden),
-                    Row::SleepScreen => wide(Button::SleepScreen),
-                    Row::KindleUi => wide(Button::KindleUi),
-                };
-                SettingsRow { row, rect, buttons }
+            .map(|g| {
+                let header_y = y;
+                y += SECTION_HEAD_H;
+                let card = Rect::new(MARGIN, y, w, g.rows.len() as i32 * ROW_H);
+                let rows = g
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &row)| {
+                        let rect = Rect::new(card.x, card.y + i as i32 * ROW_H, card.w, ROW_H);
+                        SettingsRow { row, rect, buttons: row_buttons(self, row, rect) }
+                    })
+                    .collect();
+                let footer_y = card.bottom() + 10;
+                y = card.bottom() + section_foot(g.footer);
+                Section { header: g.header, footer: g.footer, header_y, card, footer_y, rows }
             })
             .collect()
     }
 
-    /// The area under the settings rows, for the About text.
-    pub fn about(&self) -> Rect {
-        let top = TITLE_H + 30 + Row::ALL.len() as i32 * ROW_H + 30;
-        Rect::new(MARGIN, top, self.width - 2 * MARGIN, self.height - top - MARGIN)
+    /// The y just under a page's sections (where a page's own content, such as the Wi-Fi list, can start).
+    pub fn page_end(&self, page: Page) -> i32 {
+        let mut y = TITLE_H + SECTION_TOP;
+        for g in page.groups() {
+            y += SECTION_HEAD_H + g.rows.len() as i32 * ROW_H + section_foot(g.footer);
+        }
+        y
+    }
+
+    /// The Settings list: the groups of pages, each a header and a card with one row per page.
+    pub fn home_sections(&self) -> Vec<HomeSection> {
+        let w = self.width - 2 * MARGIN;
+        let mut y = TITLE_H + SECTION_TOP;
+        HOME_GROUPS
+            .iter()
+            .map(|&(header, pages)| {
+                y += if header.is_empty() { 0 } else { SECTION_HEAD_H };
+                let card = Rect::new(MARGIN, y, w, pages.len() as i32 * HOME_ROW_H);
+                let rows = pages.iter().enumerate().map(|(i, &p)| (p, Rect::new(card.x, card.y + i as i32 * HOME_ROW_H, card.w, HOME_ROW_H))).collect();
+                y = card.bottom() + SECTION_GAP;
+                (header, card, rows)
+            })
+            .collect()
+    }
+
+    /// The Settings list's rows (one per page), flat.
+    pub fn settings_home_rows(&self) -> Vec<(Page, Rect)> {
+        self.home_sections().into_iter().flat_map(|(_, _, rows)| rows).collect()
+    }
+
+    /// The Settings list row under a point.
+    pub fn settings_home_at(&self, x: f32, y: f32) -> Option<Page> {
+        self.settings_home_rows().into_iter().find(|(_, r)| r.contains(x, y)).map(|(p, _)| p)
+    }
+
+    /// The Wi-Fi page's own area under its Wi-Fi section: the current network, then the scan list.
+    pub fn wifi_area(&self) -> WifiArea {
+        let top = self.page_end(Page::Wifi);
+        let w = self.width - 2 * MARGIN;
+        let current_header = top;
+        let current = Rect::new(MARGIN, top + SECTION_HEAD_H, w, CURRENT_H);
+        let networks_header = current.bottom() + SECTION_GAP;
+        let list_top = networks_header + SECTION_HEAD_H;
+        // The list ends above the Wi-Fi page's notice line (the result of a join or a forget).
+        let bottom = self.height - 110;
+        let list = Rect::new(MARGIN, list_top, w, (bottom - list_top).max(NETWORK_H));
+        let scan = Rect::new(self.width - MARGIN - 200, networks_header - 4, 200, 52);
+        WifiArea { current_header, current, networks_header, scan, list, visible: (list.h / NETWORK_H).max(1) as usize }
+    }
+
+    /// Network row `i` of the visible scan list.
+    pub fn network_row(&self, i: usize) -> Rect {
+        let list = self.wifi_area().list;
+        Rect::new(list.x, list.y + i as i32 * NETWORK_H, list.w, NETWORK_H)
+    }
+
+    /// The visible network row under a point (its index within the window), if any.
+    pub fn network_at(&self, x: f32, y: f32) -> Option<usize> {
+        let visible = self.wifi_area().visible;
+        (0..visible).find(|&i| self.network_row(i).contains(x, y))
     }
 
     /// Quick settings: a sheet from the top edge.
     pub fn quick_panel(&self) -> Rect {
-        let h = QUICK_HEAD_H + QUICK_BUTTONS_H + 2 * QUICK_ROW_H + 20 + QUICK_HANDLE_H;
+        let h = QUICK_HEAD_H + QUICK_BUTTONS_H + 2 * QUICK_ROW_H + QUICK_SYSTEM_TOP + 3 * QUICK_STAT_H + 20 + QUICK_HANDLE_H;
         Rect::new(0, 0, self.width, h)
     }
 
@@ -359,6 +556,17 @@ impl Layout {
         }
         let t = ((x - bar.x as f32) / bar.w as f32).clamp(0.0, 0.9999);
         Some((t * (QUICK_LEVEL_MAX + 1) as f32) as u32)
+    }
+
+    /// The "System" header above the figures.
+    pub fn quick_system_header(&self) -> i32 {
+        self.quick_row(1).bottom() + 8
+    }
+
+    /// System row `i` (0 CPU, 1 memory, 2 storage) under the level rows.
+    pub fn quick_stat_row(&self, i: usize) -> Rect {
+        let top = self.quick_row(1).bottom() + QUICK_SYSTEM_TOP;
+        Rect::new(0, top + i as i32 * QUICK_STAT_H, self.width, QUICK_STAT_H)
     }
 
     /// The six round icon buttons in one row, under the header: Airplane, Auto-rotate, Dark mode, Animation, SSH,
@@ -424,15 +632,81 @@ impl Layout {
         n.div_ceil(self.list_rows_per_page()).max(1)
     }
 
-    pub fn settings_button_at(&self, x: f32, y: f32) -> Option<Button> {
+    /// The button of a Settings page under a point (its rows only), or Done.
+    pub fn settings_button_at(&self, page: Page, x: f32, y: f32) -> Option<Button> {
         if self.done_button().inset(-20).contains(x, y) {
             return Some(Button::Done);
         }
-        self.settings_rows()
+        self.page_sections(page)
             .into_iter()
+            .flat_map(|s| s.rows)
             .flat_map(|r| r.buttons)
             .find(|(_, rect)| rect.inset(-12).contains(x, y))
             .map(|(b, _)| b)
+    }
+
+    /// The password field: the network's password, shown as dots unless "Show password" is on.
+    pub fn password_field(&self) -> Rect {
+        Rect::new(MARGIN, TITLE_H + 110, self.width - 2 * MARGIN, 100)
+    }
+
+    /// The "Show password" row under the field, with its switch.
+    pub fn password_show(&self) -> Rect {
+        let f = self.password_field();
+        Rect::new(f.x, f.bottom() + 14, f.w, 80)
+    }
+
+    /// Where the password screen's notice sits: above the keyboard.
+    pub fn password_notice(&self) -> Rect {
+        Rect::new(MARGIN, self.keyboard_area().y - 80, self.width - 2 * MARGIN, 60)
+    }
+
+    /// The keyboard's area: the bottom of the screen, as tall as Primitive Browser's (the shared `style`).
+    pub fn keyboard_area(&self) -> Rect {
+        let h = primitive_keyboard::style::AREA_H as i32;
+        Rect::new(0, self.height - h, self.width, h)
+    }
+
+    /// Every key of a keyboard layer with its rectangle and definition: the shared layout (`primitive-keyboard`), the
+    /// same rows, sizes and gaps as Primitive Browser's keyboard, at the bottom of the screen.
+    pub fn keyboard_keys(&self, layer: primitive_keyboard::Layer) -> Vec<(primitive_keyboard::KeyDef, Rect)> {
+        self.keyboard_keys_with(layer, KEYBOARD_GO)
+    }
+
+    /// The keys with another label on the Go key ("Next" on the network name screen).
+    pub fn keyboard_keys_with(&self, layer: primitive_keyboard::Layer, go: &str) -> Vec<(primitive_keyboard::KeyDef, Rect)> {
+        let area = self.keyboard_area();
+        primitive_keyboard::layout(layer, go, area.w as u32, area.h as u32)
+            .into_iter()
+            .map(|(key, r)| (key, Rect::new(area.x + r.x, area.y + r.y, r.w, r.h)))
+            .collect()
+    }
+
+    /// The key under a point on a keyboard layer.
+    pub fn keyboard_key_at(&self, layer: primitive_keyboard::Layer, x: f32, y: f32) -> Option<primitive_keyboard::Key> {
+        self.keyboard_keys(layer).into_iter().find(|(_, r)| r.inset(-4).contains(x, y)).map(|(k, _)| k.key)
+    }
+
+    /// The Wi-Fi page's "Other…" button, left of Scan: join a network that is not in the list (a hidden one).
+    pub fn wifi_other(&self) -> Rect {
+        let scan = self.wifi_area().scan;
+        Rect::new(scan.x - 20 - 200, scan.y, 200, scan.h)
+    }
+
+    /// The Connect and Forget buttons of the network screen (Forget only for a saved network).
+    pub fn net_connect(&self) -> Rect {
+        // Under the network's card: its title area, 40 px, three rows of 96 px, 40 px.
+        Rect::new(MARGIN, TITLE_H + 40 + 3 * 96 + 40, self.width - 2 * MARGIN, 100)
+    }
+
+    pub fn net_forget(&self) -> Rect {
+        let c = self.net_connect();
+        Rect::new(c.x, c.bottom() + 28, c.w, 100)
+    }
+
+    /// The Wi-Fi page's scan button under a point.
+    pub fn scan_at(&self, x: f32, y: f32) -> bool {
+        self.wifi_area().scan.inset(-12).contains(x, y)
     }
 
     pub fn confirm_box(&self) -> Rect {
@@ -513,6 +787,8 @@ mod tests {
         assert!(l.quick_bar(1).bottom() <= l.quick_row(1).bottom());
         assert!(l.quick_plus(0).right() <= l.width - QUICK_SIDE);
         assert!(l.header_wifi().right() < l.header_battery().x);
+        assert!(l.quick_stat_row(2).bottom() <= l.quick_handle().y, "the system rows sit above the handle");
+        assert!(l.quick_stat_row(0).y > l.quick_row(1).bottom());
     }
 
     #[test]
@@ -527,14 +803,33 @@ mod tests {
     }
 
     #[test]
-    fn settings_fit_and_buttons_hit() {
+    fn settings_pages_fit_and_buttons_hit() {
         let l = oasis();
-        let rows = l.settings_rows();
-        assert!(rows.last().unwrap().rect.bottom() < l.about().y);
-        assert!(l.about().h >= 140, "about {:?}", l.about());
+        let sections = l.page_sections(Page::Display);
+        assert_eq!(sections.len(), 4);
+        let last = sections.last().unwrap();
+        assert!(last.card.bottom() < l.height - 300, "display sections fit");
+        let rows: Vec<_> = sections.iter().flat_map(|s| s.rows.iter()).collect();
         let (b, r) = rows[0].buttons[1];
-        assert_eq!(l.settings_button_at((r.x + 10) as f32, (r.y + 10) as f32), Some(b));
+        assert_eq!(l.settings_button_at(Page::Display, (r.x + 10) as f32, (r.y + 10) as f32), Some(b));
         let d = l.done_button();
-        assert_eq!(l.settings_button_at((d.x + 1) as f32, (d.y + 1) as f32), Some(Button::Done));
+        assert_eq!(l.settings_button_at(Page::Display, (d.x + 1) as f32, (d.y + 1) as f32), Some(Button::Done));
+        let home = l.home_sections();
+        assert_eq!(home.len(), HOME_GROUPS.len());
+        assert_eq!(l.settings_home_rows().len(), Page::ALL.len());
+        let (page, r) = l.settings_home_rows()[2];
+        assert_eq!(l.settings_home_at((r.x + 5) as f32, (r.y + 5) as f32), Some(page));
+        assert!(l.settings_home_rows().last().unwrap().1.bottom() < l.height - 200);
+    }
+
+    #[test]
+    fn the_wifi_page_has_room_for_a_scan_list() {
+        let l = oasis();
+        let area = l.wifi_area();
+        assert!(area.current.y > l.page_end(Page::Wifi), "current network below the Wi-Fi section");
+        assert!(area.visible >= 6, "visible {}", area.visible);
+        assert!(area.list.bottom() <= l.height - 30);
+        assert!(l.network_at((area.list.x + 5) as f32, (area.list.y + 5) as f32) == Some(0));
+        assert!(l.scan_at((area.scan.x + 5) as f32, (area.scan.y + 5) as f32));
     }
 }

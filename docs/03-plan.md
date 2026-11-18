@@ -1,6 +1,6 @@
 # 3. Plan
 
-Status date: 2026-11-18. On the Kindle: **v0.2.5**. Gate 1 passed with v0.1.11.
+Status date: 2026-11-18. On the Kindle: **v0.2.14**. Gate 1 passed with v0.1.11.
 
 How to read the checklists:
 
@@ -20,8 +20,8 @@ checks on the Kindle. Device builds bump the patch version; a new phase starts a
 | [M1 Launcher with the framework stopped](#m1-launcher-with-the-framework-stopped) | 1 / 0.1.x | Done, Gate 1 passed |
 | [M2 Home screen, Apple style](#m2-home-screen-apple-style) | 2 / 0.2.x | **Done**, confirmed on the Kindle (v0.2.5) |
 | [M3 Status bar](#m3-status-bar) | 2 / 0.2.x | **Done**, awaiting the user's device check (v0.2.13) |
-| [M4 Settings pages](#m4-settings-pages) | 2 / 0.2.x | Single page exists; pages not started |
-| [M5 Wi-Fi networks](#m5-wi-fi-networks) | 2 / 0.2.x | API found (S3); not started |
+| [M4 Settings pages](#m4-settings-pages) | 2 / 0.2.x | Grouped pages built (v0.2.15, Mac); device check next |
+| [M5 Wi-Fi networks](#m5-wi-fi-networks) | 2 / 0.2.x | List, join with password, forget done (Mac, v0.2.17); device check next |
 | [M6 System duties](#m6-system-duties) | 2 / 0.2.x | Auto-rotation confirmed; battery warnings (Mac); USB waits for S5 |
 | [M7 Boot into the launcher](#m7-boot-into-the-launcher) | 3 / 0.3.x | Written, not installed |
 | [M8 Extensions and customising](#m8-extensions-and-customising) | 4 / 0.4.x | Mostly done (Mac) |
@@ -102,6 +102,8 @@ open quick settings; a swipe down from the top edge does.
 - [x] Quick settings: a swipe down from the top edge opens a sheet like Primitive Browser's: clock and date,
       Wi-Fi and battery, round icon buttons (Airplane, Auto-rotate, Dark mode, Animation, SSH, Settings), two
       25-step level rows with − and +, and a swipe up to close (v0.2.8 to v0.2.11).
+- [x] System section in quick settings: CPU, memory and storage, each with an icon, a bar and its value (v0.2.20).
+      The status bar does not show them. Primitive Browser's quick settings show the same figures.
 - [x] Live state: battery, charging, Wi-Fi and clock are re-read every 5 s; the bar is redrawn only when it
       would show something new (v0.2.13).
 
@@ -109,33 +111,45 @@ Not in M3, later: Bluetooth (see "Later" below).
 
 ## M4 Settings pages
 
-Phase 2. Settings becomes a list of pages, like the stock Kindle and iOS: a back button and a title on
-each page. Advanced things stay in the Kindle UI.
+Phase 2. Settings is a list of pages in groups; each page is sections with a header, a card, and a footer that
+explains it. Design rules, with the sources and their limits: [settings-design.md](settings-design.md).
 
-- [ ] Page stack: Settings → page → sub-page, with back.
-- [ ] Settings home: one row per page, with its current value (for example the Wi-Fi network's name).
-- [ ] Wi-Fi & network page (see M5).
-- [ ] Display page: frontlight, warmth, rotation, auto-rotation. The controls exist on the single page today.
-- [ ] Sleep page: sleep screen choice and sleep pictures. The choice exists today.
-- [ ] Apps page: hidden apps, Extensions. Hidden apps exist today.
-- [ ] Device page: start at boot, SSH, Kindle UI, restart the launcher.
-- [ ] About page: version, memory, free storage, IP address, the app list.
+- [x] Page stack: Settings → page → Back (v0.2.14).
+- [x] Settings list grouped into Network, Display, System and About, each page with its current value (v0.2.15).
+- [x] Switches for on and off (Wi-Fi, dark mode, opening animation, SSH, start with the Kindle, sleep screen, auto-rotate).
+- [x] Wi-Fi & network page: the Wi-Fi switch; the current network; the networks in range with signal, lock and
+      "Saved"; Scan; scrolling (v0.2.15). The scan list is read from the device; joining is M5.
+- [x] Display page: frontlight and warmth (round buttons), dark mode, opening animation, screen rotation with a tap-to-turn value (v0.2.15).
+- [x] Sleep page: the sleep screen choice (v0.2.15).
+- [x] Apps page: hidden apps (Show all) (v0.2.15).
+- [x] Device page: start with the Kindle, SSH, Kindle UI (v0.2.15).
+- [ ] Device page: restart the launcher (not built; the launcher restarts itself after an install).
+- [x] About page: version, apps, memory, free storage, Wi-Fi address (v0.2.15).
 
 ## M5 Wi-Fi networks
 
-Phase 2. Join networks from the launcher, as on the stock Kindle. Uses `com.lab126.wifid` (S3).
+Phase 2. Join networks from the launcher, as on the stock Kindle. Uses `com.lab126.wifid` (S3, and the stock
+Kindle's own calls as KOReader makes them).
 
-- [ ] Wi-Fi on and off.
-- [ ] Network list from a scan: name, signal bars, a lock for secured networks, "Connected" and "Saved"
-      marks; saved and stronger networks first.
-- [ ] Join a saved network with one tap.
-- [ ] On-screen keyboard: the Primitive Browser layout (letters, numbers, symbols, shift).
-- [ ] Password page for WPA/WPA2 networks, with a show-password switch.
+- [x] Wi-Fi on and off (v0.2.15).
+- [x] Network list from a scan: name, signal arcs, a lock for secured networks, "Connected" and "Saved" marks;
+      strongest first (v0.2.15). Parsed against the Kindle's real scan output (Mac test).
+- [x] Join a saved network: Connect on the network's screen, no password (v0.2.17, device check pending).
+- [x] On-screen keyboard: the shared keyboard (`primitive-keyboard`, used by Primitive Browser too): the four
+      layers, the bottom row with ‹ and ›, space, Go (v0.2.18).
+- [x] Password for a new WPA2 network, with Show password; at least 8 characters (v0.2.17, device check pending).
+      The password goes to the connection tool on its input only, and is not logged or kept after joining.
+- [x] Forget a saved network, from its screen or by tapping the connected network (v0.2.19, device check pending).
+- [x] Long lists: a scroll bar and the count; a swipe moves by the rows it covers (v0.2.19, checked with 30 networks). Tested on the Kindle: a test profile was created
+      and deleted, and the saved list was back to its earlier count.
 - [ ] Enterprise networks: user name and password, if `createProfile` accepts them (to be tested; no
       enterprise network nearby yet).
-- [ ] Forget a saved network.
-- [ ] Join a hidden network by name.
-- [ ] Clear messages for a wrong password or no address.
+- [x] Join a hidden network by name: "Other…" opens a name field and the keyboard (Next asks for the password;
+      an empty password joins an open network) (v0.2.20, device check pending).
+- [x] Wi-Fi off: the list says so; turning Wi-Fi on from the page starts a scan (v0.2.20, device check pending).
+- [ ] Clear messages for a wrong password (now: "Could not connect", with the reason) and for no address.
+
+Note for the device: `profileData` holds the saved passwords in plain text. The launcher never prints or logs it.
 
 ## M6 System duties
 
