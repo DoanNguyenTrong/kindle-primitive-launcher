@@ -175,8 +175,12 @@ Phase 3, v0.3.x, opt-in. **Gate 3**: every reboot test ends on the expected scre
 - [x] "Start at boot" switch in Settings (creates or removes `DISABLE`) (Mac).
 - [x] A way to start SSH without the framework, checked before the first reboot: the SSH server runs with the
       launcher, which has the framework stopped (connected with it stopped, v0.3.5).
-- [ ] Reboot tests: normal boot ×5, the `DISABLE` and `BOOT_KINDLE` files, a broken launcher (autostart
-      turns itself off on the third boot), USB cable in at boot, the removal script.
+- [x] Normal boots with the launcher starting at boot (device, v0.3.10 to v0.3.15).
+- [x] The `DISABLE` and `BOOT_KINDLE` files keep the stock UI (device).
+- [x] The removal script: the next boot is stock; reinstalled after the test (device).
+- [x] USB cable in at boot: the launcher's drive-mode picture shows, and eject brings the apps back (device, v0.3.15).
+- [ ] A broken launcher turns autostart off on the third boot: the first failed boot is recorded; the three-boot run
+      is not finished.
 
 ## M8 Extensions and customising
 

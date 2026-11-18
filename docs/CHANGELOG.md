@@ -3,6 +3,17 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.3.15
+
+- Boot: the boot job starts the SSH server and the launcher from a copy on `/var/local` when `/mnt/us` is away, so a
+  cable in at boot still shows the drive-mode picture. Eject brings the apps, settings and extensions back in the same
+  launcher. The installers keep the copy up to date.
+
+## 0.3.13
+
+- The boot job's copy on `/var/local` (`install-mirror.sh`): the boot guard, the supervisor, the launcher, the fonts and
+  the SSH server, so SSH also starts at boot without a manual step.
+
 ## 0.3.12
 
 - Stopping the framework also stops the stock boot actions and their progress bar, so the bar no longer draws over
