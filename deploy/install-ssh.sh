@@ -83,5 +83,8 @@ if [ "$local_sum" != "$remote_sum" ]; then
 fi
 echo "installed: /mnt/us/launcher/kl-launcher ($(wc -c < "$BIN" | tr -d ' ') bytes, sha256 $local_sum)"
 
+# The copy on /var/local that the boot uses when /mnt/us is away (see install-mirror.sh).
+sh "$HERE/deploy/install-mirror.sh" "$BIN"
+
 # Restart a running launcher so it loads the new build (the supervisor copies it again).
 $SSH 'p=$(cat /var/tmp/kl/launcher.pid 2>/dev/null); if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then kill -TERM "$p"; echo "launcher restarted"; else echo "launcher not running: open Launcher in the Kindle library"; fi'

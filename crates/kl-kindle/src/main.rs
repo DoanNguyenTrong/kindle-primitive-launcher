@@ -120,6 +120,22 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// Fonts: the copy in KL_RUN (tmpfs, made by the supervisor) when present, else KL_DIR.
+/// The config (apps.toml), the apps (in documents), the KUAL extensions, and the problems found reading them. The
+/// boot copy and /mnt/us read the same files; the directory decides which.
+fn load_library(dir: &Path, documents: &Path) -> (Config, Vec<App>, Vec<kl_core::kual::MenuItem>, Vec<String>) {
+    let (config, mut problems) = match fs::read_to_string(dir.join("apps.toml")) {
+        Ok(text) => Config::parse(&text),
+        Err(_) => (Config::default(), Vec::new()),
+    };
+    let (mut apps, more) = discover(documents, &config);
+    problems.extend(more);
+    kl_core::apps::use_koreader_wrapper(&mut apps, &config, &dir.join("run-koreader.sh"));
+    let extensions_root = documents.parent().unwrap_or(Path::new("/mnt/us")).join("extensions");
+    let (extensions, more) = kl_core::kual::discover_root(&extensions_root, kl_core::kual::OASIS_3_MODEL);
+    problems.extend(more);
+    (config, apps, extensions, problems)
+}
+
 fn font_paths(dir: &Path, run: &Path) -> Vec<String> {
     let names = ["NotoSans-Regular.ttf", "NotoSans-Bold.ttf"];
     let base = if run.join("fonts").join(names[0]).exists() { run.join("fonts") } else { dir.join("fonts") };
@@ -249,13 +265,16 @@ fn now_secs() -> u64 {
 fn main() {
     install_crash_log();
     let started = Instant::now();
-    let dir = env_dir("KL_DIR", "/mnt/us/launcher");
+    let mut dir = env_dir("KL_DIR", "/mnt/us/launcher");
+    // Started from the copy on /var/local (the cable was in at boot): when /mnt/us is back, this same launcher reads its
+    // settings, apps and extensions from /mnt/us.
+    let mut from_mirror = dir.starts_with("/var/local");
     let run = env_dir("KL_RUN", "/var/tmp/kl");
     let documents = env_dir("KL_DOCUMENTS", "/mnt/us/documents");
     let _ = fs::create_dir_all(&run);
     log(&format!("start v{} dir {} run {}", kl_core::VERSION, dir.display(), run.display()));
 
-    let settings_path = dir.join("settings.txt");
+    let mut settings_path = dir.join("settings.txt");
     let mut settings = Settings::parse(&fs::read_to_string(&settings_path).unwrap_or_default());
     if settings.sleep_screen_launcher {
         device::unload_stock_screensaver();
@@ -274,16 +293,7 @@ fn main() {
         return;
     }
 
-    let (config, mut problems) = match fs::read_to_string(dir.join("apps.toml")) {
-        Ok(text) => Config::parse(&text),
-        Err(_) => (Config::default(), Vec::new()),
-    };
-    let (mut apps, more) = discover(&documents, &config);
-    problems.extend(more);
-    kl_core::apps::use_koreader_wrapper(&mut apps, &config, &dir.join("run-koreader.sh"));
-    let extensions_root = documents.parent().unwrap_or(Path::new("/mnt/us")).join("extensions");
-    let (extensions, more) = kl_core::kual::discover_root(&extensions_root, kl_core::kual::OASIS_3_MODEL);
-    problems.extend(more);
+    let (config, apps, extensions, mut problems) = load_library(&dir, &documents);
     let layout = Layout::new(W, H, config.columns, config.rows);
 
     let mut renderer = match Renderer::new(W, H, &font_paths(&dir, &run)) {
@@ -457,6 +467,21 @@ fn main() {
                     Action::None
                 } else {
                     log(&format!("usb: {usb:?}"));
+                    if ui.usb == kl_core::Usb::Drive && from_mirror && Path::new("/mnt/us/launcher/apps.toml").exists() {
+                        // Ejected: /mnt/us is back. This launcher reads its settings, apps and extensions from it again.
+                        dir = PathBuf::from("/mnt/us/launcher");
+                        settings_path = dir.join("settings.txt");
+                        from_mirror = false;
+                        settings = Settings::parse(&fs::read_to_string(&settings_path).unwrap_or_default());
+                        let (_config, apps, extensions, problems) = load_library(&dir, &documents);
+                        ui.set_apps(apps);
+                        ui.set_extensions(extensions);
+                        ui.notice = problems.first().cloned();
+                        for problem in kl_render::load_icons(&mut renderer, ui.apps(), &layout, Some(&dir.join("cache"))) {
+                            log(&format!("problem: {problem}"));
+                        }
+                        log(&format!("the user storage is back: {} apps read from {}", ui.apps().len(), documents.display()));
+                    }
                     ui.usb = usb;
                     status.usb = usb;
                     Action::Redraw { full: true }

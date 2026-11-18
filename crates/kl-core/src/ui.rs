@@ -311,6 +311,13 @@ impl Ui {
     }
 
     /// KUAL extension menus. When there are any, the Extensions tile joins the grid (with the built-ins).
+    /// Replace the app list (the user storage came back: the apps are read again from /mnt/us).
+    pub fn set_apps(&mut self, apps: Vec<App>) {
+        self.apps = apps;
+        self.page = 0;
+        self.pressed = None;
+    }
+
     pub fn set_extensions(&mut self, menu: Vec<MenuItem>) {
         self.extensions = menu;
         self.ext_path.clear();

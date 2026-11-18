@@ -33,3 +33,6 @@ if [ "$local_sum" != "$remote_sum" ]; then
     exit 1
 fi
 echo "installed /etc/upstart/primitive-launcher.conf (sha256 $local_sum); starts on the next boot"
+
+# The copy the boot needs when /mnt/us is away (the drive on a computer), and the SSH server it starts.
+sh "$HERE/deploy/install-mirror.sh" "$@"
