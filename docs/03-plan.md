@@ -163,7 +163,8 @@ browsing, Wi-Fi on/off and joining a network, 10 sleep/wake cycles, a USB file c
 - [x] Low-battery notice at 10 % and 5 %; critical battery shows the sleep screen with a warning (Mac).
 - [x] Auto-rotation from the accelerometer: the S4 rule, 4 readings a second, 800 ms hold (v0.2.4; confirmed by
       the user).
-- [ ] USB "Connect to computer" (needs S5).
+- [x] USB "Connect to computer": plug in -> the drive shows on the computer and the launcher's drive-mode picture
+      replaces the stock USB screen; eject -> back to the grid; unplug -> charging (v0.3.6, device-tested by the user).
 - [ ] Network time (optional; the clock is right today).
 
 ## M7 Boot into the launcher
@@ -172,7 +173,8 @@ Phase 3, v0.3.x, opt-in. **Gate 3**: every reboot test ends on the expected scre
 
 - [x] Boot job, guard script, install and remove scripts, 15 guard checks (Mac).
 - [x] "Start at boot" switch in Settings (creates or removes `DISABLE`) (Mac).
-- [ ] A way to start SSH without the framework, checked before the first reboot.
+- [x] A way to start SSH without the framework, checked before the first reboot: the SSH server runs with the
+      launcher, which has the framework stopped (connected with it stopped, v0.3.5).
 - [ ] Reboot tests: normal boot ×5, the `DISABLE` and `BOOT_KINDLE` files, a broken launcher (autostart
       turns itself off on the third boot), USB cable in at boot, the removal script.
 

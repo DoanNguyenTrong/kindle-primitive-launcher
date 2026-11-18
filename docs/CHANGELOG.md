@@ -3,6 +3,12 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.3.6
+
+- USB: plugging the cable in shows the drive on the computer and the launcher's drive-mode picture in place of the
+  stock USB screen; ejecting returns to the grid. The launcher and its supervisor no longer hold `/mnt/us`, which the
+  Kindle unmounts for the drive, so they keep running through it.
+
 ## 0.3.2
 
 - Leaving the launcher always starts the Kindle UI again. A launcher that started while the framework was already
