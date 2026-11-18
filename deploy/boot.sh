@@ -56,14 +56,10 @@ if [ ! -f "$DIR/supervisor.sh" ]; then
     exit 0
 fi
 
-# The stock boot progress bar (the splash job, which runs to 94 %, about 40 s) draws over whatever is on the screen,
-# so the launcher waits until that job has finished. Then the stock UI draws its home screen before the supervisor
-# stops it.
-i=0
-while status splash 2>/dev/null | grep -q "start/" && [ $i -lt 120 ]; do
-    sleep 1
-    i=$((i + 1))
-done
+# The stock boot progress bar is the splash job, which draws until it reaches 94 % (about 40 s). Stop it now: the
+# launcher starts at once, and its full redraw clears what the bar left on the screen. The settle time below lets
+# the framework finish starting before the supervisor stops it.
+status splash 2>/dev/null | grep -q "start/" && stop splash 2>/dev/null
 sleep "$SETTLE"
 
 cp "$DIR/supervisor.sh" "$RUN/supervisor.sh" 2>/dev/null
