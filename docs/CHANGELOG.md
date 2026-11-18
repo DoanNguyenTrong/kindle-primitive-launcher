@@ -3,12 +3,19 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.2.7
+
+- The first published release. The release workflow installs zig and cargo-zigbuild with setup actions (pinned
+  to the versions the device builds use); the v0.2.6 release run failed while installing them, so 0.2.6 has a tag
+  but no release package.
+- The README says how to reach us if Amazon wants the Kindle icon removed.
+
 ## 0.2.6
 
 - The library icon has the Primitive logo in its centre tile, and rounded-square tiles like the home screen.
 - KOReader's library entry runs through the launcher's wrapper by default, so leaving KOReader returns to the
   launcher without starting the stock UI. `apps.toml` can still give KOReader another command.
-- First release on GitHub, with CI and a release package.
+- First version on GitHub, with CI and a release workflow.
 
 ## 0.2.0 – 0.2.5
 

@@ -11,7 +11,7 @@ jobs:
     name: Unit tests, clippy and shell suites
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Draw every screen
@@ -54,16 +54,21 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: armv7-unknown-linux-musleabihf
       - uses: Swatinem/rust-cache@v2
-      - name: Install zig, cargo-zigbuild and zip
-        run: |
-          sudo apt-get install -y zip
-          python3 -m pip install ziglang
-          cargo install cargo-zigbuild --locked
+      # zig and a prebuilt cargo-zigbuild from setup actions, not pip or a source build: a pip install of ziglang
+      # can be refused on newer runner images (the first v0.2.6 release run failed in this step).
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1          # the version the device builds are made with
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild@0.24.1
+      - name: zip
+        run: command -v zip >/dev/null || { sudo apt-get update && sudo apt-get install -y zip; }
       - name: Build the device binary
         run: cargo zigbuild --release -p kl-kindle --target armv7-unknown-linux-musleabihf
       - name: Check it is an ARM binary

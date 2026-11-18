@@ -89,7 +89,7 @@ The full steps, upgrades and removal are in the [install guide](docs/INSTALL.md)
 | Kindle Oasis 3 (1264 × 1680, firmware 5.18.2) | ✅ Verified on hardware |
 | Other Kindle models | 🛠️ Not supported yet |
 
-**Current version: 0.2.6.** Each device build is a new patch version; each phase starts a new minor version.
+**Current version: 0.2.7.** Each device build is a new patch version; each phase starts a new minor version.
 Hardware observations are in the [device notes](docs/device-notes.md).
 
 ## Limits
@@ -205,7 +205,9 @@ The e-ink, input and device code in `crates/kl-kindle` is copied from
 [Primitive Browser](https://github.com/DoanNguyenTrong/kindle-primitive-browser) (AGPL-3.0); each copied file
 says so at the top. The Noto Sans fonts are under the SIL Open Font License (`assets/fonts/NOTO-LICENSE.txt`).
 Kindle is a trademark of Amazon.com, Inc. or its affiliates. This project is not affiliated with or endorsed by
-Amazon.
+Amazon. The Kindle UI tile uses the Kindle app icon (`assets/kindle-icon.png`, shown in gray as
+`assets/icons/kindle-ui.png`) only to mark the button that opens the Kindle's own interface. If Amazon wants it
+taken down, please reach out to us, by opening an issue or contacting the maintainer, and we will remove it.
 
 ## Security
 
