@@ -56,7 +56,14 @@ if [ ! -f "$DIR/supervisor.sh" ]; then
     exit 0
 fi
 
-# Let the stock UI draw its home screen before the supervisor stops it.
+# The stock boot progress bar (the splash job, which runs to 94 %, about 40 s) draws over whatever is on the screen,
+# so the launcher waits until that job has finished. Then the stock UI draws its home screen before the supervisor
+# stops it.
+i=0
+while status splash 2>/dev/null | grep -q "start/" && [ $i -lt 120 ]; do
+    sleep 1
+    i=$((i + 1))
+done
 sleep "$SETTLE"
 
 cp "$DIR/supervisor.sh" "$RUN/supervisor.sh" 2>/dev/null
