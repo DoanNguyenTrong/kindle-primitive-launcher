@@ -230,6 +230,10 @@ fn main() {
     ssh_on.public_dns = true;
     ui.screen = kl_core::Screen::Page(kl_core::layout::Page::Connection);
     write_png(&out.join("ssh-dns-on.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    // The result of Check the server, shown at the bottom of the same page (made-up text).
+    ui.notice = Some("SSH: server running; port 2222 listening; firewall open".into());
+    write_png(&out.join("ssh-dns-check.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    ui.notice = None;
     // The SSH password screen, with a password typed (made up).
     ui.screen = kl_core::Screen::SshPassword;
     ui.ssh_password.text = "Sunny-day9".chars().collect();

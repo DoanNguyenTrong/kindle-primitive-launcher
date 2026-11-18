@@ -1023,10 +1023,11 @@ impl Renderer {
         }
         if page == kl_core::layout::Page::Wifi {
             self.wifi_list(ui, s);
-            if let Some(notice) = ui.notice.clone() {
-                let width = (l.width - 2 * MARGIN_X) as f32;
-                self.text(Text { text: &notice, x: MARGIN_X as f32, y: (l.height - 84) as f32, w: width, size: 28.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
-            }
+        }
+        // A result of an action on this page (a Wi-Fi join, an SSH check or password): shown at the bottom on every page.
+        if let Some(notice) = ui.notice.clone() {
+            let width = (l.width - 2 * MARGIN_X) as f32;
+            self.text(Text { text: &notice, x: MARGIN_X as f32, y: (l.height - 84) as f32, w: width, size: 28.0, bold: true, align: Align::Start, lines: 2, gray: BLACK });
         }
     }
 
