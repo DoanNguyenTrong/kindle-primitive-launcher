@@ -56,9 +56,15 @@ if [ ! -f "$DIR/supervisor.sh" ]; then
     exit 0
 fi
 
-# The stock boot progress bar is the splash job, which draws until it reaches 94 % (about 40 s). Stop it now: the
-# launcher starts at once, and its full redraw clears what the bar left on the screen. The settle time below lets
-# the framework finish starting before the supervisor stops it.
+# The stock boot progress bar is the splash job, which draws until it reaches 94 % (about 40 s). It starts a little
+# after lab126_gui, so wait for it to start (up to 60 s), then stop it: the bar never draws over the launcher, and the
+# launcher starts about 40 s sooner than waiting for the bar to finish. The settle time lets the framework finish
+# starting before the supervisor stops it.
+i=0
+while ! status splash 2>/dev/null | grep -q "start/" && [ $i -lt 60 ]; do
+    sleep 1
+    i=$((i + 1))
+done
 status splash 2>/dev/null | grep -q "start/" && stop splash 2>/dev/null
 sleep "$SETTLE"
 
