@@ -31,7 +31,7 @@ mkdir -p "$L/fonts" "$L/icons" "$L/screensavers" "$L/ssh/bin" "$L/ssh/lib" "$L/s
 
 cp "$BIN" "$L/kl-launcher"
 chmod 755 "$L/kl-launcher"
-for f in supervisor.sh ssh.sh dns.sh boot.sh holder.lua run-koreader.sh apps.toml.example; do
+for f in supervisor.sh ssh.sh dns.sh boot.sh holder.lua run-koreader.sh apps.toml.example setup-boot.sh primitive-launcher.conf; do
     cp "deploy/$f" "$L/$f"
 done
 # The SSH server (Dropbear and its zlib, with their licences). The host key and the password flag are not in the package.

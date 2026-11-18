@@ -3,6 +3,19 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.3.18
+
+- Installing by USB is complete: opening Launcher once sets up the boot start by itself (the copy on `/var/local` and the
+  boot job), so no computer or SSH is needed. Each later open checks the copy and the job and updates them if the
+  launcher changed. Uninstalling stops the boot start once the `launcher` folder is gone.
+- Power off turns the Kindle off without the stock "restarting" cover: the launcher runs `halt -f -p`, which skips the
+  stock shutdown job that draws it.
+
+## 0.3.16
+
+- Quick settings has a Power tile. It opens a Power box with Cancel, Restart and Power off, as the power button's long
+  press does on the stock UI. Restart and Power off sync the storage first.
+
 ## 0.3.15
 
 - Boot: the boot job starts the SSH server and the launcher from a copy on `/var/local` when `/mnt/us` is away, so a

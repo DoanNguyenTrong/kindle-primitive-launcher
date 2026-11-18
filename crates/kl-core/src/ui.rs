@@ -18,6 +18,8 @@ pub enum Screen {
     Settings,
     /// "Open the Kindle UI?" over the previous screen.
     ConfirmKindle,
+    /// The power menu: Cancel, Restart, Power off (opened by the Power tile in quick settings).
+    PowerMenu,
     Sleep,
     /// Edit one app (long press): a box beside its icon to move it, change its icon or hide it. The app is
     /// `Ui::menu`.
@@ -61,6 +63,9 @@ pub enum DeviceCmd {
     ToggleSsh,
     /// Settings > DNS: public DNS on or off (the network's servers back).
     ToggleDns,
+    /// Power menu: restart the Kindle (`reboot`), or turn it off (`poweroff`).
+    Restart,
+    PowerOff,
     /// Settings > Device > Launcher: start the launcher again (the supervisor starts it, as after an install).
     RestartLauncher,
     ToggleAutostart,
@@ -708,6 +713,7 @@ impl Ui {
             Screen::NetworkName => self.network_name_screen(input),
             Screen::SshPassword => self.ssh_password_screen(input),
             Screen::ConfirmKindle => self.confirm(input),
+            Screen::PowerMenu => self.power_menu(input),
             Screen::AppMenu => self.app_menu(input),
             Screen::Extensions => self.extensions_list(input),
             Screen::QuickSettings => self.quick(input),
@@ -776,6 +782,7 @@ impl Ui {
                         QuickTile::Animation => Action::Device(DeviceCmd::ToggleAnimation),
                         QuickTile::Ssh => Action::Device(DeviceCmd::ToggleSsh),
                         QuickTile::AllSettings => self.go(Screen::Settings),
+                        QuickTile::Power => self.go(Screen::PowerMenu),
                     };
                 }
                 for row in 0..2 {
@@ -1014,6 +1021,21 @@ impl Ui {
         }
     }
 
+    /// The power menu: Restart and Power off run the device's command; Cancel, or a tap outside the box, goes home.
+    fn power_menu(&mut self, input: Input) -> Action {
+        let Input::Tap(x, y) = input else { return Action::None };
+        let [(_, cancel), (_, restart), (_, off)] = self.layout.power_buttons();
+        if off.inset(-12).contains(x, y) {
+            Action::Device(DeviceCmd::PowerOff)
+        } else if restart.inset(-12).contains(x, y) {
+            Action::Device(DeviceCmd::Restart)
+        } else if cancel.inset(-12).contains(x, y) || !self.layout.power_box().contains(x, y) {
+            self.go(Screen::Home)
+        } else {
+            Action::None
+        }
+    }
+
     fn confirm(&mut self, input: Input) -> Action {
         let Input::Tap(x, y) = input else { return Action::None };
         let [(_, cancel), (_, open)] = self.layout.confirm_buttons();
@@ -1185,6 +1207,20 @@ mod tests {
         // A tap outside the keyboard marks nothing.
         u.screen = Screen::Settings;
         assert!(!u.press_feedback(tap));
+    }
+
+    #[test]
+    fn the_power_tile_opens_a_menu_with_restart_and_power_off() {
+        let mut u = ui(1);
+        u.screen = Screen::QuickSettings;
+        let (_, tile) = u.layout.quick_buttons()[6];
+        assert_eq!(u.handle(centre(u.layout.quick_button_circle(tile))), Action::Redraw { full: false });
+        assert_eq!(u.screen, Screen::PowerMenu, "the quick panel closes and the menu opens");
+        let [(_, cancel), (_, restart), (_, off)] = u.layout.power_buttons();
+        assert_eq!(u.handle(centre(restart)), Action::Device(DeviceCmd::Restart));
+        assert_eq!(u.handle(centre(off)), Action::Device(DeviceCmd::PowerOff));
+        assert_eq!(u.handle(centre(cancel)), Action::Redraw { full: false });
+        assert_eq!(u.screen, Screen::Home, "Cancel goes home");
     }
 
     #[test]

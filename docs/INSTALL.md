@@ -19,7 +19,9 @@ only. It does not jailbreak the Kindle and does not change any file of the Kindl
 3. Copy the `launcher` and `documents` folders onto the root of the Kindle drive. Merge `documents` with the
    folder that is already there; your books stay where they are.
 4. Eject the Kindle and unplug it.
-5. Open **Launcher** in the Kindle library. The stock UI stops and the launcher takes the screen.
+5. Open **Launcher** in the Kindle library. The stock UI stops and the launcher takes the screen. The first time, the
+   launcher also sets up its boot start (a few seconds more): a cable in at boot then shows its picture, and SSH starts
+   by itself. No computer is needed for this.
 
 To check a download, compare its SHA-256 with the `.sha256` file next to it in the release:
 
@@ -61,10 +63,11 @@ your sleep pictures are not in the package, so they are kept.
 ## If something goes wrong
 
 - The launcher starts the stock Kindle UI again by itself if it crashes repeatedly or stops answering.
-- Restarting the Kindle (hold the power button until it restarts) always comes back to the stock Kindle UI:
-  the launcher does not start at boot.
+- Restarting the Kindle starts the launcher again once Launcher has been opened once. To get the stock Kindle UI at
+  the next restart, put an empty file named `BOOT_KINDLE` at the root of the Kindle drive (over USB). To stop the
+  launcher starting at a restart, put an empty file named `DISABLE` in the `launcher` folder.
 
 ## Uninstall
 
 Delete `documents/Launcher.sh` and the `launcher` folder from the Kindle (from the stock Kindle UI, over USB).
-Nothing else was changed.
+The boot job and its copy on the Kindle's system storage stay, but they do nothing once the `launcher` folder is gone.

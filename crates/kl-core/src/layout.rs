@@ -166,6 +166,9 @@ pub enum Button {
     MenuHide,
     ConfirmCancel,
     ConfirmOpen,
+    PowerCancel,
+    PowerRestart,
+    PowerOff,
     DarkMode,
     Animation,
     /// The Wi-Fi password screen: show or hide the password; join.
@@ -185,6 +188,8 @@ pub enum QuickTile {
     Animation,
     Ssh,
     AllSettings,
+    /// The power menu: Cancel, Restart, Power off (what a long press of the power button gives on the Kindle).
+    Power,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -610,8 +615,8 @@ impl Layout {
 
     /// The six round icon buttons in one row, under the header: Airplane, Auto-rotate, Dark mode, Animation, SSH,
     /// All settings. Each slot is a column of the row; the circle is `QUICK_BUTTON_D` wide, centred in it.
-    pub fn quick_buttons(&self) -> [(QuickTile, Rect); 6] {
-        let slot = (self.width - 2 * QUICK_SIDE) / 6;
+    pub fn quick_buttons(&self) -> [(QuickTile, Rect); 7] {
+        let slot = (self.width - 2 * QUICK_SIDE) / 7;
         let at = |i: i32| Rect::new(QUICK_SIDE + i * slot, QUICK_HEAD_H, slot, QUICK_BUTTONS_H);
         [
             (QuickTile::Airplane, at(0)),
@@ -620,6 +625,7 @@ impl Layout {
             (QuickTile::Animation, at(3)),
             (QuickTile::Ssh, at(4)),
             (QuickTile::AllSettings, at(5)),
+            (QuickTile::Power, at(6)),
         ]
     }
 
@@ -750,6 +756,25 @@ impl Layout {
 
     pub fn confirm_box(&self) -> Rect {
         Rect::new(MARGIN * 2, self.height / 2 - 300, self.width - 4 * MARGIN, 600)
+    }
+
+    /// The power menu's box: the same place as the Kindle UI dialog.
+    pub fn power_box(&self) -> Rect {
+        self.confirm_box()
+    }
+
+    /// The power menu's three buttons, in a row at the bottom of its box: Cancel, Restart, Power off.
+    pub fn power_buttons(&self) -> [(Button, Rect); 3] {
+        let b = self.power_box();
+        let gap = 20;
+        let bw = (b.w - 80 - 2 * gap) / 3;
+        let y = b.bottom() - 40 - BUTTON_H;
+        let x = |i: i32| b.x + 40 + i * (bw + gap);
+        [
+            (Button::PowerCancel, Rect::new(x(0), y, bw, BUTTON_H)),
+            (Button::PowerRestart, Rect::new(x(1), y, bw, BUTTON_H)),
+            (Button::PowerOff, Rect::new(x(2), y, bw, BUTTON_H)),
+        ]
     }
 
     pub fn confirm_buttons(&self) -> [(Button, Rect); 2] {

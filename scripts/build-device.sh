@@ -32,6 +32,7 @@ trap undo ERR INT
 cd "$ROOT"
 cargo test --offline -j 4 --workspace --quiet
 sh tests/supervisor-test.sh > /dev/null
+sh tests/setup-boot-test.sh > /dev/null
 cargo zigbuild --offline -j 4 --release -p kl-kindle --target armv7-unknown-linux-musleabihf 2>&1 | grep -E "^(error|warning: unused)" && false || true
 [ -f target/armv7-unknown-linux-musleabihf/release/kl-launcher ]
 sh deploy/install-ssh.sh target/armv7-unknown-linux-musleabihf/release/kl-launcher

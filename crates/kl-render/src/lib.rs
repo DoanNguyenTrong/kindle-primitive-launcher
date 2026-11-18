@@ -46,6 +46,8 @@ fn wifi_lit(s: &Status) -> Option<usize> {
 
 /// Pop-ups (the app menu, the Kindle UI dialog): corner radius, and the white margin around them.
 const POPUP_RADIUS: f32 = 28.0;
+/// The power symbol of the Power tile: a stroke from the top and an arc round the bottom (24-unit grid).
+const POWER_ICON: primitive_quick::Icon = primitive_quick::Icon { stroke: &["M12 3 V11", "M6.3 6.3 A8 8 0 1 0 17.7 6.3"], fill: &[] };
 const POPUP_HALO: i32 = 10;
 
 // Icon paths copied from Primitive Browser (`crates/kb-app/src/ui.rs`, the `icon` set and `battery_icon`).
@@ -370,6 +372,7 @@ impl Renderer {
             Screen::SshPassword => self.ssh_password_screen(ui),
             // The dialog is a pop-up over the grid, drawn last (below).
             Screen::ConfirmKindle => self.home(ui, status, &mut icon_blits),
+            Screen::PowerMenu => self.home(ui, status, &mut icon_blits),
             // A sleep picture replaces the text, except for a battery warning, which matters more.
             Screen::Sleep => {
                 if self.sleep_image.is_none() || ui.battery_message().is_some() {
@@ -402,6 +405,7 @@ impl Renderer {
         // Pop-ups are drawn in a second pass and copied over the screen, so icon pictures stay under them.
         let popup = match ui.screen {
             Screen::ConfirmKindle => Some(l.confirm_box()),
+            Screen::PowerMenu => Some(l.power_box()),
             Screen::AppMenu => Some(l.menu_box(ui.menu_anchor(), ui.menu_actions().len())),
             Screen::QuickSettings => Some(l.quick_panel()),
             _ => None,
@@ -414,6 +418,7 @@ impl Renderer {
             self.fill(l.screen(), WHITE);
             match ui.screen {
                 Screen::ConfirmKindle => self.confirm(&l),
+                Screen::PowerMenu => self.power_menu_box(&l),
                 Screen::QuickSettings => self.quick_panel(&l, status),
                 _ => self.app_menu_box(ui),
             }
@@ -536,6 +541,7 @@ impl Renderer {
                 QuickTile::Animation => ("Animation", s.animation),
                 QuickTile::Ssh => ("SSH", s.ssh),
                 QuickTile::AllSettings => ("Settings", false),
+                QuickTile::Power => ("Power", false),
             };
             let (bg, fg) = if on { (BLACK, WHITE) } else { (WHITE, BLACK) };
             let c = l.quick_button_circle(slot);
@@ -551,6 +557,7 @@ impl Renderer {
                 QuickTile::Animation => primitive_quick::icons::ANIMATION,
                 QuickTile::Ssh => primitive_quick::icons::SSH,
                 QuickTile::AllSettings => primitive_quick::icons::SETTINGS,
+                QuickTile::Power => POWER_ICON,
             };
             let _ = (cx, cy, bg);
             self.draw_icon(icon, ix, iy, size, fg);
@@ -1223,6 +1230,23 @@ impl Renderer {
     fn lock_icon(&mut self, x: f64, y: f64) {
         self.rounded_frame(Rect::new(x as i32 + 5, y as i32, 14, 16), 7.0, 3, BLACK, WHITE);
         self.rounded(Rect::new(x as i32, y as i32 + 14, 24, 20), 4.0, BLACK);
+    }
+
+    /// The power menu: a box over the grid, with Cancel, Restart and Power off.
+    fn power_menu_box(&mut self, l: &Layout) {
+        let b = l.power_box();
+        self.rounded_frame(b, POPUP_RADIUS as f64, 6, BLACK, WHITE);
+        let inner = b.inset(48);
+        self.text(Text { text: "Power", x: inner.x as f32, y: inner.y as f32, w: inner.w as f32, size: 50.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.text(Text { text: "Restart starts the Kindle again. Power off turns it off until you press its power button.", x: inner.x as f32, y: (inner.y + 80) as f32, w: inner.w as f32, size: 30.0, bold: false, align: Align::Start, lines: 3, gray: 85 });
+        for (button, r) in l.power_buttons() {
+            let (label, primary) = match button {
+                Button::PowerCancel => ("Cancel", false),
+                Button::PowerRestart => ("Restart", true),
+                _ => ("Power off", true),
+            };
+            self.button(r, label, primary);
+        }
     }
 
     fn confirm(&mut self, l: &Layout) {

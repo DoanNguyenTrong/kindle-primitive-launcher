@@ -248,6 +248,9 @@ fn main() {
     let (_, pressed) = ui.layout.keyboard_keys_with(ui.network_name.layer, "Next").into_iter().find(|(d, _)| d.key == primitive_keyboard::Key::Char('e')).unwrap();
     ui.pressed_key = Some(pressed);
     write_png(&out.join("keyboard-pressed.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    // The power menu over the grid, and the quick panel with its Power tile.
+    ui.screen = kl_core::Screen::PowerMenu;
+    write_png(&out.join("power-menu.png"), W, H, &renderer.draw(&ui, &ssh_on));
     // The drive-mode screen: shown while the drive is on a computer (no taps then).
     ui.usb = kl_core::Usb::Drive;
     write_png(&out.join("usb-drive.png"), W, H, &renderer.draw(&ui, &ssh_on));

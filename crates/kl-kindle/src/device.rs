@@ -500,6 +500,19 @@ fn run_script(dir: &str, script: &str, arg: &str, input: Option<&str>) -> (bool,
     }
 }
 
+/// Restart the Kindle (`reboot`) or turn it off (`halt -f -p`), from the Power menu. The command runs detached: the
+/// launcher ends with the system. `/sbin/poweroff` is a link to `reboot`, which runs the stock shutdown job and
+/// shows its "restarting" cover before it turns off; `halt -f -p` turns off without that job.
+pub fn system_command(cmd: &str) {
+    log(&format!("{cmd} requested from the power menu"));
+    let _ = std::process::Command::new("/bin/sh")
+        .args(["-c", &format!("sync; /sbin/{cmd}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
 /// Start or stop the SSH server (`ssh.sh`): from Settings > SSH & DNS and the quick settings' SSH switch.
 pub fn set_ssh(dir: &str, on: bool) {
     run_script(dir, "ssh.sh", if on { "start" } else { "stop" }, None);

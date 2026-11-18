@@ -63,6 +63,8 @@ sync_file "$HERE/deploy/boot.sh" /mnt/us/launcher/boot.sh
 sync_file "$HERE/deploy/holder.lua" /mnt/us/launcher/holder.lua
 sync_file "$HERE/deploy/run-koreader.sh" /mnt/us/launcher/run-koreader.sh
 sync_file "$HERE/deploy/apps.toml.example" /mnt/us/launcher/apps.toml.example
+sync_file "$HERE/deploy/setup-boot.sh" /mnt/us/launcher/setup-boot.sh
+sync_file "$HERE/deploy/primitive-launcher.conf" /mnt/us/launcher/primitive-launcher.conf
 sync_file "$ENTRY_TMP" /mnt/us/documents/Launcher.sh
 # The SSH server: Dropbear and its zlib, copied by SHA-256 like the rest. The host key is kept across installs. The
 # first install that has none copies the one an earlier install used (Primitive Browser's, or KOReader's), so the
