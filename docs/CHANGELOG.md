@@ -3,6 +3,13 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.3.2
+
+- Leaving the launcher always starts the Kindle UI again. A launcher that started while the framework was already
+  stopped did not record that, so leaving left the screen blank.
+- volumd keeps running while the launcher's grid is in front, so a USB cable gives the Kindle's drive mode, as the
+  stock UI does. It is paused only while an app runs, so the app's files do not change under it.
+
 ## 0.2.24
 
 - Settings > Device has a Launcher section with "Restart the launcher", which starts the launcher again as after an

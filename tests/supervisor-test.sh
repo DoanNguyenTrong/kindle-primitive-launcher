@@ -271,5 +271,22 @@ check "framework untouched" '[ "$(cat "$STATE/fw")" = running ] && [ ! -s "$STAT
 kill "$holder"
 teardown
 
+echo "test: a launcher started with the framework down brings it back when it leaves"
+setup
+echo stopped > "$STATE/fw"
+printf '0\n' > "$STATE/codes"
+run_sup
+check "framework started on leaving" '[ "$(cat "$STATE/fw")" = running ]'
+check "framework was not stopped by the supervisor" '! grep -q "stop lab126_gui" "$STATE/calls"'
+teardown
+
+echo "test: volumd keeps running while the launcher is in front"
+setup
+printf '0\n' > "$STATE/codes"
+run_sup
+check "volumd never paused without an app" '! grep -q "killall -STOP volumd" "$STATE/calls"'
+check "volumd running at the end" 'grep -q "killall -CONT volumd" "$STATE/calls"'
+teardown
+
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

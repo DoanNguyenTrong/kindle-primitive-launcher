@@ -4,13 +4,15 @@
 # Started by documents/Launcher.sh (from the Kindle library) or, later, by the boot job. It runs from a
 # copy in $RUN (tmpfs), so installs can replace the files on /mnt/us while it runs.
 #
-#   1. Stops the stock framework (lab126_gui) and pauses volumd, so a USB cable cannot take /mnt/us from
-#      under a running program. Both are recorded in marker files first.
+#   1. Stops the stock framework (lab126_gui). volumd keeps running, so a USB cable gives the Kindle's drive mode
+#      as the stock UI does. While another program runs (an app from the grid), volumd is paused, so a cable
+#      cannot take /mnt/us from under it. Both are recorded in marker files first.
 #   2. Runs the launcher (kl-launcher, copied to $RUN). Exit 10: run the app described in $RUN/next, then
 #      start the launcher again. Exit 0: the user asked for the Kindle UI. TERM (143): restart the launcher
 #      (used by the installer to load a new build). Anything else is a crash: restart, up to
 #      $MAX_CRASHES in $CRASH_WINDOW seconds, then give up.
-#   3. On leaving, for any reason, resumes volumd and starts the framework again.
+#   3. On leaving, for any reason, resumes volumd and starts the framework again (also when it was already
+#      stopped at start: the framework must not be left down).
 #
 # A watchdog process outlives this script. If the supervisor dies (killed, crashed), the watchdog gives
 # the UI back. It also kills a launcher whose heartbeat file stops changing.
@@ -166,10 +168,9 @@ volumd_pause() {
 }
 
 volumd_resume() {
-    if [ -f "$VOLUMD_MARK" ]; then
-        killall -CONT volumd 2>/dev/null
-        rm -f "$VOLUMD_MARK"
-    fi
+    # Resumed whether or not the marker is there: a volumd stopped by an earlier run must run again.
+    killall -CONT volumd 2>/dev/null
+    rm -f "$VOLUMD_MARK"
 }
 
 # The Kindle UI is ready only after the framework emits framework_ready (about 40 s after the start), the
@@ -224,7 +225,7 @@ wait_screen_stop() {
 restore() {
     volumd_resume
     holder_stop
-    if [ -f "$MARK" ]; then
+    if [ -f "$MARK" ] || ! framework_running; then
         wait_screen_start
         framework_start
         framework_wait_ready
@@ -305,6 +306,8 @@ run_app() {
     rm -f "$RUN/next"
     log "app start: $kind $arg (in $adir)"
     t0=$(date +%s)
+    # While an app runs, a cable must not take /mnt/us from under it: volumd is paused until the app ends.
+    volumd_pause
     (
         cd "$adir" 2>/dev/null || cd /mnt/us 2>/dev/null || cd /
         export PRIMITIVE_LAUNCHER=1 PRIMITIVE_FRAMEWORK=stopped
@@ -326,16 +329,20 @@ run_app() {
         log "the app left the framework running; stopping it again"
         framework_stop
     fi
-    volumd_pause
+    volumd_resume
 }
 
 install_traps
 if framework_running; then
     framework_stop
 else
-    log "framework not running"
+    # Already stopped (an earlier run left it so): the marker makes leaving start it again, and the holder is what
+    # keeps the launcher's sleep and wake working without the framework.
+    log "framework not running; it will be started when the launcher leaves"
+    echo stopped > "$MARK"
+    holder_start
 fi
-volumd_pause
+volumd_resume
 watchdog $$ &
 
 crashes=""
