@@ -1046,6 +1046,7 @@ impl Renderer {
                 Button::RotationAuto => self.switch(rect, s.auto_rotation),
                 Button::ShowHidden => self.button(rect, "Show all", false),
                 Button::KindleUi => self.chevron(r),
+                Button::Restart => {}
                 Button::Rotation => {}
                 Button::Wifi => self.switch(switch_rect(r), s.wifi_on),
                 Button::DarkMode => self.switch(switch_rect(r), s.dark_mode),
@@ -1309,6 +1310,7 @@ fn row_value(row: Row, ui: &Ui, s: &Status) -> String {
             n => format!("{n} hidden"),
         },
         Row::KindleUi => "Stock Kindle UI".into(),
+        Row::Restart => "Tap to restart".into(),
     }
 }
 

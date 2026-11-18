@@ -3,6 +3,13 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.2.24
+
+- Settings > Device has a Launcher section with "Restart the launcher", which starts the launcher again as after an
+  install.
+- Wi-Fi: a network that did not connect says why: "check the password" when it was in range, "not in range now" when
+  it was not. A connection that gets no address from the network is reported as such, and the join waits for one.
+
 ## 0.2.21
 
 - The SSH server is the launcher's own: Dropbear and its zlib ship in the package (`ssh/bin`, `ssh/lib`), and the host key

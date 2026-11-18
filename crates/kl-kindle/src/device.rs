@@ -284,19 +284,39 @@ pub fn join_network(name: &str, secured: bool, password: Option<&str>, saved: bo
         .stderr(Stdio::null())
         .status();
     // Wait for the connection to report this network: the report (property 711) names the current AP.
+    let mut connected = false;
     for _ in 0..80 {
         thread::sleep(Duration::from_millis(500));
         let report = get_text(WIFID, "711");
         if kl_core::wifi::parse_current(&report).is_some_and(|n| n.name == name) {
-            return Ok(());
+            connected = true;
+            break;
         }
     }
-    log(&format!("join {name}: not connected, connection state {}", get_text(WIFID, "cmState")));
-    if !saved {
-        restore(previous.as_ref());
-        return Err("it did not connect: check the password. The saved password was put back.".into());
+    if !connected {
+        let in_range = wifi_info().networks.iter().any(|n| n.name == name);
+        log(&format!("join {name}: not connected, connection state {}, in range {in_range}", get_text(WIFID, "cmState")));
+        if !saved {
+            restore(previous.as_ref());
+        }
+        return Err(kl_core::wifi::join_failure(in_range, saved));
     }
-    Err("it did not connect: check the password, and that the network is in range".into())
+    // Connected is not enough: the network must also give an address (DHCP), or nothing on the Kindle can reach it.
+    for _ in 0..30 {
+        if wlan_ip() != "not connected" {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    log(&format!("join {name}: connected, but no address"));
+    Err(kl_core::wifi::NO_ADDRESS.into())
+}
+
+/// Restart the launcher, as after an install: the supervisor starts it again.
+pub fn restart_launcher() {
+    log("restart requested from Settings");
+    // SAFETY: getpid and kill take no pointers; SIGTERM to this process is the same signal the install sends.
+    unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
 }
 
 /// Put an old profile back after a failed join (its password was kept in memory, and is not logged).

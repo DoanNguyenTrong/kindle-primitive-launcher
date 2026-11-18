@@ -661,6 +661,7 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::ToggleWifi => device::set_wifi(!status.wifi_on),
         DeviceCmd::ToggleSsh => device::set_ssh(&dir.to_string_lossy(), !status.ssh),
         DeviceCmd::ToggleDns => device::set_public_dns(&dir.to_string_lossy(), !status.public_dns),
+        DeviceCmd::RestartLauncher => device::restart_launcher(),
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::ToggleSleepScreen => {
             settings.sleep_screen_launcher = !settings.sleep_screen_launcher;

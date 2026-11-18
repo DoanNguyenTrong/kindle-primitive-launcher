@@ -110,6 +110,7 @@ impl Page {
             Page::Apps => &[Group { header: "Grid", rows: &[Row::Hidden], footer: "Long-press an icon to hide it." }],
             Page::Device => &[
                 Group { header: "Startup", rows: &[Row::Autostart], footer: "Not active yet: the boot job comes in a later phase." },
+                Group { header: "Launcher", rows: &[Row::Restart], footer: "Starts the launcher again, as after an install. Apps and settings stay." },
                 Group { header: "Kindle", rows: &[Row::KindleUi], footer: "Opens the stock Kindle UI. It takes about a minute to start." },
             ],
             Page::About => &[],
@@ -157,6 +158,8 @@ pub enum Button {
     ShowHidden,
     SleepScreen,
     KindleUi,
+    /// Settings > Device > Launcher: restart the launcher.
+    Restart,
     MenuEarlier,
     MenuLater,
     MenuIcon,
@@ -201,10 +204,11 @@ pub enum Row {
     Hidden,
     SleepScreen,
     KindleUi,
+    Restart,
 }
 
 impl Row {
-    pub const ALL: [Row; 15] = [
+    pub const ALL: [Row; 16] = [
         Row::Frontlight,
         Row::Warmth,
         Row::DarkMode,
@@ -220,6 +224,7 @@ impl Row {
         Row::Hidden,
         Row::SleepScreen,
         Row::KindleUi,
+        Row::Restart,
     ];
 
     pub fn label(self) -> &'static str {
@@ -239,6 +244,7 @@ impl Row {
             Row::Hidden => "Hidden apps",
             Row::SleepScreen => "Sleep screen",
             Row::KindleUi => "Kindle UI",
+            Row::Restart => "Restart the launcher",
         }
     }
 }
@@ -349,6 +355,7 @@ fn row_buttons(l: &Layout, row: Row, r: Rect) -> Vec<(Button, Rect)> {
         ],
         Row::Hidden => vec![(Button::ShowHidden, Rect::new(r.right() - SWITCH_INSET - 200, r.y + (r.h - SWITCH_H) / 2, 200, SWITCH_H))],
         Row::KindleUi => vec![(Button::KindleUi, r)],
+        Row::Restart => vec![(Button::Restart, r)],
         Row::Wifi => vec![(Button::Wifi, r)],
         Row::DarkMode => vec![(Button::DarkMode, r)],
         Row::Animation => vec![(Button::Animation, r)],

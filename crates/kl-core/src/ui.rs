@@ -61,6 +61,8 @@ pub enum DeviceCmd {
     ToggleSsh,
     /// Settings > DNS: public DNS on or off (the network's servers back).
     ToggleDns,
+    /// Settings > Device > Launcher: start the launcher again (the supervisor starts it, as after an install).
+    RestartLauncher,
     ToggleAutostart,
     ToggleSleepScreen,
     /// Follow the device's turn again (Settings > Screen > Auto).
@@ -945,6 +947,7 @@ impl Ui {
                 Some(Button::DarkMode) => Action::Device(DeviceCmd::ToggleDarkMode),
                 Some(Button::Animation) => Action::Device(DeviceCmd::ToggleAnimation),
                 Some(Button::KindleUi) => self.go(Screen::ConfirmKindle),
+                Some(Button::Restart) => Action::Device(DeviceCmd::RestartLauncher),
                 _ => Action::None,
             },
             _ => Action::None,
@@ -1075,6 +1078,16 @@ mod tests {
         }
         assert_eq!(u.handle(centre(key(&u, Key::Go))), Action::SetSshPassword("abcdef".into()));
         assert_eq!(u.screen, Screen::Page(Page::Connection), "the password is set from the SSH & DNS page");
+    }
+
+    #[test]
+    fn the_device_page_restarts_the_launcher_from_its_own_row() {
+        use crate::layout::Row;
+        let mut u = ui(1);
+        u.screen = Screen::Page(Page::Device);
+        let rows: Vec<_> = u.layout.page_sections(Page::Device).into_iter().flat_map(|s| s.rows).collect();
+        let restart = rows.iter().find(|r| r.row == Row::Restart).expect("the restart row is on the Device page");
+        assert_eq!(u.handle(centre(restart.buttons[0].1)), Action::Device(DeviceCmd::RestartLauncher));
     }
 
     #[test]

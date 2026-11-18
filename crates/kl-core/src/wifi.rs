@@ -43,6 +43,19 @@ pub struct WifiInfo {
 
 /// The connected network from `com.lab126.wifid`'s report (property `711`): its `AP:` line, then the `Signal:` line
 /// under it, as "4/5". Empty when there is no connection.
+/// The message for a join that did not connect. `in_range`: the network was in the last scan, so the password is
+/// the likely cause; otherwise it is out of range now. `saved`: the network had a saved profile already.
+pub fn join_failure(in_range: bool, saved: bool) -> String {
+    match (in_range, saved) {
+        (false, _) => "it is not in range now: move closer, and try again".into(),
+        (true, false) => "it did not connect: check the password. The saved password was put back.".into(),
+        (true, true) => "it did not connect: its saved password may have changed. Forget it, and join again.".into(),
+    }
+}
+
+/// The message for a connection that got no address from the network (DHCP): nothing works without one.
+pub const NO_ADDRESS: &str = "connected, but the network gave no address. Try again, or forget it and join again.";
+
 pub fn parse_current(report: &str) -> Option<Network> {
     let mut name = None;
     let mut signal = None;
@@ -304,5 +317,13 @@ Hash Index: 4
     fn arcs_follow_the_level() {
         let lit: Vec<usize> = (0..=5).map(|l| arcs(l, 5)).collect();
         assert_eq!(lit, [0, 1, 2, 2, 3, 3]);
+    }
+
+    #[test]
+    fn a_failed_join_says_why_it_failed() {
+        assert!(join_failure(false, false).contains("not in range"));
+        assert!(join_failure(true, false).contains("check the password"));
+        assert!(join_failure(true, true).contains("saved password may have changed"));
+        assert!(NO_ADDRESS.contains("no address"));
     }
 }

@@ -126,7 +126,7 @@ explains it. Design rules, with the sources and their limits: [settings-design.m
 - [x] SSH & DNS page (v0.2.21): the SSH switch (the quick settings' SSH switch does the same), the root password,
       the connect command while it runs, a check of the server, and public DNS (1.1.1.1, 8.8.8.8) with Restore.
       Moved from the browser's Diagnostics page, which is gone. Device checks pending.
-- [ ] Device page: restart the launcher (not built; the launcher restarts itself after an install).
+- [x] Device page: restart the launcher, as after an install (v0.2.24, device check pending).
 - [x] About page: version, apps, memory, free storage, Wi-Fi address (v0.2.15).
 
 ## M5 Wi-Fi networks
@@ -150,7 +150,8 @@ Kindle's own calls as KOReader makes them).
 - [x] Join a hidden network by name: "Other…" opens a name field and the keyboard (Next asks for the password;
       an empty password joins an open network) (v0.2.20, device check pending).
 - [x] Wi-Fi off: the list says so; turning Wi-Fi on from the page starts a scan (v0.2.20, device check pending).
-- [ ] Clear messages for a wrong password (now: "Could not connect", with the reason) and for no address.
+- [x] Clear messages for a wrong password ("check the password", or "not in range now") and for no address (the
+      network gave none; the join waits for DHCP before it says connected) (v0.2.24, device check pending).
 
 Note for the device: `profileData` holds the saved passwords in plain text. The launcher never prints or logs it.
 
