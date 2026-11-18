@@ -66,6 +66,10 @@ while status splash 2>/dev/null | grep -q "start/" && [ $i -lt 120 ]; do
 done
 sleep "$SETTLE"
 
+# The stock boot animation (animator, drawn by BootActionsApplication) keeps drawing after the splash job has finished,
+# so it would stay on top of the launcher: stop both before the launcher takes the screen.
+killall -q -s KILL animator 2>/dev/null || true
+killall -q -s KILL BootActionsApplication 2>/dev/null || true
 cp "$DIR/supervisor.sh" "$RUN/supervisor.sh" 2>/dev/null
 log "boot $n: starting the launcher"
 sh "$RUN/supervisor.sh" >> "$LOG" 2>&1 &
