@@ -497,6 +497,22 @@ impl Ui {
         Action::Redraw { full: false }
     }
 
+    /// The page buttons on the store's tabs: page through a list that has more than one page; otherwise (and on Today)
+    /// move to the next or previous tab.
+    fn store_page_key(&mut self, step: i32) -> Action {
+        use crate::store::StoreTab;
+        if self.store_tab != StoreTab::Today && self.store_pages() > 1 {
+            return self.store_turn(step);
+        }
+        let tabs = [StoreTab::Today, StoreTab::Apps, StoreTab::Updates];
+        let current = tabs.iter().position(|t| *t == self.store_tab).unwrap_or(0) as i32;
+        let next = current + step;
+        if next < 0 || next >= tabs.len() as i32 {
+            return Action::None;
+        }
+        self.set_store_tab(tabs[next as usize])
+    }
+
     fn store_open_entry(&mut self, index: usize) -> Action {
         self.store_open = Some(index);
         self.store_scroll = 0;
@@ -515,8 +531,8 @@ impl Ui {
         use crate::store::StoreTab;
         let l = self.layout;
         match input {
-            Input::PageForward => self.store_turn(1),
-            Input::PageBack => self.store_turn(-1),
+            Input::PageForward => self.store_page_key(1),
+            Input::PageBack => self.store_page_key(-1),
             Input::Swipe { dx, dy, .. } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => self.store_turn(if dx < 0.0 { 1 } else { -1 }),
             Input::Tap(x, y) => {
                 if l.store_done().inset(-16).contains(x, y) {
@@ -578,6 +594,16 @@ impl Ui {
                 let next = (self.store_scroll - dy as i32).clamp(0, max);
                 if next == self.store_scroll {
                     return Action::None;
+                }
+                self.store_scroll = next;
+                Action::Redraw { full: false }
+            }
+            Input::PageForward | Input::PageBack => {
+                // A page button scrolls the product page by a screen; Back at the top returns to the store.
+                let step = if input == Input::PageForward { 1 } else { -1 };
+                let next = (self.store_scroll + step * (l.height - 200)).clamp(0, max);
+                if next == self.store_scroll {
+                    return if step < 0 { self.go(Screen::Store) } else { Action::None };
                 }
                 self.store_scroll = next;
                 Action::Redraw { full: false }
@@ -1366,6 +1392,32 @@ mod tests {
         // Not installed: no Remove row, so the last row is information.
         assert!(!u.store[1].can_remove());
         assert_ne!(u.store[1].page_rows().last().map(|r| r.0.as_str()), Some(crate::store::StoreEntry::REMOVE_LABEL));
+    }
+
+    #[test]
+    fn the_page_buttons_move_through_the_store() {
+        use crate::store::{test_entry, Status, StoreTab};
+        let mut u = ui(0);
+        let entries: Vec<_> = (0..30).map(|i| test_entry(&format!("a{i}"), &format!("App {i}"), Status::NotInstalled)).collect();
+        u.set_store(entries);
+        u.open_store();
+        // Today has no pages: a page button moves to the next tab.
+        u.handle(Input::PageForward);
+        assert_eq!(u.store_tab, StoreTab::Apps);
+        // The Apps list has pages: a page button turns the page.
+        u.handle(Input::PageForward);
+        assert_eq!(u.store_page, 1);
+        // Back on the first tab, Today: the previous tab is not there.
+        u.store_tab = StoreTab::Today;
+        assert_eq!(u.handle(Input::PageBack), Action::None);
+        // The product page scrolls a screen, and Back at the top returns to the store.
+        u.store_open = Some(0);
+        u.screen = Screen::StoreApp;
+        u.handle(Input::PageForward);
+        assert!(u.store_scroll > 0 || u.store_scroll_max() == 0);
+        u.store_scroll = 0;
+        u.handle(Input::PageBack);
+        assert_eq!(u.screen, Screen::Store);
     }
 
     #[test]
