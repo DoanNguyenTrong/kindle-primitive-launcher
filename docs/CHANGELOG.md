@@ -3,6 +3,18 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.4.0
+
+- Primitive Store: a Store tile on the home grid. Its screens follow the App Store's layout: Today (a featured app and
+  the next apps), Apps, Updates, and an app's page (icon, action, information, screenshots, About, and what the app
+  changes). A floating tab bar at the bottom.
+- The catalog is downloaded with Refresh, over Wi-Fi, from the catalog's published site. A failed app keeps its last copy.
+- Get installs an app from the store: the package for this Kindle is downloaded, checked against the catalog (size,
+  SHA-256, id, version, architecture and requirements), and installed. The library shows it after the install.
+- Remove on an installed app's page (tap twice). Update installs the newer version over the old one.
+- An install interrupted by a power cut is finished or undone at the next start.
+- Not yet: the Search tab, the install sheet with its warnings, and the store's daily update check.
+
 ## 0.3.21
 
 - Licence: the code (including Primitive Store) is under the PolyForm Noncommercial License 1.0.0, and the
