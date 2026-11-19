@@ -43,7 +43,11 @@ case "$1" in
         # -R makes the host key if there is none yet; the key is kept, so the server keeps its identity.
         # The server runs from a copy in tmpfs, with / as its directory: nothing of it may hold /mnt/us, which the Kindle
         # unmounts to show its drive on a computer (and whatever still holds it is killed).
-        mkdir -p "$TMP_SSH/lib" && cp "$BIN/dropbear" "$TMP_SSH/dropbear" && cp "$LIB/libz.so.1" "$TMP_SSH/lib/" || { echo "could not copy the server to $TMP_SSH"; exit 1; }
+        mkdir -p "$TMP_SSH/lib" && cp "$BIN/dropbear" "$TMP_SSH/dropbear" || { echo "could not copy the server to $TMP_SSH"; exit 1; }
+        # The ARMEL helper links zlib statically.
+        if [ -f "$LIB/libz.so.1" ]; then
+            cp "$LIB/libz.so.1" "$TMP_SSH/lib/" || { echo "could not copy the server library to $TMP_SSH"; exit 1; }
+        fi
         chmod 755 "$TMP_SSH/dropbear"
         (cd / && LD_LIBRARY_PATH="$TMP_SSH/lib" "$TMP_SSH/dropbear" -E -R -r "$KEY" -p 2222 -P "$PID" 2>> "$TMP_SSH/dropbear.log")
         sleep 1
