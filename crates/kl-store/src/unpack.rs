@@ -154,6 +154,7 @@ pub fn unpack(zip_path: &Path, dest: &Path, manifest: &Manifest, limits: Limits)
         if let Some(parent) = out.parent() {
             fs::create_dir_all(parent)?;
         }
+        let mode = entry.unix_mode();
         let mut out_file = File::create(&out)?;
         let mut buf = [0u8; 64 * 1024];
         loop {
@@ -162,6 +163,12 @@ pub fn unpack(zip_path: &Path, dest: &Path, manifest: &Manifest, limits: Limits)
                 break;
             }
             out_file.write_all(&buf[..n])?;
+        }
+        drop(out_file);
+        // Keep the package's permissions: a program or a library entry must stay executable on the Kindle.
+        if let Some(m) = mode {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&out, fs::Permissions::from_mode(m & 0o777))?;
         }
         written.push(rest.clone());
     }
@@ -281,6 +288,28 @@ mod tests {
             let r = unpack(&z, &out, &manifest(&[]), Limits::default());
             assert!(matches!(r, Err(UnpackError::UnsafeName(_)) | Err(UnpackError::TopFolder(_))), "{bad}: {r:?}");
         }
+    }
+
+    #[test]
+    fn keeps_the_execute_bit_of_a_program() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use zip::write::SimpleFileOptions;
+        let d = scratch("exec");
+        let z = d.join("p.zip");
+        {
+            let mut zw = zip::ZipWriter::new(File::create(&z).unwrap());
+            zw.start_file("browser-1.0.0/browser/kb-kindle", SimpleFileOptions::default().unix_permissions(0o755)).unwrap();
+            zw.write_all(b"binary").unwrap();
+            zw.start_file("browser-1.0.0/browser/icon.png", SimpleFileOptions::default().unix_permissions(0o644)).unwrap();
+            zw.write_all(b"picture").unwrap();
+            zw.finish().unwrap();
+        }
+        let out = d.join("out");
+        fs::create_dir_all(&out).unwrap();
+        unpack(&z, &out, &manifest(&["browser/kb-kindle", "browser/icon.png"]), Limits::default()).unwrap();
+        assert_eq!(fs::metadata(out.join("browser/kb-kindle")).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(fs::metadata(out.join("browser/icon.png")).unwrap().permissions().mode() & 0o777, 0o644);
     }
 
     #[test]
