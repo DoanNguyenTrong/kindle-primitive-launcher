@@ -20,13 +20,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use kl_core::{discover, Action, App, Config, DeviceCmd, Input, Launch, Layout, Rotation, Screen, Settings, Status, Ui};
+use kl_core::{discover, Action, App, Config, DeviceCmd, Input, Launch, Layout, Screen, Settings, Status, Ui};
 use kl_render::Renderer;
 
-mod device;
-mod eink;
-mod input;
-mod profile;
+use kl_kindle::{device, eink, input, log, profile, Ev};
 
 const W: u32 = profile::ACTIVE.screen_w;
 const H: u32 = profile::ACTIVE.screen_h;
@@ -35,28 +32,6 @@ const H: u32 = profile::ACTIVE.screen_h;
 const EXIT_KINDLE_UI: i32 = 0;
 const EXIT_LAUNCH: i32 = 10;
 
-pub enum Ev {
-    Input(Input),
-    Tick,
-    /// The USB state changed (the cable, or the drive shown on a computer).
-    Usb(kl_core::Usb),
-    /// Draw the drive-mode screen again: the stock system draws its own USB screen when the drive goes to the computer.
-    UsbRedraw,
-    /// The device was turned (auto-rotation, after the debouncer).
-    Turn(Rotation),
-    /// A background app ended: its name, last output line and whether it succeeded.
-    Background { name: String, line: String, ok: bool },
-    /// A Wi-Fi scan finished.
-    Wifi(kl_core::wifi::WifiInfo),
-    /// A Wi-Fi join or forget finished: whether it worked, and what to tell the user.
-    WifiResult { ok: bool, message: String },
-    /// A background SSH job finished (set the password, check the server): what to tell the user.
-    Notice(String),
-    /// The store's catalog refresh finished: the store's entries again, and what to tell the user.
-    StoreRefreshed { entries: Vec<kl_core::store::StoreEntry>, message: String },
-    /// An app from the store was installed (or not): the store's entries, the library's apps again, and the message.
-    StoreInstalled { entries: Vec<kl_core::store::StoreEntry>, message: String },
-}
 
 /// The catalog's published site (the store's source of listings, icons and screenshots).
 const STORE_CATALOG: &str = "https://doannguyentrong.github.io/kindle-primitive-catalog/v1";
@@ -191,9 +166,6 @@ fn start_wifi_scan_after(tx: Sender<Ev>, secs: u64) {
     });
 }
 
-pub fn log(msg: &str) {
-    eprintln!("[kl] {msg}");
-}
 
 fn env_dir(name: &str, default: &str) -> PathBuf {
     PathBuf::from(std::env::var(name).unwrap_or_else(|_| default.to_string()))
