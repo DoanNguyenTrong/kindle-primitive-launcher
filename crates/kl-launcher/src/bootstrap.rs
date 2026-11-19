@@ -96,6 +96,7 @@ fn install(documents: &Path, report: impl Fn(&str)) -> Result<(), String> {
     let listing = parse_listing(&text)?;
     let version = resolve::pick_version(&listing, &device).map_err(|e| e.to_string())?;
     let asset = &version.assets[&device.arch];
+    kl_store::verify::check_archive_size(asset.size).map_err(|e| e.to_string())?;
     let available = device::available_storage_bytes(root)
         .map_err(|_| "Available Kindle storage could not be checked.")?;
     if available / 3 < asset.size {
