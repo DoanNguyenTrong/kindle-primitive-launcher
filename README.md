@@ -235,7 +235,7 @@ docs/               Research, requirements, architecture, plan, device notes, in
 
 Copyright (C) 2026 Doan Nguyen.
 
-- **Code** (`crates/`, `deploy/`, `scripts/`, `tests/`), including Primitive Store: the
+- **Launcher code** in `crates/`, `deploy/`, `scripts/`, and `tests/` is under the
   [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, change and share it for any non-commercial purpose.
   Commercial use needs the author's written permission.
 - **Documentation and pictures** (this README, `docs/`, the icons, pictures and screenshots in `assets/` and
