@@ -10,7 +10,7 @@ Written in Rust. It replaces the stock Kindle home with a grid of your apps, on 
 [![CI](https://img.shields.io/github/actions/workflow/status/DoanNguyenTrong/kindle-primitive-launcher/ci.yml?branch=main&label=CI)](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/DoanNguyenTrong/kindle-primitive-launcher?label=release)](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases)
 [![Tag](https://img.shields.io/github/v/tag/DoanNguyenTrong/kindle-primitive-launcher?label=tag)](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/tags)
-[![Licence: AGPL-3.0](https://img.shields.io/github/license/DoanNguyenTrong/kindle-primitive-launcher)](LICENSE)
+[![Licence: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/licence-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/DoanNguyenTrong/kindle-primitive-launcher?style=social)](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/stargazers)
 
 [**Download**](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases/latest) ·
@@ -233,11 +233,23 @@ docs/               Research, requirements, architecture, plan, device notes, in
 
 ## Licence
 
-Copyright (C) 2026 Doan Nguyen. Released under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
+Copyright (C) 2026 Doan Nguyen.
 
-The e-ink, input and device code in `crates/kl-kindle` is copied from
-[Primitive Browser](https://github.com/DoanNguyenTrong/kindle-primitive-browser) (AGPL-3.0); each copied file
-says so at the top. The Noto Sans fonts are under the SIL Open Font License (`assets/fonts/NOTO-LICENSE.txt`).
+- **Code** (`crates/`, `deploy/`, `scripts/`, `tests/`), including Primitive Store: the
+  [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, change and share it for any non-commercial purpose.
+  Commercial use needs the author's written permission.
+- **Documentation and pictures** (this README, `docs/`, the icons, pictures and screenshots in `assets/` and
+  `docs/images/`, except the Kindle icon below): [CC BY-NC-SA 4.0](LICENSE-DOCS).
+- **Earlier versions**: releases up to and including **v0.3.20** were published under the GNU Affero General Public
+  License v3.0 (AGPL-3.0), and those releases stay available under it. The new licences apply from the next version.
+
+The e-ink, input and device code in `crates/kl-kindle` and some icon paths are copied from
+[Primitive Browser](https://github.com/DoanNguyenTrong/kindle-primitive-browser), the same author's work, where they
+remain under AGPL-3.0; each copied file says so at the top. The e-ink update structure follows the Kindle driver's
+interface as described in FBInk's `eink/mxcfb-kindle.h`.
+
+Third-party parts keep their own licences: the Noto Sans fonts are under the SIL Open Font License
+(`assets/fonts/NOTO-LICENSE.txt`); Dropbear and zlib are under their licences in `assets/device/licenses/`.
 Kindle is a trademark of Amazon.com, Inc. or its affiliates. This project is not affiliated with or endorsed by
 Amazon. The Kindle UI tile uses the Kindle app icon (`assets/kindle-icon.png`, shown in gray as
 `assets/icons/kindle-ui.png`) only to mark the button that opens the Kindle's own interface. If Amazon wants it

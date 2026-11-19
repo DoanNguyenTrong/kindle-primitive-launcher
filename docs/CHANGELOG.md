@@ -3,6 +3,12 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.3.21
+
+- Licence: the code (including Primitive Store) is under the PolyForm Noncommercial License 1.0.0, and the
+  documentation and pictures under CC BY-NC-SA 4.0. Releases up to v0.3.20 stay under AGPL-3.0. The release package
+  carries both licence files.
+
 ## 0.3.20
 
 - Power off shows "Powered Off" on the screen, and the screen keeps that picture once the Kindle is off.

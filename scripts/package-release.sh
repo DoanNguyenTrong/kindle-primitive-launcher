@@ -50,6 +50,7 @@ chmod 755 "$STAGE/$NAME/documents/Launcher.sh"
 
 cp docs/INSTALL.md "$STAGE/$NAME/INSTALL.md"
 cp LICENSE "$STAGE/$NAME/LICENSE"
+cp LICENSE-DOCS "$STAGE/$NAME/LICENSE-DOCS"
 
 mkdir -p dist
 rm -f "dist/$NAME.zip" "dist/$NAME.zip.sha256"
