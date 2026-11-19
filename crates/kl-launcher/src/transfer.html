@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Send a file to Kindle</title>
+<style>
+:root{font:1.0625rem/1.5 system-ui,sans-serif;color:#141414;background:#f4f3ef}
+main{max-width:30rem;margin:10vh auto;padding:0 1.25rem}
+form{display:grid;gap:1rem}label{display:grid;gap:.3rem}
+input,button{font:inherit;padding:.6rem;border:1px solid #252525;border-radius:.4rem;background:#fff;color:inherit}
+button{background:#141414;color:white}output{display:block;margin-top:1rem}
+</style>
+<main>
+  <h1>Send a file to Kindle</h1>
+  <form>
+    <label>Code on your Kindle<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="off" required></label>
+    <label>File, up to 64 MB<input name="file" type="file" required></label>
+    <button>Send file</button>
+  </form>
+  <output role="status"></output>
+</main>
+<script>
+const form = document.querySelector("form");
+const output = document.querySelector("output");
+const button = form.querySelector("button");
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const file = form.elements.file.files[0];
+  button.disabled = true;
+  output.textContent = "Sending…";
+  try {
+    const result = await fetch("/upload", {
+      method: "POST",
+      headers: {"X-Transfer-Code": form.elements.code.value, "X-Filename": encodeURIComponent(file.name)},
+      body: file
+    });
+    output.textContent = await result.text();
+    if (result.ok) form.elements.file.value = "";
+  } catch {
+    output.textContent = "The Kindle could not be reached. Keep File transfer open and try again.";
+  } finally {
+    button.disabled = false;
+  }
+});
+</script>

@@ -8,6 +8,9 @@
 //!   KL_RUN        /var/tmp/kl         next, heartbeat, orientation, fonts copied at start
 //!   KL_DOCUMENTS  /mnt/us/documents   scriptlets
 
+mod bootstrap;
+mod transfer;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -32,89 +35,6 @@ const H: u32 = profile::ACTIVE.screen_h;
 const EXIT_KINDLE_UI: i32 = 0;
 const EXIT_LAUNCH: i32 = 10;
 
-
-/// The catalog's published site (the store's source of listings, icons and screenshots).
-const STORE_CATALOG: &str = "https://doannguyentrong.github.io/kindle-primitive-catalog/v1";
-
-/// The store's catalog files over HTTPS, through the shared download code (only the store's hosts are reached).
-struct NetSource;
-
-impl kl_store::refresh::Source for NetSource {
-    fn text(&self, url: &str) -> Result<String, String> {
-        primitive_net::fetch_text(url, &primitive_net::Policy::store(kl_store::refresh::MAX_INDEX)).map_err(|e| e.to_string())
-    }
-    fn bytes(&self, url: &str, max: u64) -> Result<Vec<u8>, String> {
-        primitive_net::fetch_bytes(url, &primitive_net::Policy::store(max)).map_err(|e| e.to_string())
-    }
-}
-
-/// Install an app from the store on a thread: download its package for this Kindle, check it, install it, and tell the
-/// store and the library. The download is refused when Wi-Fi is not connected (the caller checks).
-fn start_store_install(tx: Sender<Ev>, dir: PathBuf, id: String) {
-    thread::spawn(move || {
-        log(&format!("store: install of {id} started"));
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| store_install_app(&dir, &id)))
-            .unwrap_or_else(|_| Err("an internal error".to_string()));
-        let message = match outcome {
-            Ok(version) => format!("Installed {id} {version}."),
-            Err(e) => format!("Could not install {id}: {e}"),
-        };
-        log(&format!("store: {message}"));
-        let entries = load_store(&dir);
-        let _ = tx.send(Ev::StoreInstalled { entries, message });
-    });
-}
-
-fn store_install_app(dir: &Path, id: &str) -> Result<String, String> {
-    let listing_text = fs::read_to_string(dir.join("store/cache/apps").join(format!("{id}.json")))
-        .map_err(|_| "the app is not in the catalog the store has".to_string())?;
-    let listing: kl_store::catalog::Listing = serde_json::from_str(&listing_text).map_err(|e| e.to_string())?;
-    let device = device::store_device().ok_or("the Kindle's firmware version cannot be read")?;
-    let version = kl_store::resolve::pick_version(&listing, &device).map_err(|e| e.to_string())?;
-    let asset = version.assets.get(&device.arch).ok_or("no package for this Kindle")?;
-    let root = dir.parent().unwrap_or(Path::new("/mnt/us")).to_path_buf();
-    let paths = kl_store::install::Paths::under(&root);
-    let downloads = dir.join("store/downloads");
-    fs::create_dir_all(&downloads).map_err(|e| e.to_string())?;
-    let zip = downloads.join(format!("{id}-{}-{}.zip", version.version, device.arch));
-    let policy = primitive_net::Policy::store(asset.size + 1);
-    primitive_net::download(&asset.url, &zip, &policy, |_, _| {}).map_err(|e| e.to_string())?;
-    let installed_at = std::process::Command::new("date")
-        .arg("+%Y-%m-%d")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    kl_store::pipeline::install_downloaded(&paths, &listing, &device, &zip, &asset.url, &installed_at)
-}
-
-/// Refresh the store's catalog cache on a thread, then send the store's entries and a message. The screen is not held
-/// while the files come in.
-fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) {
-    thread::spawn(move || {
-        let cache = dir.join("store/cache");
-        log("store: refresh started");
-        // A panic must still end the refresh (the button waits for it), so it is caught and reported as an error.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kl_store::refresh::refresh(STORE_CATALOG, &cache, &NetSource)))
-            .unwrap_or_else(|_| Err("an internal error".to_string()));
-        let message = match outcome {
-            Ok(report) => {
-                log(&format!("store: refreshed {} apps, {} failed, {} removed", report.refreshed, report.failed.len(), report.removed));
-                if report.failed.is_empty() {
-                    format!("Store updated: {} apps.", report.refreshed)
-                } else {
-                    format!("Store updated: {} apps. {} could not be updated.", report.refreshed, report.failed.len())
-                }
-            }
-            Err(e) => {
-                log(&format!("store: refresh failed: {e}"));
-                format!("The store could not be updated: {e}")
-            }
-        };
-        let entries = load_store(&dir);
-        let _ = tx.send(Ev::StoreRefreshed { entries, message });
-    });
-}
 
 /// Join a network on a thread, then send the result and a fresh scan. The password is passed on, never logged.
 fn start_wifi_join(tx: Sender<Ev>, name: String, secured: bool, password: Option<String>, saved: bool) {
@@ -178,26 +98,7 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-/// Fonts: the copy in KL_RUN (tmpfs, made by the supervisor) when present, else KL_DIR.
-/// The config (apps.toml), the apps (in documents), the KUAL extensions, and the problems found reading them. The
-/// boot copy and /mnt/us read the same files; the directory decides which.
-/// The store's entries: one per listing in the catalog cache (`store/cache/apps/*.json`), with what is installed.
-fn load_store(dir: &Path) -> Vec<kl_core::store::StoreEntry> {
-    let record = kl_store::record::load(&dir.join("store/installed.json")).unwrap_or_default();
-    let Ok(read) = fs::read_dir(dir.join("store/cache/apps")) else {
-        return Vec::new();
-    };
-    let mut entries: Vec<kl_core::store::StoreEntry> = read
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| fs::read_to_string(e.path()).ok())
-        .filter_map(|text| serde_json::from_str::<kl_store::catalog::Listing>(&text).ok())
-        .map(|listing| kl_core::store::StoreEntry::from_listing(&listing, record.apps.get(&listing.id)))
-        .collect();
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    entries
-}
-
+/// The config, discovered apps and extensions, and any problems found reading them.
 fn load_library(dir: &Path, documents: &Path) -> (Config, Vec<App>, Vec<kl_core::kual::MenuItem>, Vec<String>) {
     let (config, mut problems) = match fs::read_to_string(dir.join("apps.toml")) {
         Ok(text) => Config::parse(&text),
@@ -205,6 +106,7 @@ fn load_library(dir: &Path, documents: &Path) -> (Config, Vec<App>, Vec<kl_core:
     };
     let (mut apps, more) = discover(documents, &config);
     problems.extend(more);
+    bootstrap::reconcile_tiles(&mut apps, documents);
     kl_core::apps::use_koreader_wrapper(&mut apps, &config, &dir.join("run-koreader.sh"));
     let extensions_root = documents.parent().unwrap_or(Path::new("/mnt/us")).join("extensions");
     let (extensions, more) = kl_core::kual::discover_root(&extensions_root, kl_core::kual::OASIS_3_MODEL);
@@ -261,10 +163,47 @@ fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+fn launcher_update_command(dir: &Path, command: &str) -> i32 {
+    use kl_store::install::{self, LauncherUpdate, Paths};
+
+    let Some(root) = dir.parent() else {
+        eprintln!("Launcher update needs a mounted user-storage directory.");
+        return 1;
+    };
+    let paths = Paths::under(root);
+    let result = match command {
+        "begin" => install::launcher_update_begin(&paths).map(|outcome| match outcome {
+            LauncherUpdate::Idle => "idle",
+            LauncherUpdate::Trial => "trial",
+            LauncherUpdate::Reverted => "reverted",
+        }),
+        "accept" => install::launcher_update_accept(&paths).map(|changed| if changed { "accepted" } else { "idle" }),
+        "revert" => install::launcher_update_revert(&paths).map(|changed| if changed { "reverted" } else { "idle" }),
+        _ => {
+            eprintln!("Expected launcher update command begin, accept or revert.");
+            return 2;
+        }
+    };
+    match result {
+        Ok(outcome) => {
+            println!("{outcome}");
+            0
+        }
+        Err(error) => {
+            eprintln!("Launcher update: {error}");
+            1
+        }
+    }
+}
+
 fn main() {
+    let mut dir = env_dir("KL_DIR", "/mnt/us/launcher");
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("--launcher-update") {
+        std::process::exit(launcher_update_command(&dir, args.next().as_deref().unwrap_or("")));
+    }
     install_crash_log();
     let started = Instant::now();
-    let mut dir = env_dir("KL_DIR", "/mnt/us/launcher");
     // Started from the copy on /var/local (the cable was in at boot): when /mnt/us is back, this same launcher reads its
     // settings, apps and extensions from /mnt/us.
     let mut from_mirror = dir.starts_with("/var/local");
@@ -292,6 +231,14 @@ fn main() {
         return;
     }
 
+    // Recover before discovery so the grid reflects an interrupted install.
+    if let Some(root) = documents.parent().filter(|root| root.is_dir() && !from_mirror) {
+        match kl_store::install::recover(&kl_store::install::Paths::under(root)) {
+            Ok(Some(what)) => log(&format!("store: {what}")),
+            Ok(None) => {}
+            Err(e) => log(&format!("store: cannot check an unfinished install: {e}")),
+        }
+    }
     let (config, apps, extensions, mut problems) = load_library(&dir, &documents);
     let layout = Layout::new(W, H, config.columns, config.rows);
 
@@ -313,15 +260,7 @@ fn main() {
     ui.version = env!("CARGO_PKG_VERSION").to_string();
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_extensions(extensions);
-    // An install that a power cut interrupted is finished or undone before the store reads what is installed.
-    let store_root = dir.parent().unwrap_or(Path::new("/mnt/us")).to_path_buf();
-    match kl_store::install::recover(&kl_store::install::Paths::under(&store_root)) {
-        Ok(Some(what)) => log(&format!("store: {what}")),
-        Ok(None) => {}
-        Err(e) => log(&format!("store: cannot check an unfinished install: {e}")),
-    }
-    kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
-    ui.set_store(load_store(&dir));
+    ui.store_update_count = bootstrap::available_updates(&dir);
     for app in ui.apps() {
         log(&format!("app {}: {}", app.id, app.name));
     }
@@ -393,8 +332,21 @@ fn main() {
     display.show(renderer.draw(&ui, &status), &settings, true);
     log(&format!("first screen after {} ms", started.elapsed().as_millis()));
     let mut sleep_picture = 0usize;
+    let mut bootstrapping_store = false;
+    let mut mark_trial_ready = std::env::var("KL_LAUNCHER_UPDATE_TRIAL").as_deref() == Ok("1");
+    let mut transfer_session = None;
 
-    while let Ok(ev) = rx.recv() {
+    loop {
+        if mark_trial_ready && display.has_presented_frame() {
+            let path = run.join("launcher-update-ready");
+            let pid = std::process::id().to_string();
+            if write_atomic(&path, &pid).is_ok() {
+                mark_trial_ready = false;
+            }
+        }
+        let Ok(ev) = rx.recv() else { break };
+        let previous_screen = ui.screen;
+        let previous_usb = ui.usb;
         let action = match ev {
             Ev::Wifi(info) => {
                 ui.set_wifi(info);
@@ -407,32 +359,32 @@ fn main() {
                 status = device::status(&settings);
                 Action::Redraw { full: false }
             }
-            Ev::StoreInstalled { entries, message } => {
-                // The library reads the app's entries from documents/ and its folder again, as after an eject.
-                let (_config, apps, extensions, _problems) = load_library(&dir, &documents);
-                ui.set_apps(apps);
-                ui.set_extensions(extensions);
-                for problem in kl_render::load_icons(&mut renderer, ui.apps(), &layout, Some(&dir.join("cache"))) {
-                    log(&format!("problem: {problem}"));
+            Ev::StoreBootstrapped(result) => {
+                bootstrapping_store = false;
+                match result {
+                    Err(error) => {
+                        log(&format!("Store bootstrap failed: {error}"));
+                        ui.notice = Some(format!("Could not install Primitive Store. {error}"));
+                        Action::Redraw { full: false }
+                    }
+                    Ok(()) => {
+                        let (_, apps, extensions, _) = load_library(&dir, &documents);
+                        let app = apps.iter().find(|app| app.id == bootstrap::ENTRY && !app.hidden && !app.background).cloned();
+                        ui.set_apps(apps);
+                        ui.set_extensions(extensions);
+                        ui.store_update_count = bootstrap::available_updates(&dir);
+                        for problem in kl_render::load_icons(&mut renderer, ui.apps(), &layout, Some(&dir.join("cache"))) {
+                            log(&format!("problem: {problem}"));
+                        }
+                        ui.notice = Some("Primitive Store is ready.".into());
+                        match app {
+                            Some(app) if ui.screen == Screen::Home && ui.usb != kl_core::Usb::Drive => Action::Launch(app),
+                            _ => Action::Redraw { full: false },
+                        }
+                    }
                 }
-                ui.set_store(entries);
-                ui.store_installing = None;
-                if ui.screen == Screen::StoreApp {
-                    ui.screen = Screen::Store;
-                }
-                ui.notice = Some(message);
-                Action::Redraw { full: false }
             }
-            Ev::StoreRefreshed { entries, message } => {
-                kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
-                ui.set_store(entries);
-                ui.store_busy = false;
-                if ui.screen == Screen::StoreApp {
-                    ui.screen = Screen::Store;
-                }
-                ui.notice = Some(message);
-                Action::Redraw { full: false }
-            }
+            Ev::StoreInstalled { .. } | Ev::StoreRefreshed { .. } | Ev::StoreProgress { .. } => Action::None,
             Ev::Notice(message) => {
                 ui.notice = Some(message);
                 status = device::status(&settings);
@@ -512,6 +464,7 @@ fn main() {
                         let (_config, apps, extensions, problems) = load_library(&dir, &documents);
                         ui.set_apps(apps);
                         ui.set_extensions(extensions);
+                        ui.store_update_count = bootstrap::available_updates(&dir);
                         ui.notice = problems.first().cloned();
                         for problem in kl_render::load_icons(&mut renderer, ui.apps(), &layout, Some(&dir.join("cache"))) {
                             log(&format!("problem: {problem}"));
@@ -563,6 +516,24 @@ fn main() {
                 action
             }
         };
+        let transfer_screen = Screen::Page(kl_core::layout::Page::FileTransfer);
+        if ui.screen != transfer_screen || ui.usb == kl_core::Usb::Drive {
+            transfer_session = None;
+            ui.file_transfer = None;
+        } else if previous_screen != ui.screen || previous_usb == kl_core::Usb::Drive {
+            match device::wlan_ip().parse() {
+                Ok(ip) => match transfer::Session::start(ip, documents.clone()) {
+                    Ok(session) => {
+                        ui.file_transfer = Some((session.address.clone(), session.code.clone()));
+                        transfer_session = Some(session);
+                    }
+                    Err(error) => ui.notice = Some(format!("File transfer could not start. {error}")),
+                },
+                Err(_) => ui.notice = Some("Connect to Wi-Fi, then reopen File transfer.".into()),
+            }
+        }
+        // Keep the receiver in scope for as long as the page is open.
+        let _session = transfer_session.as_ref();
         match action {
             Action::None => {}
             // Going to sleep draws nothing unless there is something to show: a battery warning, or a picture
@@ -577,7 +548,32 @@ fn main() {
                 }
                 display.show(renderer.draw(&ui, &status), &settings, full);
             }
-            Action::Launch(app) => {
+            Action::Launch(mut app) => {
+                if bootstrapping_store {
+                    ui.pressed = None;
+                    ui.notice = Some("Primitive Store is being installed. Please wait.".into());
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
+                }
+                if app.launch == Launch::Store {
+                    status = device::status(&settings);
+                    if let Some(entry) = bootstrap::entry_for(app, &documents) {
+                        app = entry;
+                    } else {
+                        ui.pressed = None;
+                        ui.notice = Some(if from_mirror || status.usb == kl_core::Usb::Drive {
+                            "Eject the Kindle drive to install Primitive Store.".into()
+                        } else if !status.wifi_on || status.wifi_state != "connected" {
+                            "Connect to Wi-Fi to install Primitive Store.".into()
+                        } else {
+                            bootstrapping_store = true;
+                            bootstrap::start(tx.clone(), documents.clone());
+                            "Preparing Primitive Store…".into()
+                        });
+                        display.show(renderer.draw(&ui, &status), &settings, false);
+                        continue;
+                    }
+                }
                 let pressed = renderer.draw(&ui, &status);
                 display.show(pressed.clone(), &settings, false);
                 let Some(next) = app.next_file() else {
@@ -669,56 +665,7 @@ fn main() {
                 display.show_region(frame, area, &settings);
                 std::process::exit(EXIT_KINDLE_UI);
             }
-            Action::Device(DeviceCmd::StoreRefresh) => {
-                log(&format!("store: refresh requested (wifi on: {}, state: {})", status.wifi_on, status.wifi_state));
-                if status.wifi_on && status.wifi_state == "connected" {
-                    start_store_refresh(tx.clone(), dir.clone());
-                    ui.notice = Some("Updating the store...".to_string());
-                } else {
-                    ui.store_busy = false;
-                    ui.notice = Some("Connect to Wi-Fi to update the store.".to_string());
-                }
-                display.show(renderer.draw(&ui, &status), &settings, false);
-            }
             Action::Device(cmd) => {
-                if let DeviceCmd::StoreRemove(index) = cmd {
-                    let name = ui.store.get(index).map(|e| (e.id.clone(), e.name.clone()));
-                    if let Some((id, name)) = name {
-                        let root = dir.parent().unwrap_or(Path::new("/mnt/us")).to_path_buf();
-                        match kl_store::install::remove(&kl_store::install::Paths::under(&root), &id) {
-                            Ok(()) => {
-                                let (_config, apps, extensions, _problems) = load_library(&dir, &documents);
-                                ui.set_apps(apps);
-                                ui.set_extensions(extensions);
-                                for problem in kl_render::load_icons(&mut renderer, ui.apps(), &layout, Some(&dir.join("cache"))) {
-                                    log(&format!("problem: {problem}"));
-                                }
-                                ui.set_store(load_store(&dir));
-                                ui.screen = Screen::Store;
-                                ui.notice = Some(format!("Removed {name} from this Kindle."));
-                                log(&format!("store: removed {id}"));
-                            }
-                            Err(e) => ui.notice = Some(format!("Could not remove {name}: {e}")),
-                        }
-                    }
-                    display.show(renderer.draw(&ui, &status), &settings, false);
-                    continue;
-                }
-                if let DeviceCmd::StoreInstall(index) = cmd {
-                    match ui.store.get(index).map(|e| (e.id.clone(), e.name.clone())) {
-                        Some((id, name)) if status.wifi_on && status.wifi_state == "connected" => {
-                            start_store_install(tx.clone(), dir.clone(), id);
-                            ui.notice = Some(format!("Installing {name}..."));
-                        }
-                        Some(_) => {
-                            ui.store_installing = None;
-                            ui.notice = Some("Connect to Wi-Fi to install from the store.".to_string());
-                        }
-                        None => ui.store_installing = None,
-                    }
-                    display.show(renderer.draw(&ui, &status), &settings, false);
-                    continue;
-                }
                 // Power off: the screen says so, and stays that way once the Kindle is off (e-ink keeps its picture).
                 if cmd == DeviceCmd::PowerOff {
                     let frame = renderer.message("Powered Off", "Press the power button to turn the Kindle on again.");
@@ -836,12 +783,12 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::Restart => device::system_command("reboot"),
         DeviceCmd::PowerOff => device::system_command("halt -f -p"),
         DeviceCmd::RestartLauncher => device::restart_launcher(),
-        // The download of a store app is the store's network step (implementation plan D2): not wired yet.
-        // The catalog download runs on a thread (see `start_store_refresh`), not here.
-        DeviceCmd::StoreRefresh => {}
-        // Remove runs in the device loop (it reloads the library): see the Action::Device arm.
-        DeviceCmd::StoreRemove(_) => {}
-        DeviceCmd::StoreInstall(index) => log(&format!("store: install of entry {index} requested; the download is not wired yet")),
+        DeviceCmd::StoreRefresh
+        | DeviceCmd::StoreRemove(_)
+        | DeviceCmd::StoreInstall(_)
+        | DeviceCmd::StoreUpdateAll
+        | DeviceCmd::StoreToggleDailyCheck
+        | DeviceCmd::StoreClearCache => {}
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::ToggleSleepScreen => {
             settings.sleep_screen_launcher = !settings.sleep_screen_launcher;

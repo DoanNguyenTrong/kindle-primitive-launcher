@@ -104,6 +104,13 @@ fn main() {
         shot(&mut renderer, &ui, &format!("home-{}", page + 1));
     }
     ui.page = 0;
+    if ui.apps().iter().any(|app| app.launch == kl_core::Launch::Store) {
+        ui.store_update_count = 2;
+        shot(&mut renderer, &ui, "home-store-updates");
+        ui.store_update_count = 0;
+        ui.notice = Some("Downloading Primitive Store…".into());
+        shot(&mut renderer, &ui, "home-store-bootstrap");
+    }
     ui.notice = problems.first().cloned();
     if ui.notice.is_some() {
         shot(&mut renderer, &ui, "home-notice");
@@ -276,22 +283,42 @@ fn main() {
     if !entries.is_empty() {
         use kl_core::store::{Status, StoreTab};
         ui.set_store(entries.clone());
+        if let Ok(data) = fs::read("../doannt-kindle-catalog/collections.json") {
+            if let Ok(collections) = serde_json::from_slice::<kl_store::catalog::CollectionIndex>(&data) {
+                ui.store_collections = collections.collections;
+            }
+        }
         ui.store_tab = StoreTab::Today;
         ui.screen = kl_core::Screen::Store;
         write_png(&out.join("store-today.png"), W, H, &renderer.draw(&ui, &ssh_on));
         ui.store_tab = StoreTab::Apps;
         write_png(&out.join("store-apps.png"), W, H, &renderer.draw(&ui, &ssh_on));
-        // Updates: one app installed, with an update ready for another (a preview of the state, not a real install).
+        ui.store_tab = StoreTab::Search;
+        ui.pressed_key = None;
+        ui.store_query.text = "browser".chars().collect();
+        ui.store_query.caret = ui.store_query.text.len();
+        write_png(&out.join("store-search.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        ui.store_search_keyboard = true;
+        write_png(&out.join("store-search-keyboard.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        ui.store_search_keyboard = false;
+        // Preview update actions on installable entries only.
         let mut with_installs = entries.clone();
-        if let Some(first) = with_installs.first_mut() {
-            first.status = Status::Installed("0.2.17".into());
+        let mut installable = with_installs.iter_mut().filter(|entry| entry.kind == kl_core::store::Kind::Install);
+        if let Some(entry) = installable.next() {
+            entry.status = Status::Update { installed: "0.2.16".into(), latest: entry.latest.clone().unwrap_or_default() };
         }
-        if let Some(second) = with_installs.get_mut(1) {
-            second.status = Status::Update { installed: "0.2.16".into(), latest: second.latest.clone().unwrap_or_default() };
+        if let Some(entry) = installable.next() {
+            entry.status = Status::Installed(entry.latest.clone().unwrap_or_default());
         }
         ui.set_store(with_installs);
         ui.store_tab = StoreTab::Updates;
         write_png(&out.join("store-updates.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        ui.store_batch_confirm = true;
+        write_png(&out.join("store-update-all.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        ui.store_batch_confirm = false;
+        ui.store_settings_open = true;
+        write_png(&out.join("store-settings.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        ui.store_settings_open = false;
         ui.set_store(entries.clone());
         // One app's page, at the top and scrolled; the installable app first, then the link.
         ui.store_tab = StoreTab::Today;
@@ -300,6 +327,27 @@ fn main() {
             ui.screen = kl_core::Screen::StoreApp;
             ui.store_scroll = 0;
             write_png(&out.join("store-app.png"), W, H, &renderer.draw(&ui, &ssh_on));
+            ui.store_sheet = Some(i);
+            write_png(&out.join("store-install-sheet.png"), W, H, &renderer.draw(&ui, &ssh_on));
+            let night = kl_core::Status { dark_mode: true, rotation: Rotation::UpsideDown, ..ssh_on.clone() };
+            write_png(&out.join("store-install-sheet-dark.png"), W, H, &renderer.draw(&ui, &night));
+            let turned = kl_render::for_panel(renderer.draw(&ui, &night), Rotation::UpsideDown, 0);
+            write_png(&out.join("store-install-sheet-turned.png"), W, H, &turned);
+            let mut required = ui.store[i].clone();
+            required.id = "primitive-hello".into();
+            required.name = "Primitive Hello".into();
+            required.latest = Some("0.1.0".into());
+            required.size = Some(2_600_000);
+            required.changes = vec!["Changes nothing outside its own folder.".into()];
+            ui.store_requirements = Some(kl_core::ui::StoreRequirementReview { apps: vec![required], page: 0 });
+            write_png(&out.join("store-required-apps.png"), W, H, &renderer.draw(&ui, &ssh_on));
+            ui.store_requirements = None;
+            ui.store_progress = Some("Downloading Primitive Browser…".into());
+            ui.store_progress_percent = Some(40);
+            write_png(&out.join("store-install-progress.png"), W, H, &renderer.draw(&ui, &ssh_on));
+            ui.store_sheet = None;
+            ui.store_progress = None;
+            ui.store_progress_percent = None;
             ui.store_scroll = ui.store_scroll_max().min(900);
             write_png(&out.join("store-app-scrolled.png"), W, H, &renderer.draw(&ui, &ssh_on));
         }
@@ -310,6 +358,11 @@ fn main() {
         }
         ui.screen = kl_core::Screen::Home;
     }
+    ui.screen = kl_core::Screen::Page(kl_core::layout::Page::FileTransfer);
+    ui.file_transfer = Some(("http://192.0.2.12:8080".into(), "005628".into()));
+    write_png(&out.join("file-transfer.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    ui.file_transfer = None;
+    ui.screen = kl_core::Screen::Home;
     // The drive-mode screen: shown while the drive is on a computer (no taps then).
     ui.usb = kl_core::Usb::Drive;
     write_png(&out.join("usb-drive.png"), W, H, &renderer.draw(&ui, &ssh_on));
