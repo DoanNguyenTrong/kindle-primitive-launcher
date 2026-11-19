@@ -251,28 +251,62 @@ fn main() {
     // The power menu over the grid, and the quick panel with its Power tile.
     ui.screen = kl_core::Screen::PowerMenu;
     write_png(&out.join("power-menu.png"), W, H, &renderer.draw(&ui, &ssh_on));
-    // The store: the list, and one app's page. The listings come from the sibling catalog repo (its apps, and its drafts
-    // for this preview only: the device sees just the published apps).
+    // The store, as the App Store lays it out. The listings and pictures come from the sibling catalog repo; its drafts
+    // are used for this preview only (the device sees just the published apps).
     let mut entries = Vec::new();
     for folder in ["../doannt-kindle-catalog/apps", "../doannt-kindle-catalog/drafts"] {
         let Ok(read) = fs::read_dir(folder) else { continue };
         for e in read.flatten() {
-            let Ok(text) = fs::read_to_string(e.path().join("app.json")) else { continue };
-            if let Ok(listing) = serde_json::from_str::<kl_store::catalog::Listing>(&text) {
-                entries.push(kl_core::store::StoreEntry::from_listing(&listing, None));
+            let dir = e.path();
+            let Ok(text) = fs::read_to_string(dir.join("app.json")) else { continue };
+            let Ok(listing) = serde_json::from_str::<kl_store::catalog::Listing>(&text) else { continue };
+            for n in 1..=2 {
+                if let Ok(bytes) = fs::read(dir.join(format!("shots/{n}.png"))) {
+                    if let Ok(img) = kl_render::image::decode_png(&bytes) {
+                        renderer.set_icon(&format!("store-shot:{}:{}", listing.id, n - 1), img);
+                    }
+                }
             }
+            entries.push(kl_core::store::StoreEntry::from_listing(&listing, None));
         }
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     if !entries.is_empty() {
-        ui.set_store(entries);
+        use kl_core::store::{Status, StoreTab};
+        ui.set_store(entries.clone());
+        ui.store_tab = StoreTab::Today;
         ui.screen = kl_core::Screen::Store;
-        write_png(&out.join("store.png"), W, H, &renderer.draw(&ui, &ssh_on));
-        ui.store_open = ui.store.iter().position(|e| e.kind == kl_core::store::Kind::Install);
-        ui.screen = kl_core::Screen::StoreApp;
-        write_png(&out.join("store-app.png"), W, H, &renderer.draw(&ui, &ssh_on));
-        ui.store_open = ui.store.iter().position(|e| e.kind == kl_core::store::Kind::Link);
-        write_png(&out.join("store-link.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        write_png(&out.join("store-today.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        ui.store_tab = StoreTab::Apps;
+        write_png(&out.join("store-apps.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        // Updates: one app installed, with an update ready for another (a preview of the state, not a real install).
+        let mut with_installs = entries.clone();
+        if let Some(first) = with_installs.first_mut() {
+            first.status = Status::Installed("0.2.17".into());
+        }
+        if let Some(second) = with_installs.get_mut(1) {
+            second.status = Status::Update { installed: "0.2.16".into(), latest: second.latest.clone().unwrap_or_default() };
+        }
+        ui.set_store(with_installs);
+        ui.store_tab = StoreTab::Updates;
+        write_png(&out.join("store-updates.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        ui.set_store(entries.clone());
+        // One app's page, at the top and scrolled; the installable app first, then the link.
+        ui.store_tab = StoreTab::Today;
+        if let Some(i) = ui.store.iter().position(|e| e.kind == kl_core::store::Kind::Install) {
+            ui.store_open = Some(i);
+            ui.screen = kl_core::Screen::StoreApp;
+            ui.store_scroll = 0;
+            write_png(&out.join("store-app.png"), W, H, &renderer.draw(&ui, &ssh_on));
+            ui.store_scroll = ui.store_scroll_max().min(900);
+            write_png(&out.join("store-app-scrolled.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        }
+        if let Some(i) = ui.store.iter().position(|e| e.kind == kl_core::store::Kind::Link) {
+            ui.store_open = Some(i);
+            ui.store_scroll = 0;
+            write_png(&out.join("store-link.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        }
+        ui.screen = kl_core::Screen::Home;
     }
     // The drive-mode screen: shown while the drive is on a computer (no taps then).
     ui.usb = kl_core::Usb::Drive;

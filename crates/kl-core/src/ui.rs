@@ -264,6 +264,9 @@ pub struct Ui {
     pub store: Vec<crate::store::StoreEntry>,
     pub store_page: usize,
     pub store_open: Option<usize>,
+    /// The tab shown, and how far the product page is scrolled.
+    pub store_tab: crate::store::StoreTab,
+    pub store_scroll: i32,
     /// Background jobs still running (shown in the status bar).
     pub running: usize,
     /// The Wi-Fi page: the networks from the last scan, whether a scan is running, and the list's scroll.
@@ -310,6 +313,8 @@ impl Ui {
             store: Vec::new(),
             store_page: 0,
             store_open: None,
+            store_tab: crate::store::StoreTab::Today,
+            store_scroll: 0,
             running: 0,
             wifi: crate::wifi::WifiInfo::default(),
             wifi_scanning: false,
@@ -412,77 +417,170 @@ impl Ui {
     }
 
     /// The Extensions tile: open the list at the top.
-    /// Replaces the store's entries (from the catalog cache and the installed record). The list starts at its first page.
+    /// Replaces the store's entries (from the catalog cache and the installed record). Today is the first tab.
     pub fn set_store(&mut self, entries: Vec<crate::store::StoreEntry>) {
         self.store = entries;
         self.store_page = 0;
         self.store_open = None;
+        self.store_scroll = 0;
     }
 
-    /// The store's list pages for its entries (at least one).
+    /// Today's featured app: the first entry.
+    pub fn store_featured(&self) -> Option<usize> {
+        (!self.store.is_empty()).then_some(0)
+    }
+
+    /// Today's rows under the featured app: the next two entries.
+    pub fn store_today_rows(&self) -> Vec<usize> {
+        (1..self.store.len().min(3)).collect()
+    }
+
+    /// The Apps tab: every entry.
+    pub fn store_apps(&self) -> Vec<usize> {
+        (0..self.store.len()).collect()
+    }
+
+    /// The Updates tab: the entries installed from the store, with or without an update ready.
+    pub fn store_updates(&self) -> Vec<usize> {
+        self.store
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !matches!(e.status, crate::store::Status::NotInstalled))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The paged list of the current tab (Apps or Updates).
+    fn store_list_indices(&self) -> Vec<usize> {
+        match self.store_tab {
+            crate::store::StoreTab::Updates => self.store_updates(),
+            _ => self.store_apps(),
+        }
+    }
+
+    /// The pages of the current tab's list.
     pub fn store_pages(&self) -> usize {
-        self.layout.list_pages(self.store.len())
+        self.layout.store_pages(self.store_list_indices().len())
+    }
+
+    /// The rows of a product page's information, for its scroll limit.
+    fn store_info_count(&self, index: usize) -> usize {
+        self.store.get(index).map_or(0, |e| e.info_rows().len())
     }
 
     pub fn open_store(&mut self) -> Action {
+        self.store_tab = crate::store::StoreTab::Today;
         self.store_page = 0;
         self.go(Screen::Store)
     }
 
-    /// The store list: open an app's page, page through the list, or go home.
+    /// Turns the page of the Apps or Updates list by one, if there is one.
+    fn store_turn(&mut self, step: i32) -> Action {
+        let next = self.store_page as i32 + step;
+        if next < 0 || next >= self.store_pages() as i32 {
+            return Action::None;
+        }
+        self.store_page = next as usize;
+        Action::Redraw { full: false }
+    }
+
+    fn store_open_entry(&mut self, index: usize) -> Action {
+        self.store_open = Some(index);
+        self.store_scroll = 0;
+        self.go(Screen::StoreApp)
+    }
+
+    fn set_store_tab(&mut self, tab: crate::store::StoreTab) -> Action {
+        self.store_tab = tab;
+        self.store_page = 0;
+        Action::Redraw { full: false }
+    }
+
+    /// The store's tabs: a tap on the tab bar changes the tab; Today opens its featured app and rows; Apps and Updates
+    /// page through their lists and open an app.
     fn store_list(&mut self, input: Input) -> Action {
+        use crate::store::StoreTab;
         let l = self.layout;
-        let turn = |u: &mut Ui, step: i32| -> Action {
-            let next = u.store_page as i32 + step;
-            if next < 0 || next >= u.store_pages() as i32 {
-                return Action::None;
-            }
-            u.store_page = next as usize;
-            Action::Redraw { full: false }
-        };
         match input {
-            Input::PageForward => turn(self, 1),
-            Input::PageBack => turn(self, -1),
-            Input::Swipe { dx, dy, .. } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => turn(self, if dx < 0.0 { 1 } else { -1 }),
+            Input::PageForward => self.store_turn(1),
+            Input::PageBack => self.store_turn(-1),
+            Input::Swipe { dx, dy, .. } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => self.store_turn(if dx < 0.0 { 1 } else { -1 }),
             Input::Tap(x, y) => {
-                if l.done_button().inset(-20).contains(x, y) {
-                    return self.go(Screen::Home);
+                if let Some(i) = l.store_tab_at(x, y) {
+                    let tab = [StoreTab::Today, StoreTab::Apps, StoreTab::Updates][i];
+                    if tab == self.store_tab {
+                        return Action::None;
+                    }
+                    return self.set_store_tab(tab);
                 }
-                if l.footer().contains(x, y) {
-                    return turn(self, if x < (l.width / 2) as f32 { -1 } else { 1 });
+                if self.store_tab == StoreTab::Today {
+                    if let Some(featured) = self.store_featured() {
+                        if l.store_feature().contains(x, y) {
+                            return self.store_open_entry(featured);
+                        }
+                    }
+                    if l.store_see_all().inset(-20).contains(x, y) {
+                        return self.set_store_tab(StoreTab::Apps);
+                    }
+                    let rows = self.store_today_rows();
+                    let Some(row) = (0..rows.len()).find(|&i| l.store_today_row(i).contains(x, y)) else { return Action::None };
+                    return self.store_open_entry(rows[row]);
                 }
-                let Some(row) = l.list_row_at(x, y) else { return Action::None };
-                let index = self.store_page * l.list_rows_per_page() + row;
-                if index >= self.store.len() {
-                    return Action::None;
+                if l.store_page_label().contains(x, y) {
+                    return self.store_turn(if x < (l.width / 2) as f32 { -1 } else { 1 });
                 }
-                self.store_open = Some(index);
-                self.go(Screen::StoreApp)
+                let list = self.store_list_indices();
+                let per = l.store_rows_per_page();
+                let on_page = list.len().saturating_sub(self.store_page * per).min(per);
+                let Some(row) = (0..on_page).find(|&i| l.store_list_row(i).contains(x, y)) else { return Action::None };
+                match list.get(self.store_page * per + row) {
+                    Some(&index) => self.store_open_entry(index),
+                    None => Action::None,
+                }
             }
             _ => Action::None,
         }
     }
 
-    /// An app's page: its action (install from the store, or a notice for a link), or Done (back to the list).
+    /// A product page: scrolls with a vertical swipe; Back returns to the tab; the action button installs (from the
+    /// store), or shows where a link listing lives.
     fn store_app(&mut self, input: Input) -> Action {
         let l = self.layout;
         let Some(index) = self.store_open else { return self.go(Screen::Store) };
         let Some(entry) = self.store.get(index).cloned() else { return self.go(Screen::Store) };
-        let Input::Tap(x, y) = input else { return Action::None };
-        if l.done_button().inset(-20).contains(x, y) {
-            return self.go(Screen::Store);
-        }
-        if l.store_action().inset(-12).contains(x, y) {
-            return match (entry.kind, &entry.status) {
-                (crate::store::Kind::Link, _) => {
-                    self.notice = Some(format!("{} is on its own website: {}", entry.name, entry.repo));
-                    Action::Redraw { full: false }
+        let max = (l.store_page_height(self.store_info_count(index)) - l.height).max(0);
+        match input {
+            Input::Swipe { dx, dy, .. } if dy.abs() > SWIPE_MIN && dy.abs() > dx.abs() * 1.5 => {
+                let next = (self.store_scroll - dy as i32).clamp(0, max);
+                if next == self.store_scroll {
+                    return Action::None;
                 }
-                (crate::store::Kind::Install, crate::store::Status::Installed(_)) => Action::None,
-                (crate::store::Kind::Install, _) => Action::Device(DeviceCmd::StoreInstall(index)),
-            };
+                self.store_scroll = next;
+                Action::Redraw { full: false }
+            }
+            Input::Tap(x, y) => {
+                if l.store_back().inset(-20).contains(x, y) {
+                    return self.go(Screen::Store);
+                }
+                if l.store_action(self.store_scroll).inset(-12).contains(x, y) {
+                    return match (entry.kind, &entry.status) {
+                        (crate::store::Kind::Link, _) => {
+                            self.notice = Some(format!("{} is on its own website: {}", entry.name, entry.repo));
+                            Action::Redraw { full: false }
+                        }
+                        (crate::store::Kind::Install, crate::store::Status::Installed(_)) => Action::None,
+                        (crate::store::Kind::Install, _) => Action::Device(DeviceCmd::StoreInstall(index)),
+                    };
+                }
+                Action::None
+            }
+            _ => Action::None,
         }
-        Action::None
+    }
+
+    /// The largest scroll of the open product page (zero when it fits the screen).
+    pub fn store_scroll_max(&self) -> i32 {
+        self.store_open.map_or(0, |i| (self.layout.store_page_height(self.store_info_count(i)) - self.layout.height).max(0))
     }
 
     pub fn open_extensions(&mut self) -> Action {
@@ -1204,6 +1302,98 @@ mod tests {
         a.hidden = true;
         let u = Ui::new(vec![a, script("y.sh")], Layout::new(1264, 1680, 3, 3));
         assert_eq!(u.apps().len(), 1);
+    }
+
+    #[test]
+    fn the_store_opens_on_today_and_its_tabs_switch() {
+        use crate::store::{test_entry, Status, StoreTab};
+        let mut u = ui(0);
+        u.set_store(vec![
+            test_entry("a", "Alpha", Status::NotInstalled),
+            test_entry("b", "Beta", Status::NotInstalled),
+            test_entry("c", "Gamma", Status::Installed("1.0.0".into())),
+        ]);
+        u.open_store();
+        assert_eq!(u.screen, Screen::Store);
+        assert_eq!(u.store_tab, StoreTab::Today);
+        let apps = u.layout.store_tab(1);
+        u.handle(centre(apps));
+        assert_eq!(u.store_tab, StoreTab::Apps);
+        let updates = u.layout.store_tab(2);
+        u.handle(centre(updates));
+        assert_eq!(u.store_tab, StoreTab::Updates);
+        // Only the installed app is in Updates.
+        assert_eq!(u.store_updates(), vec![2]);
+    }
+
+    #[test]
+    fn today_opens_the_featured_app_and_its_rows_and_see_all_goes_to_apps() {
+        use crate::store::{test_entry, Status, StoreTab};
+        let mut u = ui(0);
+        u.set_store(vec![
+            test_entry("a", "Alpha", Status::NotInstalled),
+            test_entry("b", "Beta", Status::NotInstalled),
+            test_entry("c", "Gamma", Status::NotInstalled),
+        ]);
+        u.open_store();
+        assert_eq!(u.handle(centre(u.layout.store_feature())), Action::Redraw { full: false });
+        assert_eq!(u.screen, Screen::StoreApp);
+        assert_eq!(u.store_open, Some(0));
+        u.handle(Input::Tap(0.0, 0.0)); // back to the store: the header is above the content
+        u.screen = Screen::Store;
+        let row = u.layout.store_today_row(1);
+        u.handle(centre(row));
+        assert_eq!(u.store_open, Some(2), "the second row under the featured card is the third entry");
+        u.screen = Screen::Store;
+        u.store_tab = StoreTab::Today;
+        u.handle(centre(u.layout.store_see_all()));
+        assert_eq!(u.store_tab, StoreTab::Apps);
+    }
+
+    #[test]
+    fn the_apps_list_pages_and_opens_the_entry_on_the_row() {
+        use crate::store::{test_entry, Status, StoreTab};
+        let mut u = ui(0);
+        let entries: Vec<_> = (0..30).map(|i| test_entry(&format!("app{i}"), &format!("App {i:02}"), Status::NotInstalled)).collect();
+        u.set_store(entries);
+        u.open_store();
+        u.store_tab = StoreTab::Apps;
+        let per = u.layout.store_rows_per_page();
+        assert!(u.store_pages() > 1, "thirty apps need more than one page");
+        u.handle(Input::PageForward);
+        assert_eq!(u.store_page, 1);
+        u.handle(centre(u.layout.store_list_row(0)));
+        assert_eq!(u.store_open, Some(per), "the first row of page two is entry {per}");
+    }
+
+    #[test]
+    fn the_product_page_scrolls_and_its_action_installs_or_shows_the_link() {
+        use crate::store::{test_entry, Kind, Status};
+        let mut u = ui(0);
+        let mut link = test_entry("k", "Kay", Status::NotInstalled);
+        link.kind = Kind::Link;
+        u.set_store(vec![test_entry("a", "Alpha", Status::NotInstalled), test_entry("i", "Ivy", Status::Installed("1.0.0".into())), link]);
+        u.open_store();
+        u.handle(centre(u.layout.store_feature()));
+        assert!(u.store_scroll_max() > 0, "the page is longer than the screen");
+        u.handle(Input::Swipe { dx: 0.0, dy: -400.0, start_y: 1200.0 });
+        assert_eq!(u.store_scroll, 400.min(u.store_scroll_max()));
+        u.handle(Input::Swipe { dx: 0.0, dy: 5000.0, start_y: 600.0 });
+        assert_eq!(u.store_scroll, 0, "scrolling back up stops at the top");
+        // Get installs (the device runs it).
+        let action = u.layout.store_action(0);
+        assert_eq!(u.handle(centre(action)), Action::Device(DeviceCmd::StoreInstall(0)));
+        // Back returns to the store.
+        u.handle(centre(u.layout.store_back()));
+        assert_eq!(u.screen, Screen::Store);
+        // Installed does nothing.
+        u.store_open = Some(1);
+        u.screen = Screen::StoreApp;
+        assert_eq!(u.handle(centre(action)), Action::None);
+        // A link says where the app is.
+        u.store_open = Some(2);
+        u.handle(centre(action));
+        assert!(u.notice.as_deref().unwrap_or("").contains("own website"));
     }
 
     #[test]

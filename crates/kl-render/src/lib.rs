@@ -90,6 +90,8 @@ pub struct Renderer {
     sleep_image: Option<GrayImage>,
     /// The drive-mode picture (`assets/usb-drive-mode.png`), fitted to the screen and snapped to black and white.
     usb_picture: Option<GrayImage>,
+    /// Store pictures (screenshots) to draw over the store's product page, collected while it is drawn.
+    store_blits: Vec<(Rect, String)>,
 }
 
 /// The drive-mode picture: a laptop and a Kindle joined by a cable.
@@ -127,6 +129,7 @@ impl Renderer {
             layout_cx: LayoutContext::new(),
             icons: HashMap::new(),
             sleep_image: None,
+            store_blits: Vec::new(),
             usb_picture: image::decode_png(USB_PICTURE).ok().map(|img| {
                 let mut fitted = image::fit(&img, width - 120, height - 240);
                 image::solidify(&mut fitted.pixels);
@@ -386,6 +389,7 @@ impl Renderer {
             // The panel is a pop-up over the home screen, drawn last (below).
             Screen::QuickSettings => self.home(ui, status, &mut icon_blits),
         }
+        icon_blits.append(&mut self.store_blits);
         let width = self.width as usize;
         let mut out = self.finish_gray();
         // Pictures (icons, the sleep picture) keep their look in dark mode.
@@ -804,88 +808,241 @@ impl Renderer {
     }
 
     /// The Extensions list: one row per item, "›" on submenus, Back (or Done at the top), and pages.
-    /// The store's list: an icon, the name and the summary of each app, and the action on the right.
+    /// A store tab: its large title, its content, and the floating tab bar.
     fn store_list(&mut self, ui: &Ui) {
         let l = ui.layout;
-        let title = l.title();
-        let name_w = (l.done_button().x - 80) as f32;
-        self.text(Text { text: "Store", x: 40.0, y: 38.0, w: name_w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
-        self.button(l.done_button(), "Done", true);
-        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
-        let per = l.list_rows_per_page();
-        let entries: Vec<_> = ui.store.iter().skip(ui.store_page * per).take(per).cloned().collect();
-        if entries.is_empty() {
-            self.text(Text {
-                text: "No apps yet. The store lists the apps once its catalog has been downloaded.",
-                x: 80.0,
-                y: (title.bottom() + 80) as f32,
-                w: (title.w - 160) as f32,
-                size: 36.0,
-                bold: false,
-                align: Align::Center,
-                lines: 3,
-                gray: BLACK,
-            });
+        let (title, active) = match ui.store_tab {
+            kl_core::store::StoreTab::Today => ("Today", 0),
+            kl_core::store::StoreTab::Apps => ("Apps", 1),
+            kl_core::store::StoreTab::Updates => ("Updates", 2),
+        };
+        self.text(Text { text: title, x: 40.0, y: 50.0, w: (l.width - 80) as f32, size: 84.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        match ui.store_tab {
+            kl_core::store::StoreTab::Today => self.store_today(ui),
+            kl_core::store::StoreTab::Apps => self.store_rows(ui, &ui.store_apps(), "No apps yet. The store lists the apps once its catalog has been downloaded."),
+            kl_core::store::StoreTab::Updates => self.store_rows(ui, &ui.store_updates(), "Nothing from the store yet. Apps you get here, and their updates, are listed here."),
         }
-        for (i, e) in entries.iter().enumerate() {
-            let r = l.list_row(i);
-            let tile = Rect::new(r.x + 8, r.y + 12, 96, 96);
-            self.rounded(tile, Self::icon_radius(tile), BLACK);
-            let initial = e.name.chars().next().map(|c| c.to_string()).unwrap_or_default();
-            self.text(Text { text: &initial, x: tile.x as f32, y: tile.y as f32 + 22.0, w: tile.w as f32, size: 52.0, bold: true, align: Align::Center, lines: 1, gray: WHITE });
-            self.text(Text { text: &e.name, x: (r.x + 128) as f32, y: r.y as f32 + 20.0, w: (r.w - 128 - 240) as f32, size: 40.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
-            self.text(Text { text: &e.subtitle, x: (r.x + 128) as f32, y: r.y as f32 + 70.0, w: (r.w - 128 - 240) as f32, size: 28.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
-            self.text(Text { text: e.action_label(), x: (r.right() - 220) as f32, y: r.y as f32 + 40.0, w: 200.0, size: 30.0, bold: true, align: Align::End, lines: 1, gray: BLACK });
-            self.fill(Rect::new(r.x, r.bottom() - 2, r.w, 2), BLACK);
-        }
-        let f = l.footer();
-        self.fill(Rect::new(0, f.y, f.w, 3), BLACK);
-        let pages = ui.store_pages();
-        if pages > 1 {
-            let label = format!("{} / {}", ui.store_page + 1, pages);
-            self.text(Text { text: &label, x: 0.0, y: f.y as f32 + 22.0, w: f.w as f32, size: 38.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+        self.store_tab_bar(&l, active);
+    }
+
+    /// Today: the first app as a large black card, then the next apps.
+    fn store_today(&mut self, ui: &Ui) {
+        let l = ui.layout;
+        let Some(index) = ui.store_featured() else {
+            self.store_empty("No apps yet. The store lists the apps once its catalog has been downloaded.");
+            return;
+        };
+        let e = &ui.store[index];
+        let f = l.store_feature();
+        self.rounded(f, 48.0, BLACK);
+        self.text(Text { text: "FEATURED", x: (f.x + 56) as f32, y: (f.y + 56) as f32, w: 600.0, size: 26.0, bold: true, align: Align::Start, lines: 1, gray: WHITE });
+        self.text(Text { text: &e.name, x: (f.x + 56) as f32, y: (f.y + 100) as f32, w: (f.w - 56 * 2 - 240) as f32, size: 68.0, bold: true, align: Align::Start, lines: 2, gray: WHITE });
+        self.text(Text { text: &e.subtitle, x: (f.x + 56) as f32, y: (f.y + 290) as f32, w: (f.w - 56 * 2 - 240) as f32, size: 30.0, bold: false, align: Align::Start, lines: 2, gray: WHITE });
+        let tile = Rect::new(f.right() - 56 - 200, f.y + 56, 200, 200);
+        self.rounded(tile, Self::icon_radius(tile), WHITE);
+        self.initial(tile, &e.name, BLACK);
+        let pill = Rect::new(f.x + 56, f.bottom() - 56 - 84, 200, 84);
+        // White on the black card: a white pill with a black label.
+        self.rounded(pill, pill.h as f64 / 2.0, WHITE);
+        self.text(Text { text: e.action_label(), x: pill.x as f32, y: pill.y as f32 + (pill.h as f32 - 30.0 * 1.25) / 2.0, w: pill.w as f32, size: 30.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+
+        let see = l.store_see_all();
+        self.text(Text { text: "See All", x: see.x as f32, y: (see.y + 12) as f32, w: see.w as f32, size: 34.0, bold: true, align: Align::End, lines: 1, gray: BLACK });
+        self.text(Text { text: "Apps", x: 40.0, y: (f.bottom() + 40) as f32, w: 400.0, size: 52.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        for (i, &idx) in ui.store_today_rows().iter().enumerate() {
+            self.store_row(&ui.store[idx], l.store_today_row(i));
         }
     }
 
-    /// An app's page: the icon, the subtitle, the developer and status, the description, what the app changes, and the
-    /// action button.
+    /// A paged list of entries (the Apps or Updates tab), with its page label, or a message when it is empty.
+    fn store_rows(&mut self, ui: &Ui, indices: &[usize], empty: &str) {
+        let l = ui.layout;
+        if indices.is_empty() {
+            self.store_empty(empty);
+            return;
+        }
+        let per = l.store_rows_per_page();
+        let on_page: Vec<usize> = indices.iter().skip(ui.store_page * per).take(per).copied().collect();
+        for (i, &idx) in on_page.iter().enumerate() {
+            self.store_row(&ui.store[idx], l.store_list_row(i));
+        }
+        let pages = ui.store_pages();
+        if pages > 1 {
+            let label = format!("{} of {}", ui.store_page + 1, pages);
+            let p = l.store_page_label();
+            self.text(Text { text: &label, x: p.x as f32, y: (p.y + 14) as f32, w: p.w as f32, size: 28.0, bold: true, align: Align::Center, lines: 1, gray: 85 });
+        }
+    }
+
+    /// A message in the middle of a tab, when there is nothing to list.
+    fn store_empty(&mut self, text: &str) {
+        self.text(Text { text, x: 80.0, y: 620.0, w: 1104.0, size: 36.0, bold: false, align: Align::Center, lines: 3, gray: 85 });
+    }
+
+    /// One app's row: its icon, name and summary, and its action on the right.
+    fn store_row(&mut self, e: &kl_core::store::StoreEntry, r: Rect) {
+        let tile = Rect::new(r.x, r.y + (r.h - 132) / 2, 132, 132);
+        self.rounded(tile, Self::icon_radius(tile), BLACK);
+        self.initial(tile, &e.name, WHITE);
+        let text_x = (r.x + 164) as f32;
+        let text_w = (r.w - 164 - 240) as f32;
+        self.text(Text { text: &e.name, x: text_x, y: (r.y + 30) as f32, w: text_w, size: 40.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.text(Text { text: &e.subtitle, x: text_x, y: (r.y + 92) as f32, w: text_w, size: 28.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+        let primary = matches!(e.status, kl_core::store::Status::NotInstalled | kl_core::store::Status::Update { .. }) && e.kind == kl_core::store::Kind::Install;
+        let pill = Rect::new(r.right() - 190, r.y + (r.h - 76) / 2, 190, 76);
+        self.store_capsule(pill, e.action_label(), primary, BLACK);
+        self.hairline(r.bottom() - 1, r.x + 164, r.right());
+    }
+
+    /// An action pill: filled (primary) or outlined, with its label centred.
+    fn store_capsule(&mut self, r: Rect, label: &str, primary: bool, outline_ink: u8) {
+        let radius = r.h as f64 / 2.0;
+        let ink = if primary { WHITE } else { outline_ink };
+        if primary {
+            self.rounded(r, radius, BLACK);
+        } else {
+            self.rounded_frame(r, radius, 3, BLACK, WHITE);
+        }
+        let size = 30.0;
+        self.text(Text { text: label, x: r.x as f32, y: r.y as f32 + (r.h as f32 - size * 1.25) / 2.0, w: r.w as f32, size, bold: true, align: Align::Center, lines: 1, gray: ink });
+    }
+
+    /// A tile's first letter, centred, in `ink`.
+    fn initial(&mut self, tile: Rect, name: &str, ink: u8) {
+        let letter = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+        let size = tile.h as f32 * 0.46;
+        self.text(Text { text: &letter, x: tile.x as f32, y: tile.y as f32 + (tile.h as f32 - size * 1.25) / 2.0, w: tile.w as f32, size, bold: true, align: Align::Center, lines: 1, gray: ink });
+    }
+
+    /// The floating tab bar: a capsule with three tabs; the active one is filled.
+    fn store_tab_bar(&mut self, l: &kl_core::Layout, active: usize) {
+        let t = l.store_tabs();
+        self.rounded_frame(t, 65.0, 3, BLACK, WHITE);
+        let names = ["Today", "Apps", "Updates"];
+        for (i, name) in names.iter().enumerate() {
+            let r = l.store_tab(i);
+            let on = i == active;
+            if on {
+                self.rounded(r, r.h as f64 / 2.0, BLACK);
+            }
+            let ink = if on { WHITE } else { BLACK };
+            self.tab_glyph(i, (r.x + r.w / 2) as f64, (r.y + 36) as f64, 40.0, ink);
+            self.text(Text { text: name, x: r.x as f32, y: (r.y + 72) as f32, w: r.w as f32, size: 24.0, bold: true, align: Align::Center, lines: 1, gray: ink });
+        }
+    }
+
+    /// The tab glyphs: a star (Today), four squares (Apps), a tray with an arrow (Updates).
+    fn tab_glyph(&mut self, i: usize, cx: f64, cy: f64, s: f64, ink: u8) {
+        self.ctx.set_transform(Affine::IDENTITY);
+        self.ctx.set_paint(gray(ink));
+        match i {
+            0 => {
+                let mut p = kurbo::BezPath::new();
+                for k in 0..10 {
+                    let r = if k % 2 == 0 { 0.5 * s } else { 0.22 * s };
+                    let a = -std::f64::consts::FRAC_PI_2 + k as f64 * std::f64::consts::PI / 5.0;
+                    let pt = (cx + r * a.cos(), cy + r * a.sin());
+                    if k == 0 {
+                        p.move_to(pt);
+                    } else {
+                        p.line_to(pt);
+                    }
+                }
+                p.close_path();
+                self.ctx.fill_path(&p);
+            }
+            1 => {
+                let (q, gap) = (0.4 * s, 0.14 * s);
+                for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                    let x0 = if dx < 0.0 { cx - gap / 2.0 - q } else { cx + gap / 2.0 };
+                    let y0 = if dy < 0.0 { cy - gap / 2.0 - q } else { cy + gap / 2.0 };
+                    self.ctx.fill_path(&kurbo::RoundedRect::new(x0, y0, x0 + q, y0 + q, 0.1 * s).to_path(0.1));
+                }
+            }
+            _ => {
+                self.ctx.fill_path(&kurbo::RoundedRect::new(cx - 0.07 * s, cy - 0.5 * s, cx + 0.07 * s, cy + 0.12 * s, 0.02 * s).to_path(0.1));
+                let mut arrow = kurbo::BezPath::new();
+                arrow.move_to((cx - 0.3 * s, cy - 0.08 * s));
+                arrow.line_to((cx + 0.3 * s, cy - 0.08 * s));
+                arrow.line_to((cx, cy + 0.26 * s));
+                arrow.close_path();
+                self.ctx.fill_path(&arrow);
+                self.ctx.fill_path(&kurbo::RoundedRect::new(cx - 0.42 * s, cy + 0.36 * s, cx + 0.42 * s, cy + 0.46 * s, 0.04 * s).to_path(0.1));
+            }
+        }
+    }
+
+    /// A product page. The header (back) stays at the top; the rest scrolls by `ui.store_scroll`.
     fn store_app(&mut self, ui: &Ui) {
         let l = ui.layout;
-        let title = l.title();
-        let Some(entry) = ui.store_open.and_then(|i| ui.store.get(i)) else { return };
-        let name_w = (l.done_button().x - 80) as f32;
-        self.text(Text { text: &entry.name, x: 40.0, y: 38.0, w: name_w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
-        self.button(l.done_button(), "Back", true);
-        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
+        let Some(index) = ui.store_open else { return };
+        let Some(e) = ui.store.get(index) else { return };
+        let scroll = ui.store_scroll;
+        let w = (l.width - 80) as f32;
 
-        let icon = l.store_icon();
-        self.rounded(icon, Self::icon_radius(icon), BLACK);
-        let initial = entry.name.chars().next().map(|c| c.to_string()).unwrap_or_default();
-        self.text(Text { text: &initial, x: icon.x as f32, y: icon.y as f32 + 50.0, w: icon.w as f32, size: 120.0, bold: true, align: Align::Center, lines: 1, gray: WHITE });
+        let hero = l.store_hero(scroll);
+        self.rounded(hero, Self::icon_radius(hero), BLACK);
+        self.initial(hero, &e.name, WHITE);
+        let name = l.store_name(scroll);
+        self.text(Text { text: &e.name, x: 40.0, y: name.y as f32, w, size: 56.0, bold: true, align: Align::Center, lines: 2, gray: BLACK });
+        let sub = l.store_subtitle(scroll);
+        self.text(Text { text: &e.subtitle, x: 40.0, y: sub.y as f32, w, size: 32.0, bold: false, align: Align::Center, lines: 2, gray: 85 });
+        let installed = matches!(e.status, kl_core::store::Status::Installed(_));
+        self.store_capsule(l.store_action(scroll), e.action_label(), !installed, BLACK);
+        let dev = l.store_developer(scroll);
+        self.text(Text { text: &format!("Offered by {}", e.developer), x: 40.0, y: dev.y as f32, w, size: 26.0, bold: false, align: Align::Center, lines: 1, gray: 85 });
 
-        let text = l.store_text();
-        let x = text.x as f32;
-        let w = text.w as f32;
-        let mut y = text.y as f32;
-        self.text(Text { text: &entry.subtitle, x, y, w, size: 36.0, bold: false, align: Align::Start, lines: 2, gray: BLACK });
-        y += 96.0;
-        let line = format!("{} · {}", entry.developer, entry.licence);
-        self.text(Text { text: &line, x, y, w, size: 28.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
-        y += 50.0;
-        self.text(Text { text: &entry.status_line(), x, y, w, size: 30.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
-        y += 66.0;
-        self.text(Text { text: &entry.description, x, y, w, size: 30.0, bold: false, align: Align::Start, lines: 6, gray: BLACK });
-        y += 290.0;
-        self.text(Text { text: "WHAT THIS APP CHANGES", x, y, w, size: 26.0, bold: true, align: Align::Start, lines: 1, gray: 60 });
-        y += 44.0;
-        for change in entry.changes.iter().take(4) {
-            self.text(Text { text: change, x, y, w, size: 28.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
-            y += 40.0;
+        // The information strip: version, size, firmware, split by hairlines.
+        let cells = l.store_info_cells(scroll);
+        let version = e.latest.clone().unwrap_or_else(|| "None".to_string());
+        let size = e.size.map(kl_core::store::format_size).unwrap_or_else(|| "None".to_string());
+        let firmware = format!("{}+", e.firmware_min);
+        let strip = [("VERSION", version), ("SIZE", size), ("FIRMWARE", firmware)];
+        self.hairline(cells[0].y, 40, l.width - 40);
+        self.hairline(cells[0].bottom() - 1, 40, l.width - 40);
+        for (i, (cell, (label, value))) in cells.iter().zip(strip.iter()).enumerate() {
+            if i > 0 {
+                self.fill(Rect::new(cell.x, cell.y + 28, 2, cell.h - 56), 200);
+            }
+            self.text(Text { text: label, x: cell.x as f32, y: (cell.y + 26) as f32, w: cell.w as f32, size: 24.0, bold: true, align: Align::Center, lines: 1, gray: 60 });
+            self.text(Text { text: value, x: cell.x as f32, y: (cell.y + 68) as f32, w: cell.w as f32, size: 36.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
         }
 
-        let installed = matches!(entry.status, kl_core::store::Status::Installed(_));
-        let action = l.store_action();
-        self.button(action, entry.action_label(), !installed);
+        // Screenshots, when the store has them for this app (from the cache, or the desktop preview).
+        for i in 0..2 {
+            let key = format!("store-shot:{}:{}", e.id, i);
+            if !self.icons.contains_key(&key) {
+                continue;
+            }
+            let r = l.store_shot(i, scroll);
+            if r.bottom() > 170 {
+                self.store_blits.push((r, key));
+            }
+        }
+
+        let about = l.store_about(scroll);
+        self.text(Text { text: "About", x: 40.0, y: (about.y - 74) as f32, w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.text(Text { text: &e.description, x: 40.0, y: about.y as f32, w, size: 30.0, bold: false, align: Align::Start, lines: 7, gray: BLACK });
+
+        let rows = e.info_rows();
+        if !rows.is_empty() {
+            let first = l.store_info_row(0, scroll);
+            self.text(Text { text: "Information", x: 40.0, y: (first.y - 74) as f32, w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        }
+        for (i, (label, value)) in rows.iter().enumerate() {
+            let r = l.store_info_row(i, scroll);
+            self.text(Text { text: label, x: r.x as f32, y: (r.y + 34) as f32, w: (r.w / 2) as f32, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            self.text(Text { text: value, x: (r.x + r.w / 3) as f32, y: (r.y + 34) as f32, w: (r.w - r.w / 3) as f32, size: 30.0, bold: false, align: Align::End, lines: 1, gray: 85 });
+            self.hairline(r.bottom() - 1, r.x, r.right());
+        }
+
+        // The header covers what has scrolled under it, with a rule once the page has moved.
+        self.fill(Rect::new(0, 0, l.width, 170), WHITE);
+        if scroll > 0 {
+            self.fill(Rect::new(0, 169, l.width, 2), 200);
+        }
+        let back = l.store_back();
+        self.text(Text { text: "‹  Store", x: back.x as f32, y: (back.y + (back.h - 40 * 5 / 4) / 2) as f32, w: back.w as f32, size: 40.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
     }
 
     fn extensions(&mut self, ui: &Ui) {

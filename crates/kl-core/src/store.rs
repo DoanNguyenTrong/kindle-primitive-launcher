@@ -13,6 +13,14 @@ pub enum Status {
     Update { installed: String, latest: String },
 }
 
+/// The store's tabs: Today (a featured app and the next ones), Apps (every app), Updates (what is installed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreTab {
+    Today,
+    Apps,
+    Updates,
+}
+
 /// What the action button does: install from the store (hosted or upstream), or show the page to read (link).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -35,17 +43,50 @@ pub struct StoreEntry {
     pub status: Status,
     /// What the app does outside its own folder, in the words the install sheet uses.
     pub changes: Vec<String>,
+    /// The download's size for the latest version (its armhf asset), when the listing has one.
+    pub size: Option<u64>,
+    /// The lowest Kindle firmware the latest version runs on.
+    pub firmware_min: String,
+    /// The Kindles the latest version was tested on.
+    pub tested_on: Vec<String>,
 }
 
-/// The newest version that is not withdrawn, by version order.
-pub fn newest_live(listing: &Listing) -> Option<String> {
+/// A size as the product page shows it: "4.5 MB", "640 KB", "900 bytes".
+pub fn format_size(bytes: u64) -> String {
+    if bytes == 1 {
+        "1 byte".to_string()
+    } else if bytes >= 1_000_000 {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    } else if bytes >= 1_000 {
+        format!("{} KB", bytes / 1_000)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// The newest version entry that is not withdrawn, by version order.
+pub fn newest_live_entry(listing: &Listing) -> Option<&kl_store::catalog::VersionEntry> {
     listing
         .versions
         .iter()
         .filter(|v| v.withdrawn.is_none())
-        .filter_map(|v| Version::parse(&v.version).map(|p| (p, v.version.clone())))
+        .filter_map(|v| Version::parse(&v.version).map(|p| (p, v)))
         .max_by(|a, b| a.0.cmp(&b.0))
-        .map(|(_, s)| s)
+        .map(|(_, v)| v)
+}
+
+/// The newest version that is not withdrawn, by version order.
+pub fn newest_live(listing: &Listing) -> Option<String> {
+    newest_live_entry(listing).map(|v| v.version.clone())
+}
+
+/// "reading" → "Reading", "developer" → "Developer".
+fn capitalise(word: &str) -> String {
+    let mut c = word.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
 }
 
 /// The "What this app changes" lines, from the listing's flags (store-install-apps §4).
@@ -78,7 +119,8 @@ pub fn change_lines(c: &Changes) -> Vec<String> {
 impl StoreEntry {
     /// The entry for a listing, given what is installed under its id.
     pub fn from_listing(listing: &Listing, installed: Option<&Installed>) -> StoreEntry {
-        let latest = newest_live(listing);
+        let newest = newest_live_entry(listing);
+        let latest = newest.map(|v| v.version.clone());
         let status = match (installed, &latest) {
             (None, _) => Status::NotInstalled,
             (Some(i), Some(l)) if Version::parse(l) > Version::parse(&i.version) => {
@@ -99,7 +141,26 @@ impl StoreEntry {
             latest,
             status,
             changes: change_lines(&listing.changes),
+            size: newest.and_then(|v| v.assets.values().next()).map(|a| a.size),
+            firmware_min: newest.map(|v| v.firmware.min.clone()).unwrap_or_default(),
+            tested_on: newest.map(|v| v.tested_on.clone()).unwrap_or_default(),
         }
+    }
+
+    /// The information rows of the product page: label and value, in the order the page shows them.
+    pub fn info_rows(&self) -> Vec<(String, String)> {
+        let mut rows = vec![
+            ("Developer".to_string(), self.developer.clone()),
+            ("Licence".to_string(), self.licence.clone()),
+            ("Category".to_string(), self.categories.iter().map(|c| capitalise(c)).collect::<Vec<_>>().join(", ")),
+            ("Kindle firmware".to_string(), format!("{} or later", self.firmware_min)),
+            ("Tested on".to_string(), if self.tested_on.is_empty() { "Not yet".to_string() } else { self.tested_on.join(", ") }),
+            ("Repository".to_string(), self.repo.trim_start_matches("https://").to_string()),
+        ];
+        for line in &self.changes {
+            rows.push(("Change".to_string(), line.clone()));
+        }
+        rows
     }
 
     /// The status line on the app's page, in the store's words.
@@ -123,6 +184,28 @@ impl StoreEntry {
             (Kind::Install, Status::Update { .. }) => "Update",
             (Kind::Install, Status::Installed(_)) => "Installed",
         }
+    }
+}
+
+/// An entry for the screens' tests, without a listing.
+#[cfg(test)]
+pub(crate) fn test_entry(id: &str, name: &str, status: Status) -> StoreEntry {
+    StoreEntry {
+        id: id.into(),
+        name: name.into(),
+        subtitle: format!("{name} subtitle"),
+        developer: "Primitive AI".into(),
+        description: "A test app.".into(),
+        categories: vec!["productivity".into()],
+        licence: "PolyForm-Noncommercial-1.0.0".into(),
+        repo: "https://github.com/example/app".into(),
+        kind: Kind::Install,
+        latest: Some("1.0.0".into()),
+        status,
+        changes: vec!["Changes nothing outside its own folder.".into()],
+        size: Some(1_000_000),
+        firmware_min: "5.16.3".into(),
+        tested_on: vec!["KindleOasis3".into()],
     }
 }
 
@@ -207,6 +290,21 @@ mod tests {
         let mut link = l.clone();
         link.source = Source::Link;
         assert!(StoreEntry::from_listing(&link, None).status_line().starts_with("Listed by link"));
+    }
+
+    #[test]
+    fn the_product_page_facts_come_from_the_newest_version() {
+        let e = StoreEntry::from_listing(&sample_listing(), None);
+        assert_eq!(e.firmware_min, "5.16.3");
+        assert_eq!(e.tested_on, vec!["KindleOasis3"]);
+        assert_eq!(e.size, Some(10));
+        let rows = e.info_rows();
+        assert_eq!(rows[0], ("Developer".to_string(), "Primitive AI".to_string()));
+        assert_eq!(rows[2].1, "Internet");
+        assert_eq!(rows[3].1, "5.16.3 or later");
+        assert_eq!(rows.last().unwrap().1, "Uses the internet.");
+        assert_eq!(format_size(4_500_000), "4.5 MB");
+        assert_eq!(format_size(640_000), "640 KB");
     }
 
     #[test]

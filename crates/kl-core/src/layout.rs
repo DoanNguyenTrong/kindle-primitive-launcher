@@ -374,6 +374,10 @@ fn row_buttons(l: &Layout, row: Row, r: Rect) -> Vec<(Button, Rect)> {
     }
 }
 const BUTTON_H: i32 = 100;
+/// The store's tab bar, its list rows and its information rows.
+const STORE_TAB_BAR_H: i32 = 130;
+const STORE_ROW_H: i32 = 170;
+const STORE_INFO_ROW_H: i32 = 100;
 
 impl Layout {
     pub fn new(width: u32, height: u32, cols: u32, rows: u32) -> Layout {
@@ -777,21 +781,133 @@ impl Layout {
         ]
     }
 
-    /// The store page's icon: a rounded square under the title, at the left.
-    pub fn store_icon(&self) -> Rect {
-        Rect::new(MARGIN, TITLE_H + 40, 200, 200)
+    // ---- Store (App Store style): a large title, a floating tab bar at the bottom, and product pages that scroll.
+
+    /// The floating tab bar: a capsule at the bottom, with its three tabs (Today, Apps, Updates).
+    pub fn store_tabs(&self) -> Rect {
+        Rect::new(40, self.height - 40 - STORE_TAB_BAR_H, self.width - 80, STORE_TAB_BAR_H)
     }
 
-    /// The store page's action button: at the bottom right, above the footer.
-    pub fn store_action(&self) -> Rect {
-        let w = 360;
-        Rect::new(self.width - MARGIN - w, self.footer().y - 40 - BUTTON_H, w, BUTTON_H)
+    /// Tab `i` (0 Today, 1 Apps, 2 Updates): an equal part of the bar, inset a little.
+    pub fn store_tab(&self, i: usize) -> Rect {
+        let t = self.store_tabs();
+        let w = t.w / 3;
+        Rect::new(t.x + i as i32 * w + 10, t.y + 10, w - 20, t.h - 20)
     }
 
-    /// The store page's text (name, developer, description, changes): from beside the title down to the action button.
-    pub fn store_text(&self) -> Rect {
-        let top = TITLE_H + 40;
-        Rect::new(MARGIN + 240, top, self.width - 2 * MARGIN - 240, self.store_action().y - 40 - top)
+    pub fn store_tab_at(&self, x: f32, y: f32) -> Option<usize> {
+        (0..3).find(|&i| self.store_tab(i).contains(x, y))
+    }
+
+    /// The large title at the top of a store tab ("Today", "Apps", "Updates").
+    pub fn store_title(&self) -> Rect {
+        Rect::new(40, 50, self.width - 80, 110)
+    }
+
+    /// Where a tab's content ends: above the tab bar.
+    pub fn store_body_bottom(&self) -> i32 {
+        self.store_tabs().y - 30
+    }
+
+    /// Today's featured card: the first app, large, in black.
+    pub fn store_feature(&self) -> Rect {
+        Rect::new(40, 200, self.width - 80, 470)
+    }
+
+    /// "See All" beside the Apps heading under the featured card (it goes to the Apps tab).
+    pub fn store_see_all(&self) -> Rect {
+        let y = self.store_feature().bottom() + 40;
+        Rect::new(self.width - 40 - 260, y, 260, 60)
+    }
+
+    /// Today's rows, below the Apps heading.
+    pub fn store_today_row(&self, i: usize) -> Rect {
+        let top = self.store_feature().bottom() + 120;
+        Rect::new(40, top + i as i32 * STORE_ROW_H, self.width - 80, STORE_ROW_H)
+    }
+
+    /// Row `i` of the Apps or Updates list, on the current page.
+    pub fn store_list_row(&self, i: usize) -> Rect {
+        Rect::new(40, 200 + i as i32 * STORE_ROW_H, self.width - 80, STORE_ROW_H)
+    }
+
+    /// Rows that fit above the tab bar, with room for the page label.
+    pub fn store_rows_per_page(&self) -> usize {
+        ((self.store_body_bottom() - 200 - 90) / STORE_ROW_H).max(1) as usize
+    }
+
+    pub fn store_pages(&self, n: usize) -> usize {
+        n.div_ceil(self.store_rows_per_page()).max(1)
+    }
+
+    /// The page label under the rows: its left half turns back, its right half turns forward.
+    pub fn store_page_label(&self) -> Rect {
+        Rect::new(0, self.store_body_bottom() - 60, self.width, 60)
+    }
+
+    /// The index of the row under a point, among `rows` rows of a list or of Today.
+    pub fn store_row_at(&self, x: f32, y: f32, rows: usize, today: bool) -> Option<usize> {
+        (0..rows).find(|&i| if today { self.store_today_row(i) } else { self.store_list_row(i) }.contains(x, y))
+    }
+
+    // Product page. The header (back) stays; everything below it scrolls by `scroll` pixels.
+
+    pub fn store_back(&self) -> Rect {
+        Rect::new(40, 50, 260, 90)
+    }
+
+    /// The icon, centred.
+    pub fn store_hero(&self, scroll: i32) -> Rect {
+        Rect::new(self.width / 2 - 170, 190 - scroll, 340, 340)
+    }
+
+    /// The name, centred, under the icon.
+    pub fn store_name(&self, scroll: i32) -> Rect {
+        Rect::new(40, 570 - scroll, self.width - 80, 70)
+    }
+
+    pub fn store_subtitle(&self, scroll: i32) -> Rect {
+        Rect::new(40, 650 - scroll, self.width - 80, 50)
+    }
+
+    /// The action pill (GET, UPDATE, OPEN, VIEW), centred.
+    pub fn store_action(&self, scroll: i32) -> Rect {
+        Rect::new(self.width / 2 - 160, 770 - scroll, 320, 100)
+    }
+
+    /// The developer line under the pill.
+    pub fn store_developer(&self, scroll: i32) -> Rect {
+        Rect::new(40, 895 - scroll, self.width - 80, 40)
+    }
+
+    /// The information strip: three cells (version, licence, firmware), split by hairlines.
+    pub fn store_info_cells(&self, scroll: i32) -> [Rect; 3] {
+        let w = (self.width - 80) / 3;
+        let y = 980 - scroll;
+        [0, 1, 2].map(|i| Rect::new(40 + i * w, y, w, 150))
+    }
+
+    /// Screenshot `i`: 632 × 840 pictures shown at 540 px high, side by side.
+    pub fn store_shot(&self, i: usize, scroll: i32) -> Rect {
+        let h = 540;
+        let w = h * 632 / 840;
+        Rect::new(40 + i as i32 * (w + 24), 1190 - scroll, w, h)
+    }
+
+    /// Where the About text starts (its heading sits 74 px above it).
+    pub fn store_about(&self, scroll: i32) -> Rect {
+        Rect::new(40, 1874 - scroll, self.width - 80, 300)
+    }
+
+    /// Information row `i` (developer, licence, category, firmware, tested on, repository, then the changes).
+    pub fn store_info_row(&self, i: usize, scroll: i32) -> Rect {
+        let top = 2300 - scroll;
+        Rect::new(40, top + i as i32 * STORE_INFO_ROW_H, self.width - 80, STORE_INFO_ROW_H)
+    }
+
+    /// The height of a product page's content (for the scroll limit), with `rows` information rows.
+    pub fn store_page_height(&self, rows: usize) -> i32 {
+        2300 + rows as i32 * STORE_INFO_ROW_H + 60
     }
 
     pub fn confirm_buttons(&self) -> [(Button, Rect); 2] {
