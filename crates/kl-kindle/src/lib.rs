@@ -2,6 +2,7 @@
 //! input, the device's status, and the events an app's loop reads.
 
 pub mod device;
+pub mod display;
 pub mod eink;
 pub mod input;
 pub mod profile;
