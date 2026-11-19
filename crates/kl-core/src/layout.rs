@@ -808,6 +808,11 @@ impl Layout {
         (0..3).find(|&i| self.store_tab(i).contains(x, y))
     }
 
+    /// The Refresh button, at the right of the title row.
+    pub fn store_refresh(&self) -> Rect {
+        Rect::new(self.width - 40 - 260, 62, 260, 84)
+    }
+
     /// The large title at the top of a store tab ("Today", "Apps", "Updates").
     pub fn store_title(&self) -> Rect {
         Rect::new(40, 50, self.width - 80, 110)

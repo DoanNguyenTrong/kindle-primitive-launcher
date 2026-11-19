@@ -12,6 +12,7 @@ path = "src/main.rs"
 kl-store = { path = "../kl-store" }
 serde_json = "1"
 primitive-quick = { path = "../../tools/crates/primitive-quick" }
+primitive-net = { path = "../../tools/crates/primitive-net" }
 kl-core = { path = "../kl-core" }
 kl-render = { path = "../kl-render" }
 libc.workspace = true

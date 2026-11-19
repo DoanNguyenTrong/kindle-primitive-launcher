@@ -4,6 +4,7 @@
 //! the Mac with fixtures.
 
 pub mod catalog;
+pub mod refresh;
 pub mod install;
 pub mod record;
 pub mod resolve;

@@ -52,6 +52,47 @@ pub enum Ev {
     WifiResult { ok: bool, message: String },
     /// A background SSH job finished (set the password, check the server): what to tell the user.
     Notice(String),
+    /// The store's catalog refresh finished: the store's entries again, and what to tell the user.
+    StoreRefreshed { entries: Vec<kl_core::store::StoreEntry>, message: String },
+}
+
+/// The catalog's published site (the store's source of listings, icons and screenshots).
+const STORE_CATALOG: &str = "https://doannguyentrong.github.io/kindle-primitive-catalog/v1";
+
+/// The store's catalog files over HTTPS, through the shared download code (only the store's hosts are reached).
+struct NetSource;
+
+impl kl_store::refresh::Source for NetSource {
+    fn text(&self, url: &str) -> Result<String, String> {
+        primitive_net::fetch_text(url, &primitive_net::Policy::store(kl_store::refresh::MAX_INDEX)).map_err(|e| e.to_string())
+    }
+    fn bytes(&self, url: &str, max: u64) -> Result<Vec<u8>, String> {
+        primitive_net::fetch_bytes(url, &primitive_net::Policy::store(max)).map_err(|e| e.to_string())
+    }
+}
+
+/// Refresh the store's catalog cache on a thread, then send the store's entries and a message. The screen is not held
+/// while the files come in.
+fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) {
+    thread::spawn(move || {
+        let cache = dir.join("store/cache");
+        let message = match kl_store::refresh::refresh(STORE_CATALOG, &cache, &NetSource) {
+            Ok(report) => {
+                log(&format!("store: refreshed {} apps, {} failed, {} removed", report.refreshed, report.failed.len(), report.removed));
+                if report.failed.is_empty() {
+                    format!("Store updated: {} apps.", report.refreshed)
+                } else {
+                    format!("Store updated: {} apps. {} could not be updated.", report.refreshed, report.failed.len())
+                }
+            }
+            Err(e) => {
+                log(&format!("store: refresh failed: {e}"));
+                format!("The store could not be updated: {e}")
+            }
+        };
+        let entries = load_store(&dir);
+        let _ = tx.send(Ev::StoreRefreshed { entries, message });
+    });
 }
 
 /// Join a network on a thread, then send the result and a fresh scan. The password is passed on, never logged.
@@ -416,6 +457,16 @@ fn main() {
                 status = device::status(&settings);
                 Action::Redraw { full: false }
             }
+            Ev::StoreRefreshed { entries, message } => {
+                kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
+                ui.set_store(entries);
+                ui.store_busy = false;
+                if ui.screen == Screen::StoreApp {
+                    ui.screen = Screen::Store;
+                }
+                ui.notice = Some(message);
+                Action::Redraw { full: false }
+            }
             Ev::Notice(message) => {
                 ui.notice = Some(message);
                 status = device::status(&settings);
@@ -652,6 +703,16 @@ fn main() {
                 display.show_region(frame, area, &settings);
                 std::process::exit(EXIT_KINDLE_UI);
             }
+            Action::Device(DeviceCmd::StoreRefresh) => {
+                if status.wifi_on && status.wifi_state == "connected" {
+                    start_store_refresh(tx.clone(), dir.clone());
+                    ui.notice = Some("Updating the store...".to_string());
+                } else {
+                    ui.store_busy = false;
+                    ui.notice = Some("Connect to Wi-Fi to update the store.".to_string());
+                }
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
             Action::Device(cmd) => {
                 if let DeviceCmd::StoreInstall(_) = cmd {
                     // Until the store's download is wired (implementation plan D2), say so on the screen.
@@ -775,6 +836,8 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::PowerOff => device::system_command("halt -f -p"),
         DeviceCmd::RestartLauncher => device::restart_launcher(),
         // The download of a store app is the store's network step (implementation plan D2): not wired yet.
+        // The catalog download runs on a thread (see `start_store_refresh`), not here.
+        DeviceCmd::StoreRefresh => {}
         DeviceCmd::StoreInstall(index) => log(&format!("store: install of entry {index} requested; the download is not wired yet")),
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::ToggleSleepScreen => {

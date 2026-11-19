@@ -74,6 +74,8 @@ pub enum DeviceCmd {
     RestartLauncher,
     /// Primitive Store: install the entry at this index of `Ui::store` (its position in the list).
     StoreInstall(usize),
+    /// Primitive Store: download the catalog again (the Refresh button).
+    StoreRefresh,
     ToggleAutostart,
     ToggleSleepScreen,
     /// Follow the device's turn again (Settings > Screen > Auto).
@@ -267,6 +269,8 @@ pub struct Ui {
     /// The tab shown, and how far the product page is scrolled.
     pub store_tab: crate::store::StoreTab,
     pub store_scroll: i32,
+    /// A catalog refresh is running (the button shows Updating).
+    pub store_busy: bool,
     /// Background jobs still running (shown in the status bar).
     pub running: usize,
     /// The Wi-Fi page: the networks from the last scan, whether a scan is running, and the list's scroll.
@@ -315,6 +319,7 @@ impl Ui {
             store_open: None,
             store_tab: crate::store::StoreTab::Today,
             store_scroll: 0,
+            store_busy: false,
             running: 0,
             wifi: crate::wifi::WifiInfo::default(),
             wifi_scanning: false,
@@ -506,6 +511,13 @@ impl Ui {
             Input::PageBack => self.store_turn(-1),
             Input::Swipe { dx, dy, .. } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => self.store_turn(if dx < 0.0 { 1 } else { -1 }),
             Input::Tap(x, y) => {
+                if l.store_refresh().inset(-16).contains(x, y) {
+                    if self.store_busy {
+                        return Action::None;
+                    }
+                    self.store_busy = true;
+                    return Action::Device(DeviceCmd::StoreRefresh);
+                }
                 if let Some(i) = l.store_tab_at(x, y) {
                     let tab = [StoreTab::Today, StoreTab::Apps, StoreTab::Updates][i];
                     if tab == self.store_tab {
@@ -1306,6 +1318,18 @@ mod tests {
         a.hidden = true;
         let u = Ui::new(vec![a, script("y.sh")], Layout::new(1264, 1680, 3, 3));
         assert_eq!(u.apps().len(), 1);
+    }
+
+    #[test]
+    fn refresh_asks_the_device_once_while_it_runs() {
+        use crate::store::{test_entry, Status};
+        let mut u = ui(0);
+        u.set_store(vec![test_entry("a", "Alpha", Status::NotInstalled)]);
+        u.open_store();
+        let button = centre(u.layout.store_refresh());
+        assert_eq!(u.handle(button), Action::Device(DeviceCmd::StoreRefresh));
+        assert!(u.store_busy);
+        assert_eq!(u.handle(button), Action::None, "a second tap waits for the first refresh");
     }
 
     #[test]
