@@ -1,37 +1,28 @@
 # Install Primitive Launcher
 
-Primitive Launcher runs on a **jailbroken** Kindle. It is verified on the Kindle Oasis 3 (firmware 5.18.2)
-only. It does not jailbreak the Kindle and does not change any file of the Kindle's own software.
+Primitive Launcher is the first step in setting up PrimitiveOS on a **jailbroken** Kindle. It is verified on the
+Kindle Oasis 3 (firmware 5.18.2). It requires an existing jailbreak and keeps the Kindle's stock UI accessible.
 
 ## What you need
 
 - A jailbroken Kindle Oasis 3. Other models are not supported yet.
-- A computer and a USB cable, or SSH access to the Kindle.
-- Optional: [KOReader](https://koreader.rocks) and [Primitive Browser](https://github.com/DoanNguyenTrong/kindle-primitive-browser).
-  The launcher finds them by their library entries (`KOReader.sh`, `Primitive Browser.sh`).
+- A computer and a USB data cable for first-time setup.
 
-## Update with Store
+## First-time setup over USB
 
-If Launcher and Store are already on the Kindle, open **Store** and tap **Refresh**. When an
-approved Launcher release appears under **Updates**, select it and follow the prompts. The Launcher restarts to test
-the update. If the trial fails, the Launcher returns to the previous version. Your settings and library remain in place.
-
-## Install with a USB cable
-
-Install the launcher over USB for the first setup. Launcher updates through Store require the launcher
-self-update flow and a published listing.
+Launcher is the only app you copy by hand to get started.
 
 1. Download `primitive-launcher-<version>.zip` from the
    [latest release](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases/latest) and unzip it.
    You can also use a `primitive-launcher-<version>-armhf.zip` package when one is available.
-2. Connect the Kindle to the computer **while the stock Kindle UI is on the screen**. (While the launcher runs,
-   the Kindle charges over USB but does not show up as a drive. Tap *Kindle UI* in the launcher first.)
-3. Copy the `launcher` and `documents` folders onto the root of the Kindle drive. Merge `documents` with the
-   folder that is already there; your books stay where they are.
+2. Connect the Kindle to the computer **while the stock Kindle UI is on the screen**.
+3. Copy the `launcher/` folder to the root of the Kindle drive. Copy `Launcher.sh` from the archive's `documents/`
+   folder into the existing `documents/` folder on the Kindle, alongside your books.
 4. Eject the Kindle and unplug it.
 5. Open **Launcher** in the Kindle library. The stock UI stops and the launcher takes the screen. The first time, the
    launcher also sets up its boot start (a few seconds more): a cable in at boot then shows its picture, and SSH starts
    by itself. No computer is needed for this.
+6. Open **Store** from the Launcher grid and follow the installation prompt. Browse and install apps through Store.
 
 To check a download, compare its SHA-256 with the `.sha256` file next to it in the release:
 
@@ -40,7 +31,13 @@ shasum -a 256 primitive-launcher-<version>.zip      # macOS and Linux
 certutil -hashfile primitive-launcher-<version>.zip SHA256    # Windows
 ```
 
-## Install over SSH (developers)
+## Update with Store
+
+On an existing Launcher that supports self-updates, open **Store** and tap **Refresh**. When a Launcher release
+appears under **Updates**, select it and follow the prompts. Launcher restarts to test the update and returns to
+the previous version if the trial fails.
+
+## Deploy a development build over SSH
 
 With the SSH server running on the Kindle (start it in the launcher's Settings > SSH & DNS, or with the quick
 settings' SSH switch), build and install from a checkout:
@@ -62,13 +59,10 @@ KINDLE_HOST=<kindle-ip> sh deploy/install-ssh.sh
 - **Edit:** long-press an app to move it, change its icon (PNG files in `launcher/icons/`) or hide it.
 - **Settings:** frontlight, warmth, dark mode, Wi-Fi, SSH and public DNS (SSH & DNS), screen turn, the opening
   animation and the sleep screen.
+- **About:** open **Settings → About** to see the PrimitiveOS system name, Launcher version, and Kindle details.
+  [About preview](images/settings-about.png)
 
 Your settings are in `launcher/settings.txt` and `launcher/apps.toml`. The log is `launcher/log-launcher.txt`.
-
-## Update over USB
-
-Copy the new `launcher` and `documents` folders over the old ones. `apps.toml`, `settings.txt`, your icons and
-your sleep pictures are not in the package, so they are kept.
 
 ## If something goes wrong
 

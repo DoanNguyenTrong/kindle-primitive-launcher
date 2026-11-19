@@ -22,8 +22,9 @@ Written in Rust. It replaces the stock Kindle home with a grid of your apps, on 
 
 ---
 
-Primitive Launcher is the interface of a jailbroken Kindle for people who read in KOReader, browse with
-[Primitive Browser](https://github.com/DoanNguyenTrong/kindle-primitive-browser) and run KUAL extensions. Every
+Primitive Launcher is the home screen for [PrimitiveOS](https://github.com/DoanNguyenTrong/kindle-primitive),
+the app suite for jailbroken Kindles. Open KOReader, browse with
+[Primitive Browser](https://github.com/DoanNguyenTrong/kindle-primitive-browser), or run KUAL extensions. Every
 app is an icon on one grid. While the launcher runs, the stock Kindle framework is stopped, which leaves the
 apps about 140 MB more memory. The stock Kindle UI stays installed and unchanged, one tap away, and it is what
 every failure falls back to.
@@ -44,6 +45,8 @@ every failure falls back to.
 <sub>Screenshots are from the desktop build of the same code, with a demo battery (78%), a fixed clock and a demo
 extension. They are not photos of a device.</sub>
 
+See the [About screen](docs/images/settings-about.png) for the PrimitiveOS name, Launcher version, and Kindle details.
+
 ## Why this exists
 
 On a jailbroken Kindle that is used for KOReader and other apps, the stock home screen is mostly in the way.
@@ -62,11 +65,16 @@ is used only when you ask for it, or when something goes wrong.
 
 ## Quick start
 
-1. **Download** `primitive-launcher-<version>.zip` from the [latest release](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases/latest).
-2. **Copy** the `launcher` and `documents` folders onto your jailbroken Kindle's root, from the stock Kindle UI.
-3. **Open** *Launcher* in the Kindle library.
+Primitive Launcher is the one app you copy by hand to set up PrimitiveOS.
 
-The full steps, upgrades and removal are in the [install guide](docs/INSTALL.md).
+1. **Download** `primitive-launcher-<version>.zip` from the [latest release](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases/latest) and extract it.
+2. With the stock Kindle UI open, connect your jailbroken Kindle over USB. Copy `launcher/` to the root of the Kindle
+   drive and `Launcher.sh` from the archive's `documents/` into the Kindle's existing `documents/` folder. Eject and
+   unplug the Kindle.
+3. **Open** *Launcher* in the Kindle library.
+4. Open **Store** from the Launcher grid and follow its prompt. Use Store to find and install the rest of the apps.
+
+The [install guide](docs/INSTALL.md) covers first-time setup, updates, and recovery.
 
 ## Why it is better
 

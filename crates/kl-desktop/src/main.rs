@@ -54,7 +54,7 @@ fn demo_status() -> Status {
         animation: true,
         rotation: Rotation::Upright,
         memory: "MemAvailable 312 MB".into(),
-        ip: "192.168.1.28".into(),
+        ip: "192.0.2.28".into(),
         storage: "2.1 GB free".into(),
         system: primitive_quick::Stats { cpu: Some(12), ram: Some((180, 512)), storage: Some((1_100_000_000, 6_100_000_000)) },
     }
@@ -203,6 +203,10 @@ fn main() {
         ui.screen = screen;
         write_png(&out.join(format!("{name}.png")), W, H, &renderer.draw(&ui, &dark));
     }
+    ui.screen = kl_core::Screen::Page(kl_core::layout::Page::About);
+    write_png(&out.join("dark-settings-about.png"), W, H, &renderer.draw(&ui, &dark));
+    let turned = kl_render::for_panel(renderer.draw(&ui, &status), Rotation::UpsideDown, 0);
+    write_png(&out.join("settings-about-turned.png"), W, H, &turned);
     ui.screen = kl_core::Screen::Home;
     let first = ui.layout.cell(0);
     ui.handle(Input::LongTap(first.x as f32 + 5.0, first.y as f32 + 5.0));
