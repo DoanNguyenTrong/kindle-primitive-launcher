@@ -33,9 +33,14 @@ MAX_CRASHES=${KL_MAX_CRASHES:-3}
 CRASH_WINDOW=60
 HEARTBEAT_LIMIT=${KL_HEARTBEAT_LIMIT:-30}
 WATCH_EVERY=${KL_WATCH_EVERY:-5}
+UPDATE_HEALTHY=${KL_UPDATE_HEALTHY_SECS:-10}
+UPDATE_JOURNAL=$DIR/store/journal.json
+UPDATE_DRIVER=$RUN/launcher-update-driver
+UPDATE_SETUP=$RUN/launcher-update-setup
+UPDATE_READY=$RUN/launcher-update-ready
 
 mkdir -p "$RUN"
-export KL_DIR="$DIR" KL_RUN="$RUN"
+export KL_DIR="$DIR" KL_RUN="$RUN" KL_LAUNCHER_SELF_UPDATE=1
 # Nothing of this script may hold /mnt/us: the Kindle unmounts it to show its drive on a computer (a USB cable), and
 # it kills whatever still holds it. The working directory is /, and long-running programs log through a pipe.
 cd /
@@ -273,7 +278,7 @@ restore() {
 
 # Copy a file from $DIR to $RUN when it is newer there (or the copy is missing).
 refresh_copy() {
-    if [ ! -f "$RUN/$1" ] || [ "$DIR/$1" -nt "$RUN/$1" ]; then
+    if [ "${2:-}" = force ] || [ ! -f "$RUN/$1" ] || [ "$DIR/$1" -nt "$RUN/$1" ]; then
         cp "$DIR/$1" "$RUN/$1.new" 2>/dev/null && mv "$RUN/$1.new" "$RUN/$1" && log "copied $1 to $RUN"
     fi
 }
@@ -285,6 +290,110 @@ refresh_files() {
     refresh_copy fonts/NotoSans-Regular.ttf
     refresh_copy fonts/NotoSans-Bold.ttf
     refresh_copy holder.lua
+}
+
+# The driver stays the pre-update launcher throughout the transaction. A cold restart can recover it from
+# the engine's durable backup. These helpers never execute a shell command from the journal.
+update_driver() {
+    if [ ! -x "$UPDATE_DRIVER" ]; then
+        binary=$DIR/kl-launcher
+        [ ! -x "$binary.prev" ] || binary=$binary.prev
+        cp "$binary" "$UPDATE_DRIVER.new" && chmod 755 "$UPDATE_DRIVER.new" &&
+            mv "$UPDATE_DRIVER.new" "$UPDATE_DRIVER" || return 1
+    fi
+    if [ ! -f "$UPDATE_SETUP" ]; then
+        setup=$DIR/setup-boot.sh
+        [ ! -f "$setup.prev" ] || setup=$setup.prev
+        cp "$setup" "$UPDATE_SETUP.new" && mv "$UPDATE_SETUP.new" "$UPDATE_SETUP" || return 1
+    fi
+}
+
+update_copy() {
+    mkdir -p "$RUN/fonts" &&
+        refresh_copy kl-launcher force && chmod 755 "$RUN/kl-launcher" &&
+        refresh_copy fonts/NotoSans-Regular.ttf force &&
+        refresh_copy fonts/NotoSans-Bold.ttf force || return 1
+    [ ! -f "$DIR/holder.lua" ] || refresh_copy holder.lua force
+}
+
+update_clear() {
+    rm -f "$UPDATE_DRIVER" "$UPDATE_SETUP" "$UPDATE_READY"
+    trial=0
+    volumd_resume
+}
+
+update_revert() {
+    "$UPDATE_DRIVER" --launcher-update revert >> "$LOG_OUT" 2>&1 || return 1
+    update_copy || return 1
+    if [ "$mirror_changed" = yes ]; then
+        KL_SETUP_BOOT_STRICT=1 sh "$UPDATE_SETUP" "$DIR" >> "$LOG_OUT" 2>&1 ||
+            log "launcher update: old boot copy still needs refreshing"
+    fi
+    log "launcher update: previous files restored"
+    update_clear
+}
+
+update_begin() {
+    trial=0
+    mirror_changed=no
+    [ -f "$UPDATE_JOURNAL" ] || return 0
+    volumd_pause
+    if ! update_driver; then
+        log "launcher update: could not copy the recovery tools"
+        return 1
+    fi
+    update_state=$("$UPDATE_DRIVER" --launcher-update begin 2>> "$LOG") || {
+        log "launcher update: could not start the trial"
+        return 1
+    }
+    case "$update_state" in
+        idle) update_clear ;;
+        reverted)
+            update_copy || return 1
+            KL_SETUP_BOOT_STRICT=1 sh "$UPDATE_SETUP" "$DIR" >> "$LOG_OUT" 2>&1 ||
+                log "launcher update: old boot copy still needs refreshing"
+            log "launcher update: previous files restored after failed starts"
+            update_clear
+            ;;
+        trial)
+            if update_copy; then
+                trial=1
+            else
+                log "launcher update: could not copy the candidate to temporary storage"
+                update_revert || return 1
+            fi
+            ;;
+        *) log "launcher update: unrecognized trial state"; return 1 ;;
+    esac
+}
+
+update_ready() {
+    [ "$(cat "$UPDATE_READY" 2>/dev/null)" = "$lp" ]
+}
+
+update_healthy() {
+    update_ready || return 1
+    hb=$(cat "$RUN/heartbeat" 2>/dev/null)
+    case "$hb" in ''|*[!0-9]*) return 1 ;; esac
+    now=$(date +%s)
+    [ "$hb" -gt "$launch_started" ] &&
+        [ "$hb" -le "$now" ] &&
+        [ $((now - hb)) -le "$HEARTBEAT_LIMIT" ] &&
+        [ $((now - launch_started)) -ge "$UPDATE_HEALTHY" ]
+}
+
+update_accept() {
+    mirror_changed=yes
+    KL_SETUP_BOOT_STRICT=1 sh "$UPDATE_SETUP" "$DIR" >> "$LOG_OUT" 2>&1 || {
+        log "launcher update: could not refresh the boot copy"
+        return 1
+    }
+    "$UPDATE_DRIVER" --launcher-update accept >> "$LOG_OUT" 2>&1 || {
+        log "launcher update: could not finish the transaction"
+        return 1
+    }
+    log "launcher update: healthy, boot copy refreshed"
+    update_clear
 }
 
 # Logs what the USB cable and the drive do, and whether the launcher and this script are alive, each time one of
@@ -388,7 +497,7 @@ run_app() {
         log "the app left the framework running; stopping it again"
         framework_stop
     fi
-    volumd_resume
+    [ -f "$UPDATE_JOURNAL" ] || volumd_resume
 }
 
 logger_start
@@ -402,26 +511,57 @@ else
     echo stopped > "$MARK"
     holder_start
 fi
-volumd_resume
+[ -f "$UPDATE_JOURNAL" ] || volumd_resume
 watchdog $$ &
 usb_watch $$ &
 trap 'log "supervisor exit (status $?)"' EXIT
 
 crashes=""
 while :; do
+    update_begin || break
     refresh_files
     if [ ! -x "$RUN/kl-launcher" ]; then
         log "no launcher binary in $DIR; giving up"
         break
     fi
-    date +%s > "$RUN/heartbeat"
-    rm -f "$RUN/next"
-    "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
+    launch_started=$(date +%s)
+    echo "$launch_started" > "$RUN/heartbeat"
+    rm -f "$RUN/next" "$UPDATE_READY"
+    KL_LAUNCHER_UPDATE_TRIAL=$trial "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
     lp=$!
     echo "$lp" > "$LAUNCHER_PID"
+    update_failed=no
+    if [ "$trial" -eq 1 ]; then
+        while kill -0 "$lp" 2>/dev/null; do
+            if update_healthy; then
+                if ! update_accept; then
+                    update_failed=yes
+                    kill -KILL "$lp" 2>/dev/null
+                fi
+                break
+            fi
+            sleep 1
+        done
+    fi
     wait "$lp"
     rc=$?
     rm -f "$LAUNCHER_PID"
+    if [ "$trial" -eq 1 ]; then
+        # A user may open an app or leave before the second heartbeat. The ready marker from this process
+        # and its clean protocol exit prove this start; a crash or an old marker does not.
+        if [ "$update_failed" = no ] && { [ "$rc" -eq 0 ] || [ "$rc" -eq 10 ]; } && update_ready; then
+            update_accept || update_failed=yes
+        fi
+        if [ "$update_failed" = yes ]; then
+            update_revert || break
+            continue
+        fi
+        if [ "$trial" -eq 1 ]; then
+            log "launcher update: trial exited before it was healthy (rc=$rc)"
+            sleep 1
+            continue
+        fi
+    fi
     case "$rc" in
         10)
             run_app

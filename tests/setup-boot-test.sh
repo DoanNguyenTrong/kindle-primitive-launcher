@@ -88,6 +88,11 @@ check "no mntroot: exit status 0" "$status" "0"
 check "no mntroot: job left as it was" "$(cat "$JOB")" "job 2"
 check "no mntroot: logged" "$(grep -c 'not writable' "$LOG")" "1"
 
+# A trial needs the caller to see mirror and job failures before accepting the candidate.
+KL_SETUP_BOOT_STRICT=1 PATH="/usr/bin:/bin" sh "$SETUP" "$DIR"
+check "strict mode reports the job failure" "$?" "1"
+check "strict mode leaves the old job" "$(cat "$JOB")" "job 2"
+
 # A missing launcher folder file is skipped, not an error.
 rm -f "$DIR/fonts/NotoSans-Regular.ttf"
 PATH="$STUB:$PATH" sh "$SETUP" "$DIR"

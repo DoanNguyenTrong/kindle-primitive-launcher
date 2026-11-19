@@ -28,11 +28,15 @@ cd /
 if [ -f "$RUN/supervisor.pid" ] && kill -0 "$(cat "$RUN/supervisor.pid" 2>/dev/null)" 2>/dev/null; then
     exit 0
 fi
-[ -f "$DIR/supervisor.sh" ] || exit 1
+supervisor=$DIR/supervisor.sh
+if [ -f "$DIR/store/journal.json" ] && [ -f "$supervisor.prev" ]; then
+    supervisor=$supervisor.prev
+fi
+[ -f "$supervisor" ] || exit 1
 # The boot start: the copy on /var/local and the boot job. Nothing is written when they are already the same.
-[ -f "$DIR/setup-boot.sh" ] && sh "$DIR/setup-boot.sh" "$DIR"
+[ ! -f "$DIR/store/journal.json" ] && [ -f "$DIR/setup-boot.sh" ] && sh "$DIR/setup-boot.sh" "$DIR"
 mkdir -p "$RUN"
-cp "$DIR/supervisor.sh" "$RUN/supervisor.sh" || exit 1
+cp "$supervisor" "$RUN/supervisor.sh" || exit 1
 # No supervisor is running (checked above), so a pid file left over is stale: remove it, so the wait below
 # cannot mistake it for the new supervisor having ended.
 rm -f "$RUN/supervisor.pid"

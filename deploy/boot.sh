@@ -42,7 +42,11 @@ fi
 
 n=$(cat "$ATTEMPTS" 2>/dev/null)
 n=$(( ${n:-0} + 1 ))
-if [ "$n" -ge "$MAX_ATTEMPTS" ]; then
+update_in_progress=no
+if [ -f "$DIR/store/journal.json" ] && [ -f "$DIR/kl-launcher.prev" ]; then
+    update_in_progress=yes
+fi
+if [ "$n" -ge "$MAX_ATTEMPTS" ] && [ "$update_in_progress" = no ]; then
     # Reset the count too, so deleting DISABLE later starts from zero.
     echo 0 > "$ATTEMPTS"
     : > "$DISABLE"
@@ -51,7 +55,11 @@ if [ "$n" -ge "$MAX_ATTEMPTS" ]; then
 fi
 echo "$n" > "$ATTEMPTS"
 
-if [ ! -f "$DIR/supervisor.sh" ]; then
+supervisor=$DIR/supervisor.sh
+if [ -f "$DIR/store/journal.json" ] && [ -f "$supervisor.prev" ]; then
+    supervisor=$supervisor.prev
+fi
+if [ ! -f "$supervisor" ]; then
     log "no supervisor.sh: stock UI"
     exit 0
 fi
@@ -70,7 +78,7 @@ sleep "$SETTLE"
 # so it would stay on top of the launcher: stop both before the launcher takes the screen.
 killall -q -s KILL animator 2>/dev/null || true
 killall -q -s KILL BootActionsApplication 2>/dev/null || true
-cp "$DIR/supervisor.sh" "$RUN/supervisor.sh" 2>/dev/null
+cp "$supervisor" "$RUN/supervisor.sh" 2>/dev/null || exit 0
 log "boot $n: starting the launcher"
 sh "$RUN/supervisor.sh" >> "$LOG" 2>&1 &
 sp=$!

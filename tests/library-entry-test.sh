@@ -44,6 +44,17 @@ took=$(( $(date +%s) - t0 ))
 check "returned at once (took ${took}s)" '[ "$took" -le 1 ]'
 kill "$holder" 2>/dev/null
 
+echo "test: an unfinished update keeps the old supervisor and does not refresh the mirror"
+rm -f "$KL_RUN/supervisor.pid"
+mkdir -p "$KL_DIR/store"
+: > "$KL_DIR/store/journal.json"
+printf '#!/bin/sh\necho $$ > "$KL_RUN/supervisor.pid"\necho saved > "$KL_RUN/update-test"\nsleep 1\nrm -f "$KL_RUN/supervisor.pid"\n' > "$KL_DIR/supervisor.sh.prev"
+printf '#!/bin/sh\necho candidate > "$KL_RUN/update-test"\n' > "$KL_DIR/supervisor.sh"
+printf '#!/bin/sh\ntouch "$KL_RUN/mirror-test"\n' > "$KL_DIR/setup-boot.sh"
+sh "$HERE/deploy/library-entry.sh"
+check "saved supervisor ran" '[ "$(cat "$KL_RUN/update-test" 2>/dev/null)" = saved ]'
+check "old mirror left alone" '[ ! -f "$KL_RUN/mirror-test" ]'
+
 rm -rf "$ROOT"
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

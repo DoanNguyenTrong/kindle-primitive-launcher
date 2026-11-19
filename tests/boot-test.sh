@@ -93,5 +93,19 @@ boot
 check "logged" 'grep -q "no supervisor.sh" "$KL_DIR/log-launcher.txt"'
 teardown
 
+echo "test: an unfinished update starts with the saved supervisor"
+setup
+mv "$KL_DIR/supervisor.sh" "$KL_DIR/supervisor.sh.prev"
+mkdir -p "$KL_DIR/store"
+: > "$KL_DIR/store/journal.json"
+: > "$KL_DIR/kl-launcher.prev"
+echo 2 > "$KL_DIR/boot-attempts"
+printf '#!/bin/sh\necho broken >> "$STATE/calls"\n' > "$KL_DIR/supervisor.sh"
+boot
+check "saved supervisor ran" '[ "$(count_runs)" = 1 ]'
+check "candidate supervisor left alone" '! grep -q broken "$STATE/calls"'
+check "generic boot limit did not prevent trial recovery" '[ ! -f "$KL_DIR/DISABLE" ]'
+teardown
+
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

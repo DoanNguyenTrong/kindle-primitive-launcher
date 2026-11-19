@@ -299,5 +299,122 @@ check "stdout was a pipe" 'grep -q "launcher stdout is a pipe" "$STATE/calls"'
 check "no pipe left behind" '[ ! -p "$KL_RUN/log.fifo" ]'
 teardown
 
+setup_update() {
+    setup
+    export KL_UPDATE_HEALTHY_SECS=0
+    mkdir -p "$KL_DIR/store" "$KL_RUN"
+    printf '0\n' > "$STATE/codes"
+    : > "$KL_DIR/store/journal.json"
+    echo 0 > "$STATE/attempts"
+    mv "$KL_DIR/kl-launcher" "$STATE/ordinary-launcher"
+    cat > "$KL_DIR/kl-launcher" <<'OLD'
+#!/bin/sh
+if [ "$1" != --launcher-update ]; then exec "$STATE/ordinary-launcher" "$@"; fi
+old="$KL_DIR/kl-launcher.prev"
+pending="$KL_DIR/store/journal.json"
+echo "driver $2" >> "$STATE/calls"
+case "$2" in
+    begin)
+        [ -f "$pending" ] || { echo idle; exit 0; }
+        n=$(cat "$STATE/attempts")
+        if [ "$n" -ge 3 ]; then
+            mv "$old" "$KL_DIR/kl-launcher"
+            rm -f "$pending"
+            echo reverted
+            exit 0
+        fi
+        if [ ! -f "$old" ]; then
+            cp "$KL_DIR/kl-launcher" "$old"
+            cp "$STATE/candidate" "$KL_DIR/kl-launcher"
+        fi
+        echo $((n + 1)) > "$STATE/attempts"
+        echo trial
+        ;;
+    accept)
+        [ -f "$STATE/mirrored" ] || exit 1
+        rm -f "$old" "$pending"
+        : > "$STATE/accepted"
+        ;;
+    revert)
+        mv "$old" "$KL_DIR/kl-launcher"
+        rm -f "$pending"
+        ;;
+    *) exit 1 ;;
+esac
+OLD
+    cat > "$KL_DIR/setup-boot.sh" <<'MIRROR'
+#!/bin/sh
+[ "$KL_SETUP_BOOT_STRICT" = 1 ] || exit 1
+if cmp -s "$KL_DIR/kl-launcher" "$STATE/candidate"; then
+    echo "candidate mirror" >> "$STATE/calls"
+    [ ! -f "$STATE/fail-mirror" ] || exit 1
+else
+    echo "previous mirror" >> "$STATE/calls"
+fi
+: > "$STATE/mirrored"
+MIRROR
+    cat > "$STATE/candidate" <<'CANDIDATE'
+#!/bin/sh
+echo "candidate trial=$KL_LAUNCHER_UPDATE_TRIAL" >> "$STATE/calls"
+[ "$KL_LAUNCHER_UPDATE_TRIAL" = 1 ] || exit 2
+if [ -f "$STATE/stale-ready" ]; then
+    echo 999999 > "$KL_RUN/launcher-update-ready"
+    exit 0
+fi
+echo "$$" > "$KL_RUN/launcher-update-ready"
+sleep 1
+date +%s > "$KL_RUN/heartbeat"
+count=0
+while [ "$count" -lt 7 ]; do
+    [ ! -f "$STATE/accepted" ] || exit 0
+    count=$((count + 1))
+    sleep 1
+done
+exit 2
+CANDIDATE
+    chmod 755 "$KL_DIR/kl-launcher" "$STATE/candidate"
+}
+
+echo "test: a candidate proves it can start before backups are removed"
+setup_update
+run_sup
+check "candidate ran with the trial flag" 'grep -q "candidate trial=1" "$STATE/calls"'
+check "accepted before the process exited" '[ -f "$STATE/accepted" ]'
+check "candidate boot copy refreshed" 'grep -q "candidate mirror" "$STATE/calls"'
+check "journal and temp driver gone" '[ ! -f "$KL_DIR/store/journal.json" ] && [ ! -f "$KL_RUN/launcher-update-driver" ]'
+check "candidate still installed" 'cmp -s "$KL_DIR/kl-launcher" "$STATE/candidate"'
+check "framework and USB state restored" '[ "$(cat "$STATE/fw")" = running ] && [ ! -f "$KL_RUN/volumd-paused" ]'
+teardown
+
+echo "test: an old readiness marker cannot accept the candidate and retry limit restores the launcher"
+setup_update
+touch "$STATE/stale-ready"
+run_sup
+check "exactly three candidate starts" '[ "$(grep -c "candidate trial=1" "$STATE/calls")" = 3 ]'
+check "candidate was never accepted" '[ ! -f "$STATE/accepted" ]'
+check "old mirror and binary returned" 'grep -q "previous mirror" "$STATE/calls" && grep -q "launcher run: 0" "$STATE/calls"'
+check "reported restoration" 'grep -q "previous files restored after failed starts" "$KL_DIR/log-launcher.txt"'
+teardown
+
+echo "test: a cold start uses the old driver for a previously started trial"
+setup_update
+touch "$STATE/stale-ready"
+cp "$KL_DIR/kl-launcher" "$KL_DIR/kl-launcher.prev"
+cp "$STATE/candidate" "$KL_DIR/kl-launcher"
+echo 2 > "$STATE/attempts"
+run_sup
+check "only the persisted last attempt was run" '[ "$(grep -c "candidate trial=1" "$STATE/calls")" = 1 ]'
+check "restored launcher started" 'grep -q "launcher run: 0" "$STATE/calls"'
+teardown
+
+echo "test: a boot mirror failure restores the earlier launcher"
+setup_update
+touch "$STATE/fail-mirror"
+run_sup
+check "rollback ran" 'grep -q "driver revert" "$STATE/calls"'
+check "old mirror and launcher restored" 'grep -q "previous mirror" "$STATE/calls" && grep -q "launcher run: 0" "$STATE/calls"'
+check "failed mirror never accepted" '[ ! -f "$STATE/accepted" ]'
+teardown
+
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]

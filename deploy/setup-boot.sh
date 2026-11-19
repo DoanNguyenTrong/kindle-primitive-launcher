@@ -12,6 +12,8 @@ DIR=${1:-/mnt/us/launcher}
 M=${KL_MIRROR:-/var/local/primitive-launcher}
 JOB=${KL_JOB:-/etc/upstart/primitive-launcher.conf}
 LOG=${KL_LOG:-$DIR/log-launcher.txt}
+strict=${KL_SETUP_BOOT_STRICT:-0}
+failed=0
 
 log() { echo "[setup $(date '+%H:%M:%S')] $*" >> "$LOG" 2>/dev/null; }
 
@@ -23,11 +25,11 @@ copy() {
         log "copied $2"
     else
         log "copy failed: $2"
-        return 1
+        failed=1
     fi
 }
 
-mkdir -p "$M/fonts" "$M/ssh/bin" "$M/ssh/lib" 2>/dev/null
+mkdir -p "$M/fonts" "$M/ssh/bin" "$M/ssh/lib" 2>/dev/null || failed=1
 copy "$DIR/kl-launcher" "$M/kl-launcher"
 for f in supervisor.sh boot.sh holder.lua ssh.sh; do
     copy "$DIR/$f" "$M/$f"
@@ -40,7 +42,9 @@ done
 copy "$DIR/ssh/bin/dropbear" "$M/ssh/bin/dropbear"
 copy "$DIR/ssh/lib/libz.so.1" "$M/ssh/lib/libz.so.1"
 copy "$DIR/ssh/dropbear_ed25519_host_key" "$M/ssh/dropbear_ed25519_host_key"
-chmod 755 "$M/kl-launcher" "$M/supervisor.sh" "$M/boot.sh" "$M/ssh.sh" "$M/ssh/bin/dropbear" 2>/dev/null || true
+for f in kl-launcher supervisor.sh boot.sh ssh.sh ssh/bin/dropbear; do
+    [ ! -f "$M/$f" ] || chmod 755 "$M/$f" 2>/dev/null || failed=1
+done
 
 # The boot job. The root filesystem is read-only except between "mntroot rw" and "mntroot ro".
 if [ -f "$DIR/primitive-launcher.conf" ] && ! cmp -s "$DIR/primitive-launcher.conf" "$JOB" 2>/dev/null; then
@@ -49,10 +53,13 @@ if [ -f "$DIR/primitive-launcher.conf" ] && ! cmp -s "$DIR/primitive-launcher.co
             log "boot job written: $JOB"
         else
             log "boot job not written: $JOB"
+            failed=1
         fi
-        mntroot ro
+        mntroot ro || failed=1
     else
         log "boot job not written: the root filesystem is not writable here"
+        failed=1
     fi
 fi
+[ "$strict" != 1 ] || exit "$failed"
 exit 0
