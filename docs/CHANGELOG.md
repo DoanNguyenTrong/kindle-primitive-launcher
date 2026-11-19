@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.4.8
+
+- Check the Launcher files by content on startup so archive timestamps cannot leave an older launcher running.
+
 ## 0.4.7
 
 - Use the approved Store and native app icons in the Launcher grid. Apps can still supply their own icons.
