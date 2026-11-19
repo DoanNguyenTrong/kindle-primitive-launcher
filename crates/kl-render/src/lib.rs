@@ -94,6 +94,31 @@ pub struct Renderer {
     store_blits: Vec<(Rect, String)>,
 }
 
+/// The sizes of a store icon's tiles (a row, the featured card, the product page), and a screenshot's size.
+pub const STORE_ICON_SIZES: [u32; 3] = [132, 200, 340];
+pub const STORE_SHOT_W: u32 = 406;
+pub const STORE_SHOT_H: u32 = 540;
+
+/// The store's pictures in the cache: `icons/<id>.png` for each app, and `shots/<id>-<n>.png` (n from 0) for its
+/// screenshots. A picture that does not read is skipped; the store then shows the app's letter.
+pub fn load_store_pictures(renderer: &mut Renderer, cache: &std::path::Path) {
+    if let Ok(read) = std::fs::read_dir(cache.join("icons")) {
+        for e in read.flatten() {
+            let path = e.path();
+            let (Some(id), Ok(png)) = (path.file_stem().and_then(|s| s.to_str()).map(str::to_string), std::fs::read(&path)) else { continue };
+            let _ = renderer.set_store_icon(&id, &png);
+        }
+    }
+    if let Ok(read) = std::fs::read_dir(cache.join("shots")) {
+        for e in read.flatten() {
+            let path = e.path();
+            let Some((id, index)) = path.file_stem().and_then(|s| s.to_str()).and_then(|s| s.rsplit_once('-')) else { continue };
+            let (id, Ok(index), Ok(png)) = (id.to_string(), index.parse::<usize>(), std::fs::read(&path)) else { continue };
+            let _ = renderer.set_store_shot(&id, index, &png);
+        }
+    }
+}
+
 /// The drive-mode picture: a laptop and a Kindle joined by a cable.
 const USB_PICTURE: &[u8] = include_bytes!("../../../assets/usb-drive-mode.png");
 
@@ -141,6 +166,22 @@ impl Renderer {
     /// Set the dithered icon tile for an app id (sized to the layout's icon box).
     pub fn set_icon(&mut self, id: &str, tile: GrayImage) {
         self.icons.insert(id.to_string(), tile);
+    }
+
+    /// The store's picture of an app, at each size the store draws it: a rounded icon tile (`store-icon:<id>:<px>`).
+    pub fn set_store_icon(&mut self, id: &str, png: &[u8]) -> Result<(), String> {
+        for size in STORE_ICON_SIZES {
+            let tile = image::icon_tile(png, size)?;
+            self.set_icon(&format!("store-icon:{id}:{size}"), tile);
+        }
+        Ok(())
+    }
+
+    /// One screenshot of an app, fitted to the product page (`store-shot:<id>:<index>`).
+    pub fn set_store_shot(&mut self, id: &str, index: usize, png: &[u8]) -> Result<(), String> {
+        let tile = image::picture_tile(png, STORE_SHOT_W, STORE_SHOT_H)?;
+        self.set_icon(&format!("store-shot:{id}:{index}"), tile);
+        Ok(())
     }
 
     /// The picture for the next sleep screen (`None`: the text sleep screen).
@@ -839,8 +880,7 @@ impl Renderer {
         self.text(Text { text: &e.name, x: (f.x + 56) as f32, y: (f.y + 100) as f32, w: (f.w - 56 * 2 - 240) as f32, size: 68.0, bold: true, align: Align::Start, lines: 2, gray: WHITE });
         self.text(Text { text: &e.subtitle, x: (f.x + 56) as f32, y: (f.y + 290) as f32, w: (f.w - 56 * 2 - 240) as f32, size: 30.0, bold: false, align: Align::Start, lines: 2, gray: WHITE });
         let tile = Rect::new(f.right() - 56 - 200, f.y + 56, 200, 200);
-        self.rounded(tile, Self::icon_radius(tile), WHITE);
-        self.initial(tile, &e.name, BLACK);
+        self.store_tile(tile, e, WHITE, BLACK);
         let pill = Rect::new(f.x + 56, f.bottom() - 56 - 84, 200, 84);
         // White on the black card: a white pill with a black label.
         self.rounded(pill, pill.h as f64 / 2.0, WHITE);
@@ -882,8 +922,7 @@ impl Renderer {
     /// One app's row: its icon, name and summary, and its action on the right.
     fn store_row(&mut self, e: &kl_core::store::StoreEntry, r: Rect) {
         let tile = Rect::new(r.x, r.y + (r.h - 132) / 2, 132, 132);
-        self.rounded(tile, Self::icon_radius(tile), BLACK);
-        self.initial(tile, &e.name, WHITE);
+        self.store_tile(tile, e, BLACK, WHITE);
         let text_x = (r.x + 164) as f32;
         let text_w = (r.w - 164 - 240) as f32;
         self.text(Text { text: &e.name, x: text_x, y: (r.y + 30) as f32, w: text_w, size: 40.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
@@ -905,6 +944,20 @@ impl Renderer {
         }
         let size = 30.0;
         self.text(Text { text: label, x: r.x as f32, y: r.y as f32 + (r.h as f32 - size * 1.25) / 2.0, w: r.w as f32, size, bold: true, align: Align::Center, lines: 1, gray: ink });
+    }
+
+    /// An app's icon tile: its picture when the store has it at this size, else a black or white tile with the
+    /// app's first letter. A picture scrolled under the header is not drawn (the header covers it).
+    fn store_tile(&mut self, tile: Rect, e: &kl_core::store::StoreEntry, bg: u8, ink: u8) {
+        let key = format!("store-icon:{}:{}", e.id, tile.w);
+        if self.icons.contains_key(&key) {
+            if tile.y >= 170 {
+                self.store_blits.push((tile, key));
+            }
+            return;
+        }
+        self.rounded(tile, Self::icon_radius(tile), bg);
+        self.initial(tile, &e.name, ink);
     }
 
     /// A tile's first letter, centred, in `ink`.
@@ -981,8 +1034,7 @@ impl Renderer {
         let w = (l.width - 80) as f32;
 
         let hero = l.store_hero(scroll);
-        self.rounded(hero, Self::icon_radius(hero), BLACK);
-        self.initial(hero, &e.name, WHITE);
+        self.store_tile(hero, e, BLACK, WHITE);
         let name = l.store_name(scroll);
         self.text(Text { text: &e.name, x: 40.0, y: name.y as f32, w, size: 56.0, bold: true, align: Align::Center, lines: 2, gray: BLACK });
         let sub = l.store_subtitle(scroll);
@@ -994,8 +1046,8 @@ impl Renderer {
 
         // The information strip: version, size, firmware, split by hairlines.
         let cells = l.store_info_cells(scroll);
-        let version = e.latest.clone().unwrap_or_else(|| "None".to_string());
-        let size = e.size.map(kl_core::store::format_size).unwrap_or_else(|| "None".to_string());
+        let version = e.latest.clone().unwrap_or_else(|| "—".to_string());
+        let size = e.size.map(kl_core::store::format_size).unwrap_or_else(|| "—".to_string());
         let firmware = format!("{}+", e.firmware_min);
         let strip = [("VERSION", version), ("SIZE", size), ("FIRMWARE", firmware)];
         self.hairline(cells[0].y, 40, l.width - 40);
@@ -1009,28 +1061,28 @@ impl Renderer {
         }
 
         // Screenshots, when the store has them for this app (from the cache, or the desktop preview).
-        for i in 0..2 {
+        for i in 0..e.screenshots {
             let key = format!("store-shot:{}:{}", e.id, i);
             if !self.icons.contains_key(&key) {
                 continue;
             }
             let r = l.store_shot(i, scroll);
-            if r.bottom() > 170 {
+            if r.y >= 170 {
                 self.store_blits.push((r, key));
             }
         }
 
-        let about = l.store_about(scroll);
+        let about = l.store_about(scroll, e.screenshots);
         self.text(Text { text: "About", x: 40.0, y: (about.y - 74) as f32, w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
         self.text(Text { text: &e.description, x: 40.0, y: about.y as f32, w, size: 30.0, bold: false, align: Align::Start, lines: 7, gray: BLACK });
 
         let rows = e.info_rows();
         if !rows.is_empty() {
-            let first = l.store_info_row(0, scroll);
+            let first = l.store_info_row(0, scroll, e.screenshots);
             self.text(Text { text: "Information", x: 40.0, y: (first.y - 74) as f32, w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
         }
         for (i, (label, value)) in rows.iter().enumerate() {
-            let r = l.store_info_row(i, scroll);
+            let r = l.store_info_row(i, scroll, e.screenshots);
             self.text(Text { text: label, x: r.x as f32, y: (r.y + 34) as f32, w: (r.w / 2) as f32, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
             self.text(Text { text: value, x: (r.x + r.w / 3) as f32, y: (r.y + 34) as f32, w: (r.w - r.w / 3) as f32, size: 30.0, bold: false, align: Align::End, lines: 1, gray: 85 });
             self.hairline(r.bottom() - 1, r.x, r.right());

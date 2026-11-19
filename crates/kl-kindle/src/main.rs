@@ -329,6 +329,7 @@ fn main() {
     let mut ui = Ui::new(apps, layout);
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_extensions(extensions);
+    kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
     ui.set_store(load_store(&dir));
     for app in ui.apps() {
         log(&format!("app {}: {}", app.id, app.name));

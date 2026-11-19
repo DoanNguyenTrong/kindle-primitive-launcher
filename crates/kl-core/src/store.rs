@@ -49,6 +49,8 @@ pub struct StoreEntry {
     pub firmware_min: String,
     /// The Kindles the latest version was tested on.
     pub tested_on: Vec<String>,
+    /// How many screenshots the listing has (at most two are shown on the product page).
+    pub screenshots: usize,
 }
 
 /// A size as the product page shows it: "4.5 MB", "640 KB", "900 bytes".
@@ -144,6 +146,7 @@ impl StoreEntry {
             size: newest.and_then(|v| v.assets.values().next()).map(|a| a.size),
             firmware_min: newest.map(|v| v.firmware.min.clone()).unwrap_or_default(),
             tested_on: newest.map(|v| v.tested_on.clone()).unwrap_or_default(),
+            screenshots: listing.screenshots.len().min(2),
         }
     }
 
@@ -206,6 +209,7 @@ pub(crate) fn test_entry(id: &str, name: &str, status: Status) -> StoreEntry {
         size: Some(1_000_000),
         firmware_min: "5.16.3".into(),
         tested_on: vec!["KindleOasis3".into()],
+        screenshots: 0,
     }
 }
 

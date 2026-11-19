@@ -379,6 +379,15 @@ const STORE_TAB_BAR_H: i32 = 130;
 const STORE_ROW_H: i32 = 170;
 const STORE_INFO_ROW_H: i32 = 100;
 
+/// Where the product page's About text starts: under the screenshots when the app has them, else right under the strip.
+fn store_about_top(shots: usize) -> i32 {
+    if shots > 0 {
+        1874
+    } else {
+        1290
+    }
+}
+
 impl Layout {
     pub fn new(width: u32, height: u32, cols: u32, rows: u32) -> Layout {
         Layout { width: width as i32, height: height as i32, cols: cols.clamp(3, 5) as i32, rows: rows.clamp(3, 6) as i32 }
@@ -894,20 +903,21 @@ impl Layout {
         Rect::new(40 + i as i32 * (w + 24), 1190 - scroll, w, h)
     }
 
-    /// Where the About text starts (its heading sits 74 px above it).
-    pub fn store_about(&self, scroll: i32) -> Rect {
-        Rect::new(40, 1874 - scroll, self.width - 80, 300)
+    /// Where the About text starts: below the screenshots when there are any (`shots` 1 or 2), else up under the strip.
+    /// Its heading sits 74 px above it.
+    pub fn store_about(&self, scroll: i32, shots: usize) -> Rect {
+        Rect::new(40, store_about_top(shots) - scroll, self.width - 80, 300)
     }
 
     /// Information row `i` (developer, licence, category, firmware, tested on, repository, then the changes).
-    pub fn store_info_row(&self, i: usize, scroll: i32) -> Rect {
-        let top = 2300 - scroll;
+    pub fn store_info_row(&self, i: usize, scroll: i32, shots: usize) -> Rect {
+        let top = store_about_top(shots) + 426 - scroll;
         Rect::new(40, top + i as i32 * STORE_INFO_ROW_H, self.width - 80, STORE_INFO_ROW_H)
     }
 
     /// The height of a product page's content (for the scroll limit), with `rows` information rows.
-    pub fn store_page_height(&self, rows: usize) -> i32 {
-        2300 + rows as i32 * STORE_INFO_ROW_H + 60
+    pub fn store_page_height(&self, rows: usize, shots: usize) -> i32 {
+        store_about_top(shots) + 426 + rows as i32 * STORE_INFO_ROW_H + 60
     }
 
     pub fn confirm_buttons(&self) -> [(Button, Rect); 2] {

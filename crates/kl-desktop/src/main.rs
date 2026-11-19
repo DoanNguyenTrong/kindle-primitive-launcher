@@ -260,11 +260,12 @@ fn main() {
             let dir = e.path();
             let Ok(text) = fs::read_to_string(dir.join("app.json")) else { continue };
             let Ok(listing) = serde_json::from_str::<kl_store::catalog::Listing>(&text) else { continue };
+            if let Ok(icon) = fs::read(dir.join(&listing.icon)) {
+                let _ = renderer.set_store_icon(&listing.id, &icon);
+            }
             for n in 1..=2 {
                 if let Ok(bytes) = fs::read(dir.join(format!("shots/{n}.png"))) {
-                    if let Ok(img) = kl_render::image::decode_png(&bytes) {
-                        renderer.set_icon(&format!("store-shot:{}:{}", listing.id, n - 1), img);
-                    }
+                    let _ = renderer.set_store_shot(&listing.id, n - 1, &bytes);
                 }
             }
             entries.push(kl_core::store::StoreEntry::from_listing(&listing, None));

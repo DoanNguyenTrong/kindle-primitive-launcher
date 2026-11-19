@@ -463,9 +463,9 @@ impl Ui {
         self.layout.store_pages(self.store_list_indices().len())
     }
 
-    /// The rows of a product page's information, for its scroll limit.
-    fn store_info_count(&self, index: usize) -> usize {
-        self.store.get(index).map_or(0, |e| e.info_rows().len())
+    /// The rows of a product page's information, and its screenshots, for its scroll limit.
+    fn store_info_count(&self, index: usize) -> (usize, usize) {
+        self.store.get(index).map_or((0, 0), |e| (e.info_rows().len(), e.screenshots))
     }
 
     pub fn open_store(&mut self) -> Action {
@@ -548,7 +548,8 @@ impl Ui {
         let l = self.layout;
         let Some(index) = self.store_open else { return self.go(Screen::Store) };
         let Some(entry) = self.store.get(index).cloned() else { return self.go(Screen::Store) };
-        let max = (l.store_page_height(self.store_info_count(index)) - l.height).max(0);
+        let (rows, shots) = self.store_info_count(index);
+        let max = (l.store_page_height(rows, shots) - l.height).max(0);
         match input {
             Input::Swipe { dx, dy, .. } if dy.abs() > SWIPE_MIN && dy.abs() > dx.abs() * 1.5 => {
                 let next = (self.store_scroll - dy as i32).clamp(0, max);
@@ -580,7 +581,10 @@ impl Ui {
 
     /// The largest scroll of the open product page (zero when it fits the screen).
     pub fn store_scroll_max(&self) -> i32 {
-        self.store_open.map_or(0, |i| (self.layout.store_page_height(self.store_info_count(i)) - self.layout.height).max(0))
+        self.store_open.map_or(0, |i| {
+            let (rows, shots) = self.store_info_count(i);
+            (self.layout.store_page_height(rows, shots) - self.layout.height).max(0)
+        })
     }
 
     pub fn open_extensions(&mut self) -> Action {
