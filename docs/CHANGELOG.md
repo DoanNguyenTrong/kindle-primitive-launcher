@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.4.9
+
+- Find and install Store on Kindle firmware where the optional signing key is absent and the signing-policy directory is group-writable.
+
 ## 0.4.8
 
 - Check the Launcher files by content on startup so archive timestamps cannot leave an older launcher running.
