@@ -334,3 +334,29 @@ mod tests {
         assert!(!is_allowed_place("browser", "browser"));
     }
 }
+
+#[cfg(test)]
+mod packager_compat {
+    use super::*;
+
+    /// Reads a package made by the build repo's packager, when `KL_TEST_PACKAGE` names one. Skipped otherwise, so the
+    /// normal test run does not depend on it. The check: the manifest reads, and the files unpack exactly as listed.
+    #[test]
+    fn accepts_a_package_from_the_build_packager() {
+        let Some(zip) = std::env::var_os("KL_TEST_PACKAGE") else {
+            return;
+        };
+        let zip = PathBuf::from(zip);
+        let manifest = read_manifest(&zip).expect("the manifest reads");
+        let dest = std::env::temp_dir().join(format!("kl-pkg-compat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dest);
+        std::fs::create_dir_all(&dest).unwrap();
+        let written = unpack(&zip, &dest, &manifest, Limits::default()).expect("the package unpacks");
+        assert_eq!(written, {
+            let mut f = manifest.files.clone();
+            f.sort();
+            f
+        });
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+}
