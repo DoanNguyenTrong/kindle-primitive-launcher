@@ -18,6 +18,8 @@ pub enum Launch {
     Settings,
     /// Built-in: the Extensions list (KUAL menus).
     Extensions,
+    /// Built-in: Primitive Store (the catalog's apps, install and update).
+    Store,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +63,7 @@ impl App {
             Launch::Script { path, hooks: false } => ("script", path.as_str()),
             Launch::Script { path, hooks: true } => ("hooks", path.as_str()),
             Launch::Shell { command } => ("shell", command.as_str()),
-            Launch::KindleMode | Launch::Settings | Launch::Extensions => return None,
+            Launch::KindleMode | Launch::Settings | Launch::Extensions | Launch::Store => return None,
         };
         // One value per line: a newline inside a value would shift the others.
         if arg.contains('\n') || self.dir.contains('\n') {
@@ -89,6 +91,16 @@ fn builtins() -> Vec<App> {
             name: "Settings".into(),
             icon: IconSource::None,
             launch: Launch::Settings,
+            dir: "/".into(),
+            order: Some(9_000),
+            hidden: false,
+            background: false,
+        },
+        App {
+            id: "store".into(),
+            name: "Store".into(),
+            icon: IconSource::None,
+            launch: Launch::Store,
             dir: "/".into(),
             order: Some(9_000),
             hidden: false,
@@ -166,7 +178,7 @@ pub fn merge(discovered: Vec<App>, config: &Config) -> (Vec<App>, Vec<String>) {
                 app.icon = icon_from(Some(icon));
             }
             if let Some(command) = &entry.command {
-                if !matches!(app.launch, Launch::KindleMode | Launch::Settings | Launch::Extensions) {
+                if !matches!(app.launch, Launch::KindleMode | Launch::Settings | Launch::Extensions | Launch::Store) {
                     app.launch = Launch::Shell { command: command.clone() };
                 }
             }
@@ -307,7 +319,7 @@ mod tests {
         );
         let (apps, problems) = merge(vec![script("a.sh", "Alpha"), script("b.sh", "Beta"), script("z.sh", "Zed")], &config);
         let ids: Vec<_> = apps.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["koreader", "b.sh", "a.sh", "z.sh", "settings", "kindle"]);
+        assert_eq!(ids, ["koreader", "b.sh", "a.sh", "z.sh", "settings", "store", "kindle"]);
         assert!(apps[3].hidden);
         assert_eq!(apps[0].launch, Launch::Shell { command: "/mnt/us/koreader/koreader.sh".into() });
         assert_eq!(problems.len(), 1);

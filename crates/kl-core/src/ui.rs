@@ -38,6 +38,10 @@ pub enum Screen {
     NetworkName,
     /// The SSH server's root password, typed on the keyboard.
     SshPassword,
+    /// Primitive Store: the list of the catalog's apps.
+    Store,
+    /// Primitive Store: one app's page (`Ui::store_open`).
+    StoreApp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,6 +72,8 @@ pub enum DeviceCmd {
     PowerOff,
     /// Settings > Device > Launcher: start the launcher again (the supervisor starts it, as after an install).
     RestartLauncher,
+    /// Primitive Store: install the entry at this index of `Ui::store` (its position in the list).
+    StoreInstall(usize),
     ToggleAutostart,
     ToggleSleepScreen,
     /// Follow the device's turn again (Settings > Screen > Auto).
@@ -254,6 +260,10 @@ pub struct Ui {
     extensions: Vec<MenuItem>,
     ext_path: Vec<usize>,
     pub ext_page: usize,
+    /// Primitive Store: the catalog's entries, the list page, and the entry open on its page.
+    pub store: Vec<crate::store::StoreEntry>,
+    pub store_page: usize,
+    pub store_open: Option<usize>,
     /// Background jobs still running (shown in the status bar).
     pub running: usize,
     /// The Wi-Fi page: the networks from the last scan, whether a scan is running, and the list's scroll.
@@ -297,6 +307,9 @@ impl Ui {
             extensions: Vec::new(),
             ext_path: Vec::new(),
             ext_page: 0,
+            store: Vec::new(),
+            store_page: 0,
+            store_open: None,
             running: 0,
             wifi: crate::wifi::WifiInfo::default(),
             wifi_scanning: false,
@@ -399,6 +412,79 @@ impl Ui {
     }
 
     /// The Extensions tile: open the list at the top.
+    /// Replaces the store's entries (from the catalog cache and the installed record). The list starts at its first page.
+    pub fn set_store(&mut self, entries: Vec<crate::store::StoreEntry>) {
+        self.store = entries;
+        self.store_page = 0;
+        self.store_open = None;
+    }
+
+    /// The store's list pages for its entries (at least one).
+    pub fn store_pages(&self) -> usize {
+        self.layout.list_pages(self.store.len())
+    }
+
+    pub fn open_store(&mut self) -> Action {
+        self.store_page = 0;
+        self.go(Screen::Store)
+    }
+
+    /// The store list: open an app's page, page through the list, or go home.
+    fn store_list(&mut self, input: Input) -> Action {
+        let l = self.layout;
+        let turn = |u: &mut Ui, step: i32| -> Action {
+            let next = u.store_page as i32 + step;
+            if next < 0 || next >= u.store_pages() as i32 {
+                return Action::None;
+            }
+            u.store_page = next as usize;
+            Action::Redraw { full: false }
+        };
+        match input {
+            Input::PageForward => turn(self, 1),
+            Input::PageBack => turn(self, -1),
+            Input::Swipe { dx, dy, .. } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => turn(self, if dx < 0.0 { 1 } else { -1 }),
+            Input::Tap(x, y) => {
+                if l.done_button().inset(-20).contains(x, y) {
+                    return self.go(Screen::Home);
+                }
+                if l.footer().contains(x, y) {
+                    return turn(self, if x < (l.width / 2) as f32 { -1 } else { 1 });
+                }
+                let Some(row) = l.list_row_at(x, y) else { return Action::None };
+                let index = self.store_page * l.list_rows_per_page() + row;
+                if index >= self.store.len() {
+                    return Action::None;
+                }
+                self.store_open = Some(index);
+                self.go(Screen::StoreApp)
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// An app's page: its action (install from the store, or a notice for a link), or Done (back to the list).
+    fn store_app(&mut self, input: Input) -> Action {
+        let l = self.layout;
+        let Some(index) = self.store_open else { return self.go(Screen::Store) };
+        let Some(entry) = self.store.get(index).cloned() else { return self.go(Screen::Store) };
+        let Input::Tap(x, y) = input else { return Action::None };
+        if l.done_button().inset(-20).contains(x, y) {
+            return self.go(Screen::Store);
+        }
+        if l.store_action().inset(-12).contains(x, y) {
+            return match (entry.kind, &entry.status) {
+                (crate::store::Kind::Link, _) => {
+                    self.notice = Some(format!("{} is on its own website: {}", entry.name, entry.repo));
+                    Action::Redraw { full: false }
+                }
+                (crate::store::Kind::Install, crate::store::Status::Installed(_)) => Action::None,
+                (crate::store::Kind::Install, _) => Action::Device(DeviceCmd::StoreInstall(index)),
+            };
+        }
+        Action::None
+    }
+
     pub fn open_extensions(&mut self) -> Action {
         self.ext_path.clear();
         self.ext_page = 0;
@@ -716,6 +802,8 @@ impl Ui {
             Screen::PowerMenu => self.power_menu(input),
             Screen::AppMenu => self.app_menu(input),
             Screen::Extensions => self.extensions_list(input),
+            Screen::Store => self.store_list(input),
+            Screen::StoreApp => self.store_app(input),
             Screen::QuickSettings => self.quick(input),
             Screen::Sleep => Action::None,
         };
@@ -749,6 +837,7 @@ impl Ui {
                     Launch::Settings => self.go(Screen::Settings),
                     Launch::KindleMode => self.go(Screen::ConfirmKindle),
                     Launch::Extensions => self.open_extensions(),
+                    Launch::Store => self.open_store(),
                     _ if app.background => self.run_background(app),
                     _ => {
                         self.pressed = self.icon_rect(index);
@@ -1051,7 +1140,7 @@ impl Ui {
 
 /// Settings, the Kindle UI and Extensions: they cannot be moved, hidden or given another icon.
 fn is_builtin(app: &App) -> bool {
-    matches!(app.launch, Launch::Settings | Launch::KindleMode | Launch::Extensions)
+    matches!(app.launch, Launch::Settings | Launch::KindleMode | Launch::Extensions | Launch::Store)
 }
 
 #[cfg(test)]

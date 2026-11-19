@@ -122,6 +122,23 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 /// Fonts: the copy in KL_RUN (tmpfs, made by the supervisor) when present, else KL_DIR.
 /// The config (apps.toml), the apps (in documents), the KUAL extensions, and the problems found reading them. The
 /// boot copy and /mnt/us read the same files; the directory decides which.
+/// The store's entries: one per listing in the catalog cache (`store/cache/apps/*.json`), with what is installed.
+fn load_store(dir: &Path) -> Vec<kl_core::store::StoreEntry> {
+    let record = kl_store::record::load(&dir.join("store/installed.json")).unwrap_or_default();
+    let Ok(read) = fs::read_dir(dir.join("store/cache/apps")) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<kl_core::store::StoreEntry> = read
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .filter_map(|text| serde_json::from_str::<kl_store::catalog::Listing>(&text).ok())
+        .map(|listing| kl_core::store::StoreEntry::from_listing(&listing, record.apps.get(&listing.id)))
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+}
+
 fn load_library(dir: &Path, documents: &Path) -> (Config, Vec<App>, Vec<kl_core::kual::MenuItem>, Vec<String>) {
     let (config, mut problems) = match fs::read_to_string(dir.join("apps.toml")) {
         Ok(text) => Config::parse(&text),
@@ -312,6 +329,7 @@ fn main() {
     let mut ui = Ui::new(apps, layout);
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_extensions(extensions);
+    ui.set_store(load_store(&dir));
     for app in ui.apps() {
         log(&format!("app {}: {}", app.id, app.name));
     }
@@ -634,6 +652,10 @@ fn main() {
                 std::process::exit(EXIT_KINDLE_UI);
             }
             Action::Device(cmd) => {
+                if let DeviceCmd::StoreInstall(_) = cmd {
+                    // Until the store's download is wired (implementation plan D2), say so on the screen.
+                    ui.notice = Some("Installing from the store is not in this build yet.".to_string());
+                }
                 // Power off: the screen says so, and stays that way once the Kindle is off (e-ink keeps its picture).
                 if cmd == DeviceCmd::PowerOff {
                     let frame = renderer.message("Powered Off", "Press the power button to turn the Kindle on again.");
@@ -751,6 +773,8 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::Restart => device::system_command("reboot"),
         DeviceCmd::PowerOff => device::system_command("halt -f -p"),
         DeviceCmd::RestartLauncher => device::restart_launcher(),
+        // The download of a store app is the store's network step (implementation plan D2): not wired yet.
+        DeviceCmd::StoreInstall(index) => log(&format!("store: install of entry {index} requested; the download is not wired yet")),
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::ToggleSleepScreen => {
             settings.sleep_screen_launcher = !settings.sleep_screen_launcher;

@@ -9,6 +9,8 @@ name = "kl-launcher"
 path = "src/main.rs"
 
 [dependencies]
+kl-store = { path = "../kl-store" }
+serde_json = "1"
 primitive-quick = { path = "../../tools/crates/primitive-quick" }
 kl-core = { path = "../kl-core" }
 kl-render = { path = "../kl-render" }

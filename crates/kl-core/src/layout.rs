@@ -777,6 +777,23 @@ impl Layout {
         ]
     }
 
+    /// The store page's icon: a rounded square under the title, at the left.
+    pub fn store_icon(&self) -> Rect {
+        Rect::new(MARGIN, TITLE_H + 40, 200, 200)
+    }
+
+    /// The store page's action button: at the bottom right, above the footer.
+    pub fn store_action(&self) -> Rect {
+        let w = 360;
+        Rect::new(self.width - MARGIN - w, self.footer().y - 40 - BUTTON_H, w, BUTTON_H)
+    }
+
+    /// The store page's text (name, developer, description, changes): from beside the title down to the action button.
+    pub fn store_text(&self) -> Rect {
+        let top = TITLE_H + 40;
+        Rect::new(MARGIN + 240, top, self.width - 2 * MARGIN - 240, self.store_action().y - 40 - top)
+    }
+
     pub fn confirm_buttons(&self) -> [(Button, Rect); 2] {
         let b = self.confirm_box();
         let y = b.bottom() - 40 - BUTTON_H;

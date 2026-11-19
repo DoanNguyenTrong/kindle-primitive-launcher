@@ -9,3 +9,4 @@ primitive-keyboard = { path = "../../tools/crates/primitive-keyboard" }
 primitive-quick = { path = "../../tools/crates/primitive-quick" }
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 serde_json = "1"
+kl-store = { path = "../kl-store" }

@@ -381,6 +381,8 @@ impl Renderer {
             }
             Screen::AppMenu => self.app_menu(ui, status, &mut icon_blits),
             Screen::Extensions => self.extensions(ui),
+            Screen::Store => self.store_list(ui),
+            Screen::StoreApp => self.store_app(ui),
             // The panel is a pop-up over the home screen, drawn last (below).
             Screen::QuickSettings => self.home(ui, status, &mut icon_blits),
         }
@@ -677,6 +679,7 @@ impl Renderer {
             Launch::Settings => Renderer::gear,
             Launch::KindleMode => Renderer::book,
             Launch::Extensions => Renderer::four_squares,
+            Launch::Store => Renderer::bag,
             _ => return false,
         };
         self.rounded(r, Self::icon_radius(r), BLACK);
@@ -721,6 +724,17 @@ impl Renderer {
     }
 
     /// Extensions: four rounded squares.
+    /// A shopping bag: a white body with a handle, for the Store tile.
+    fn bag(&mut self, cx: f64, cy: f64, s: f64) {
+        self.ctx.set_transform(Affine::IDENTITY);
+        self.ctx.set_paint(gray(WHITE));
+        self.ctx.fill_path(&kurbo::RoundedRect::new(cx - 0.3 * s, cy - 0.12 * s, cx + 0.3 * s, cy + 0.32 * s, 0.05 * s).to_path(0.1));
+        // The handle: a white frame, its inside the black of the tile.
+        self.ctx.fill_path(&kurbo::RoundedRect::new(cx - 0.16 * s, cy - 0.3 * s, cx + 0.16 * s, cy - 0.02 * s, 0.1 * s).to_path(0.1));
+        self.ctx.set_paint(gray(BLACK));
+        self.ctx.fill_path(&kurbo::RoundedRect::new(cx - 0.1 * s, cy - 0.24 * s, cx + 0.1 * s, cy - 0.06 * s, 0.05 * s).to_path(0.1));
+    }
+
     fn four_squares(&mut self, cx: f64, cy: f64, s: f64) {
         let (q, gap) = (0.2 * s, 0.07 * s);
         self.ctx.set_transform(Affine::IDENTITY);
@@ -790,6 +804,90 @@ impl Renderer {
     }
 
     /// The Extensions list: one row per item, "›" on submenus, Back (or Done at the top), and pages.
+    /// The store's list: an icon, the name and the summary of each app, and the action on the right.
+    fn store_list(&mut self, ui: &Ui) {
+        let l = ui.layout;
+        let title = l.title();
+        let name_w = (l.done_button().x - 80) as f32;
+        self.text(Text { text: "Store", x: 40.0, y: 38.0, w: name_w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), "Done", true);
+        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
+        let per = l.list_rows_per_page();
+        let entries: Vec<_> = ui.store.iter().skip(ui.store_page * per).take(per).cloned().collect();
+        if entries.is_empty() {
+            self.text(Text {
+                text: "No apps yet. The store lists the apps once its catalog has been downloaded.",
+                x: 80.0,
+                y: (title.bottom() + 80) as f32,
+                w: (title.w - 160) as f32,
+                size: 36.0,
+                bold: false,
+                align: Align::Center,
+                lines: 3,
+                gray: BLACK,
+            });
+        }
+        for (i, e) in entries.iter().enumerate() {
+            let r = l.list_row(i);
+            let tile = Rect::new(r.x + 8, r.y + 12, 96, 96);
+            self.rounded(tile, Self::icon_radius(tile), BLACK);
+            let initial = e.name.chars().next().map(|c| c.to_string()).unwrap_or_default();
+            self.text(Text { text: &initial, x: tile.x as f32, y: tile.y as f32 + 22.0, w: tile.w as f32, size: 52.0, bold: true, align: Align::Center, lines: 1, gray: WHITE });
+            self.text(Text { text: &e.name, x: (r.x + 128) as f32, y: r.y as f32 + 20.0, w: (r.w - 128 - 240) as f32, size: 40.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            self.text(Text { text: &e.subtitle, x: (r.x + 128) as f32, y: r.y as f32 + 70.0, w: (r.w - 128 - 240) as f32, size: 28.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+            self.text(Text { text: e.action_label(), x: (r.right() - 220) as f32, y: r.y as f32 + 40.0, w: 200.0, size: 30.0, bold: true, align: Align::End, lines: 1, gray: BLACK });
+            self.fill(Rect::new(r.x, r.bottom() - 2, r.w, 2), BLACK);
+        }
+        let f = l.footer();
+        self.fill(Rect::new(0, f.y, f.w, 3), BLACK);
+        let pages = ui.store_pages();
+        if pages > 1 {
+            let label = format!("{} / {}", ui.store_page + 1, pages);
+            self.text(Text { text: &label, x: 0.0, y: f.y as f32 + 22.0, w: f.w as f32, size: 38.0, bold: true, align: Align::Center, lines: 1, gray: BLACK });
+        }
+    }
+
+    /// An app's page: the icon, the subtitle, the developer and status, the description, what the app changes, and the
+    /// action button.
+    fn store_app(&mut self, ui: &Ui) {
+        let l = ui.layout;
+        let title = l.title();
+        let Some(entry) = ui.store_open.and_then(|i| ui.store.get(i)) else { return };
+        let name_w = (l.done_button().x - 80) as f32;
+        self.text(Text { text: &entry.name, x: 40.0, y: 38.0, w: name_w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        self.button(l.done_button(), "Back", true);
+        self.fill(Rect::new(0, title.bottom() - 4, title.w, 4), BLACK);
+
+        let icon = l.store_icon();
+        self.rounded(icon, Self::icon_radius(icon), BLACK);
+        let initial = entry.name.chars().next().map(|c| c.to_string()).unwrap_or_default();
+        self.text(Text { text: &initial, x: icon.x as f32, y: icon.y as f32 + 50.0, w: icon.w as f32, size: 120.0, bold: true, align: Align::Center, lines: 1, gray: WHITE });
+
+        let text = l.store_text();
+        let x = text.x as f32;
+        let w = text.w as f32;
+        let mut y = text.y as f32;
+        self.text(Text { text: &entry.subtitle, x, y, w, size: 36.0, bold: false, align: Align::Start, lines: 2, gray: BLACK });
+        y += 96.0;
+        let line = format!("{} · {}", entry.developer, entry.licence);
+        self.text(Text { text: &line, x, y, w, size: 28.0, bold: false, align: Align::Start, lines: 1, gray: 85 });
+        y += 50.0;
+        self.text(Text { text: &entry.status_line(), x, y, w, size: 30.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
+        y += 66.0;
+        self.text(Text { text: &entry.description, x, y, w, size: 30.0, bold: false, align: Align::Start, lines: 6, gray: BLACK });
+        y += 290.0;
+        self.text(Text { text: "WHAT THIS APP CHANGES", x, y, w, size: 26.0, bold: true, align: Align::Start, lines: 1, gray: 60 });
+        y += 44.0;
+        for change in entry.changes.iter().take(4) {
+            self.text(Text { text: change, x, y, w, size: 28.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
+            y += 40.0;
+        }
+
+        let installed = matches!(entry.status, kl_core::store::Status::Installed(_));
+        let action = l.store_action();
+        self.button(action, entry.action_label(), !installed);
+    }
+
     fn extensions(&mut self, ui: &Ui) {
         let l = ui.layout;
         let title = l.title();

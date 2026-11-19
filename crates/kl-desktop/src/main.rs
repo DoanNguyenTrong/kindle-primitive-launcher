@@ -251,6 +251,29 @@ fn main() {
     // The power menu over the grid, and the quick panel with its Power tile.
     ui.screen = kl_core::Screen::PowerMenu;
     write_png(&out.join("power-menu.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    // The store: the list, and one app's page. The listings come from the sibling catalog repo (its apps, and its drafts
+    // for this preview only: the device sees just the published apps).
+    let mut entries = Vec::new();
+    for folder in ["../doannt-kindle-catalog/apps", "../doannt-kindle-catalog/drafts"] {
+        let Ok(read) = fs::read_dir(folder) else { continue };
+        for e in read.flatten() {
+            let Ok(text) = fs::read_to_string(e.path().join("app.json")) else { continue };
+            if let Ok(listing) = serde_json::from_str::<kl_store::catalog::Listing>(&text) {
+                entries.push(kl_core::store::StoreEntry::from_listing(&listing, None));
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    if !entries.is_empty() {
+        ui.set_store(entries);
+        ui.screen = kl_core::Screen::Store;
+        write_png(&out.join("store.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        ui.store_open = ui.store.iter().position(|e| e.kind == kl_core::store::Kind::Install);
+        ui.screen = kl_core::Screen::StoreApp;
+        write_png(&out.join("store-app.png"), W, H, &renderer.draw(&ui, &ssh_on));
+        ui.store_open = ui.store.iter().position(|e| e.kind == kl_core::store::Kind::Link);
+        write_png(&out.join("store-link.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    }
     // The drive-mode screen: shown while the drive is on a computer (no taps then).
     ui.usb = kl_core::Usb::Drive;
     write_png(&out.join("usb-drive.png"), W, H, &renderer.draw(&ui, &ssh_on));
