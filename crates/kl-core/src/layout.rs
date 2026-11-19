@@ -852,7 +852,7 @@ impl Layout {
 
     /// Rows that fit above the tab bar, with room for the page label.
     pub fn store_rows_per_page(&self) -> usize {
-        ((self.store_body_bottom() - 200 - 90) / STORE_ROW_H).max(1) as usize
+        ((self.store_body_bottom() - 200 - 200) / STORE_ROW_H).max(1) as usize
     }
 
     pub fn store_pages(&self, n: usize) -> usize {

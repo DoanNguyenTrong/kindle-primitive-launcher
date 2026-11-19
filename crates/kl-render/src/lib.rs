@@ -867,6 +867,14 @@ impl Renderer {
             kl_core::store::StoreTab::Updates => self.store_rows(ui, &ui.store_updates(), "Nothing from the store yet. Apps you get here, and their updates, are listed here."),
         }
         self.store_tab_bar(&l, active);
+        self.store_notice(ui, l.store_tabs().y - 120);
+    }
+
+    /// The notice (what happened: a refresh, an install, a removal), on the store's screens.
+    fn store_notice(&mut self, ui: &Ui, y: i32) {
+        if let Some(notice) = ui.notice.clone() {
+            self.text(Text { text: &notice, x: 40.0, y: y as f32, w: (ui.layout.width - 80) as f32, size: 30.0, bold: true, align: Align::Start, lines: 2, gray: BLACK });
+        }
     }
 
     /// Today: the first app as a large black card, then the next apps.
@@ -1101,6 +1109,8 @@ impl Renderer {
             self.fill(Rect::new(0, 169, l.width, 2), 200);
         }
         let back = l.store_back();
+        self.fill(Rect::new(0, l.height - 120, l.width, 120), WHITE);
+        self.store_notice(ui, l.height - 110);
         self.text(Text { text: "‹  Store", x: back.x as f32, y: (back.y + (back.h - 40 * 5 / 4) / 2) as f32, w: back.w as f32, size: 40.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
     }
 
