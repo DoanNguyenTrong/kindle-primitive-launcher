@@ -10,12 +10,26 @@ use std::thread;
 use kl_core::{App, Launch};
 pub use kl_core::apps::STORE_ENTRY_FILE as ENTRY;
 use kl_kindle::{device, log, Ev};
-use kl_store::{catalog::Listing, install::Paths, pipeline, resolve};
+use kl_store::catalog::{Asset, Listing};
+use kl_store::signatures::TrustedKey;
+use kl_store::{install::Paths, pipeline, refresh, resolve};
 
 const CATALOG: &str = "https://doannguyentrong.github.io/kindle-primitive-catalog/v1";
 const ID: &str = kl_core::store::STORE_ID;
 const DIR: &str = "store";
 const BINARY: &str = "store/bin/kl-store-app";
+
+struct NetSource;
+
+impl refresh::Source for NetSource {
+    fn text(&self, url: &str) -> Result<String, String> {
+        primitive_net::fetch_text(url, &primitive_net::Policy::store(refresh::MAX_INDEX)).map_err(|error| error.to_string())
+    }
+
+    fn bytes(&self, url: &str, max: u64) -> Result<Vec<u8>, String> {
+        primitive_net::fetch_bytes(url, &primitive_net::Policy::store(max)).map_err(|error| error.to_string())
+    }
+}
 
 pub fn store_present(documents: &Path) -> bool {
     documents.join(ENTRY).is_file()
@@ -42,15 +56,10 @@ pub fn reconcile_tiles(apps: &mut Vec<App>, documents: &Path) {
 pub fn available_updates(launcher: &Path) -> usize {
     let Some(device) = device::store_device() else { return 0 };
     let Ok(record) = kl_store::record::load(&launcher.join("store/installed.json")) else { return 0 };
+    let Ok(key) = device::store_catalog_key() else { return 0 };
+    let Ok(catalog) = refresh::cached_catalog(&launcher.join("store/cache"), key.as_ref()) else { return 0 };
     record.apps.iter().filter(|(id, installed)| {
-        if !kl_store::catalog::valid_app_id(id) {
-            return false;
-        }
-        let Ok(text) = fs::read_to_string(launcher.join("store/cache/apps").join(format!("{id}.json"))) else { return false };
-        let Ok(listing) = serde_json::from_str::<Listing>(&text) else { return false };
-        if listing.id != **id {
-            return false;
-        }
+        let Ok(listing) = catalog.listing(id) else { return false };
         let Ok(version) = resolve::pick_version(&listing, &device) else { return false };
         let current = kl_store::Version::parse(&installed.version);
         current.is_some() && kl_store::Version::parse(&version.version) > current
@@ -87,16 +96,8 @@ fn install(documents: &Path, report: impl Fn(&str)) -> Result<(), String> {
     let device =
         device::store_device().ok_or("The Kindle's firmware version could not be read.")?;
     report("Finding Primitive Store…");
-    let policy = primitive_net::Policy::store(kl_store::refresh::MAX_LISTING);
-    let text =
-        primitive_net::fetch_text(&format!("{CATALOG}/apps/{ID}.json"), &policy).map_err(|_| {
-            "The Store package could not be found in the catalog. Check Wi-Fi and try again."
-                .to_string()
-        })?;
-    let listing = parse_listing(&text)?;
-    let version = resolve::pick_version(&listing, &device).map_err(|e| e.to_string())?;
-    let asset = &version.assets[&device.arch];
-    kl_store::verify::check_archive_size(asset.size).map_err(|e| e.to_string())?;
+    let key = device::store_catalog_key().map_err(|error| format!("The Store signing policy could not be read. {error}"))?;
+    let (listing, asset) = bootstrap_release(CATALOG, &NetSource, key.as_ref(), &device)?;
     let available = device::available_storage_bytes(root)
         .map_err(|_| "Available Kindle storage could not be checked.")?;
     if available / 3 < asset.size {
@@ -132,9 +133,23 @@ fn install(documents: &Path, report: impl Fn(&str)) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_listing(text: &str) -> Result<Listing, String> {
-    let listing: Listing =
-        serde_json::from_str(text).map_err(|_| "The Store listing could not be read.")?;
+fn bootstrap_release(
+    base: &str,
+    source: &dyn refresh::Source,
+    key: Option<&TrustedKey>,
+    device: &resolve::Device,
+) -> Result<(Listing, Asset), String> {
+    let listing = check_listing(refresh::fetch_listing(base, ID, source, key)?)?;
+    let version = resolve::pick_version(&listing, device).map_err(|error| error.to_string())?;
+    let asset = version.assets[&device.arch].clone();
+    kl_store::verify::check_archive_size(asset.size).map_err(|error| error.to_string())?;
+    if let Some(key) = key {
+        refresh::verify_asset_signature(source, key, ID, &version.version, &device.arch, &asset)?;
+    }
+    Ok((listing, asset))
+}
+
+fn check_listing(listing: Listing) -> Result<Listing, String> {
     if listing.schema != 1
         || listing.id != ID
         || listing.dir() != DIR
@@ -176,6 +191,38 @@ fn install_package(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    const FIXTURE_CATALOG: &str = "https://catalog.invalid/v1";
+
+    struct FixtureCatalog {
+        site: PathBuf,
+        tampered: bool,
+    }
+
+    impl refresh::Source for FixtureCatalog {
+        fn text(&self, url: &str) -> Result<String, String> {
+            String::from_utf8(self.bytes(url, refresh::MAX_INDEX)?).map_err(|error| error.to_string())
+        }
+
+        fn bytes(&self, url: &str, max: u64) -> Result<Vec<u8>, String> {
+            use std::io::Read;
+
+            let relative = url.strip_prefix("https://catalog.invalid/v1/").ok_or("unexpected fixture URL")?;
+            if relative.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+                return Err("invalid fixture URL".into());
+            }
+            if self.tampered && relative.ends_with(".zip.sig") {
+                return Ok(b"bad proof".to_vec());
+            }
+            let mut bytes = Vec::new();
+            fs::File::open(self.site.join(relative)).map_err(|error| error.to_string())?
+                .take(max + 1).read_to_end(&mut bytes).map_err(|error| error.to_string())?;
+            if bytes.len() as u64 > max {
+                return Err("the fixture is too large".into());
+            }
+            Ok(bytes)
+        }
+    }
 
     fn fixture(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("kl-bootstrap-{}-{name}", std::process::id()));
@@ -251,10 +298,21 @@ mod tests {
                 "assets": {(manifest.arch.clone()): {"url": "https://github.com/example/releases/store.zip", "sha256": sha256, "size": size}}
             }]
         }).to_string();
-        let listing = parse_listing(&text).unwrap();
         let device = resolve::Device {
             arch: manifest.arch,
             firmware: kl_store::Version::parse("5.18.2").unwrap(),
+        };
+        let listing = if let Some(site) = std::env::var_os("KL_STORE_BOOTSTRAP_CATALOG") {
+            let trust = std::env::var_os("KL_TEST_CATALOG_PUBLIC_KEY").unwrap();
+            let key = TrustedKey::from_hex(fs::read_to_string(trust).unwrap().trim()).unwrap();
+            let mut source = FixtureCatalog { site: PathBuf::from(site), tampered: false };
+            let (listing, _) = bootstrap_release(FIXTURE_CATALOG, &source, Some(&key), &device).unwrap();
+            source.tampered = true;
+            assert!(bootstrap_release(FIXTURE_CATALOG, &source, Some(&key), &device).is_err());
+            println!("Launcher authenticated the staged Store archive and rejected its tampered signature");
+            listing
+        } else {
+            check_listing(serde_json::from_str(&text).unwrap()).unwrap()
         };
         let paths = Paths::under(&root);
         let installed = install_package(&paths, &listing, &device, &zip, "2026-11-19").unwrap();

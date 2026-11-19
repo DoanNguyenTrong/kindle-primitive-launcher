@@ -243,15 +243,19 @@ fn main() {
         return;
     }
 
-    // Recover before discovery so the grid reflects an interrupted install.
-    if let Some(root) = documents.parent().filter(|root| root.is_dir() && !from_mirror) {
+    // Reviewable system changes recover in Store with its storage write lease.
+    let mut recovery_problem = None;
+    if let Some(root) = documents.parent().filter(|root| root.is_dir() && !from_mirror && device::usb_state() != kl_core::Usb::Drive) {
         match kl_store::install::recover(&kl_store::install::Paths::under(root)) {
             Ok(Some(what)) => log(&format!("store: {what}")),
             Ok(None) => {}
-            Err(e) => log(&format!("store: cannot check an unfinished install: {e}")),
+            Err(e) => recovery_problem = Some(format!("Store recovery pending. {e}")),
         }
     }
     let (config, apps, extensions, mut problems) = load_library(&dir, &documents);
+    if let Some(problem) = recovery_problem {
+        problems.insert(0, problem);
+    }
     let layout = Layout::new(W, H, config.columns, config.rows);
 
     let mut renderer = match Renderer::new(W, H, &font_paths(&dir, &run)) {

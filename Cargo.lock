@@ -518,9 +518,12 @@ version = "0.4.4"
 dependencies = [
  "kl-core",
  "kl-store",
+ "libc",
  "primitive-device",
  "primitive-eink",
  "primitive-input",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -553,6 +556,8 @@ dependencies = [
 name = "kl-store"
 version = "0.4.4"
 dependencies = [
+ "http",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
