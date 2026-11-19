@@ -345,7 +345,7 @@ fn main() {
             write_png(&out.join("store-install-sheet-turned.png"), W, H, &turned);
             let mut required = ui.store[i].clone();
             required.id = "primitive-hello".into();
-            required.name = "Primitive Hello".into();
+            required.name = "Hello".into();
             required.latest = Some("0.1.0".into());
             required.size = Some(2_600_000);
             required.changes = vec!["Changes nothing outside its own folder.".into()];
