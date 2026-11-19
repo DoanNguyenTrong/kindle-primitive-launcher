@@ -90,6 +90,7 @@ fn main() {
         eprintln!("problem: {p}");
     }
     let mut ui = Ui::new(apps, layout);
+    ui.version = env!("CARGO_PKG_VERSION").to_string();
     ui.set_extensions(extensions);
     let status = demo_status();
     let shot = |r: &mut Renderer, ui: &Ui, name: &str| {

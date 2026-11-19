@@ -271,7 +271,7 @@ fn main() {
     let run = env_dir("KL_RUN", "/var/tmp/kl");
     let documents = env_dir("KL_DOCUMENTS", "/mnt/us/documents");
     let _ = fs::create_dir_all(&run);
-    log(&format!("start v{} dir {} run {}", kl_core::VERSION, dir.display(), run.display()));
+    log(&format!("start v{} dir {} run {}", env!("CARGO_PKG_VERSION"), dir.display(), run.display()));
 
     let mut settings_path = dir.join("settings.txt");
     let mut settings = Settings::parse(&fs::read_to_string(&settings_path).unwrap_or_default());
@@ -309,6 +309,8 @@ fn main() {
     log(&format!("{} apps; ready in {} ms", apps.len(), started.elapsed().as_millis()));
 
     let mut ui = Ui::new(apps, layout);
+
+    ui.version = env!("CARGO_PKG_VERSION").to_string();
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_extensions(extensions);
     // An install that a power cut interrupted is finished or undone before the store reads what is installed.
