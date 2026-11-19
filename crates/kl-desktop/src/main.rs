@@ -350,6 +350,11 @@ fn main() {
             ui.store_progress_percent = None;
             ui.store_scroll = ui.store_scroll_max().min(900);
             write_png(&out.join("store-app-scrolled.png"), W, H, &renderer.draw(&ui, &ssh_on));
+            ui.store_scroll = 0;
+            let app = &mut ui.store[i];
+            app.status = Status::Installed(app.latest.clone().unwrap_or_default());
+            app.launchable = true;
+            write_png(&out.join("store-open-installed.png"), W, H, &renderer.draw(&ui, &ssh_on));
         }
         if let Some(i) = ui.store.iter().position(|e| e.kind == kl_core::store::Kind::Link) {
             ui.store_open = Some(i);
@@ -362,6 +367,10 @@ fn main() {
     ui.file_transfer = Some(("http://192.0.2.12:8080".into(), "005628".into()));
     write_png(&out.join("file-transfer.png"), W, H, &renderer.draw(&ui, &ssh_on));
     ui.file_transfer = None;
+    ui.screen = kl_core::Screen::Page(kl_core::layout::Page::Store);
+    ui.store_clear_confirm = true;
+    write_png(&out.join("settings-store-clear.png"), W, H, &renderer.draw(&ui, &ssh_on));
+    ui.store_clear_confirm = false;
     ui.screen = kl_core::Screen::Home;
     // The drive-mode screen: shown while the drive is on a computer (no taps then).
     ui.usb = kl_core::Usb::Drive;

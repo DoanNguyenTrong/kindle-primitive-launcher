@@ -273,6 +273,7 @@ fn main() {
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_extensions(extensions);
     ui.store_update_count = bootstrap::available_updates(&dir);
+    ui.store_daily_check = settings.store_daily_check;
     for app in ui.apps() {
         log(&format!("app {}: {}", app.id, app.name));
     }
@@ -492,6 +493,7 @@ fn main() {
                         settings_path = dir.join("settings.txt");
                         from_mirror = false;
                         settings = Settings::parse(&fs::read_to_string(&settings_path).unwrap_or_default());
+                        ui.store_daily_check = settings.store_daily_check;
                         let (_config, apps, extensions, problems) = load_library(&dir, &documents);
                         ui.set_apps(apps);
                         ui.set_extensions(extensions);
@@ -697,6 +699,28 @@ fn main() {
                 std::process::exit(EXIT_KINDLE_UI);
             }
             Action::Device(cmd) => {
+                if matches!(cmd, DeviceCmd::StoreToggleDailyCheck | DeviceCmd::StoreClearCache) {
+                    ui.notice = if from_mirror || device::usb_state() == kl_core::Usb::Drive {
+                        Some("Eject the Kindle drive before changing Store settings.".into())
+                    } else if bootstrapping_store {
+                        Some("Wait for the Store to finish installing.".into())
+                    } else {
+                        match apply_store_setting(cmd, &dir, &settings_path, &mut settings) {
+                            Ok(()) => {
+                                ui.store_daily_check = settings.store_daily_check;
+                                if cmd == DeviceCmd::StoreClearCache {
+                                    ui.store_update_count = 0;
+                                    Some("Cleared the saved store catalog.".into())
+                                } else {
+                                    None
+                                }
+                            }
+                            Err(error) => Some(format!("The Store settings could not be changed. {error}")),
+                        }
+                    };
+                    display.show(renderer.draw(&ui, &status), &settings, cmd == DeviceCmd::StoreClearCache);
+                    continue;
+                }
                 // Power off: the screen says so, and stays that way once the Kindle is off (e-ink keeps its picture).
                 if cmd == DeviceCmd::PowerOff {
                     let frame = renderer.message("Powered Off", "Press the power button to turn the Kindle on again.");
@@ -804,6 +828,17 @@ fn png_files(dir: &Path) -> Vec<String> {
     files
 }
 
+fn apply_store_setting(cmd: DeviceCmd, launcher: &Path, settings_path: &Path, settings: &mut Settings) -> std::io::Result<()> {
+    if cmd == DeviceCmd::StoreClearCache {
+        return kl_store::refresh::clear_cache(launcher);
+    }
+    let mut updated = settings.clone();
+    updated.store_daily_check = !settings.store_daily_check;
+    write_atomic(settings_path, &updated.to_text())?;
+    *settings = updated;
+    Ok(())
+}
+
 fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir: &Path, run: &Path, settings_path: &Path) {
     match cmd {
         DeviceCmd::Light(step) => device::set_light((status.light as i32 + step).clamp(0, device::LEVEL_MAX as i32) as u32),
@@ -907,6 +942,29 @@ mod tests {
             Ok(Ev::Background { name, line, ok }) => (name, line, ok),
             _ => panic!("no background result"),
         }
+    }
+
+    #[test]
+    fn store_settings_are_shared_and_cache_clear_preserves_install_data() {
+        let root = std::env::temp_dir().join(format!("kl-launcher-store-settings-{}", std::process::id()));
+        let store = root.join("store");
+        let settings_path = root.join("settings.txt");
+        let cache = store.join("cache");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("index.json"), "saved catalog").unwrap();
+        fs::write(store.join("installed.json"), "installed records").unwrap();
+        let mut settings = Settings::default();
+        assert!(settings.store_daily_check);
+        apply_store_setting(DeviceCmd::StoreToggleDailyCheck, &root, &settings_path, &mut settings).unwrap();
+        let stored = Settings::parse(&fs::read_to_string(&settings_path).unwrap());
+        assert!(!settings.store_daily_check);
+        assert!(!stored.store_daily_check);
+        for _ in 0..2 {
+            apply_store_setting(DeviceCmd::StoreClearCache, &root, &settings_path, &mut settings).unwrap();
+            assert!(!cache.exists());
+            assert_eq!(fs::read_to_string(store.join("installed.json")).unwrap(), "installed records");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

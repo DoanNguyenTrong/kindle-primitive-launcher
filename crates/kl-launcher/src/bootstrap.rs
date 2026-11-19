@@ -107,10 +107,12 @@ fn install(documents: &Path, report: impl Fn(&str)) -> Result<(), String> {
     fs::create_dir_all(&downloads).map_err(|e| e.to_string())?;
     let zip = downloads.join("primitive-store-bootstrap.zip");
     report("Downloading Primitive Store…");
-    primitive_net::download(
+    primitive_net::download_resumable(
         &asset.url,
         &zip,
         &primitive_net::Policy::store(asset.size),
+        asset.size,
+        &asset.sha256,
         |_, _| {},
     )
     .map_err(|e| format!("Download failed. Check Wi-Fi and try again. {e}"))?;
