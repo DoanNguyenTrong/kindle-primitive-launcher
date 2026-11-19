@@ -19,15 +19,12 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Unit tests
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Shell suites (stub Kindle commands)
         run: |
-          sh tests/supervisor-test.sh
-          sh tests/boot-test.sh
-          sh tests/library-entry-test.sh
-          sh tests/koreader-wrapper-test.sh
+          for test in tests/*-test.sh; do sh "$test"; done
 
   desktop:
     name: Desktop screenshots
@@ -37,6 +34,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+      - name: Check out catalog preview data
+        uses: actions/checkout@v5
+        with:
+          repository: DoanNguyenTrong/kindle-primitive-catalog
+          ref: b812933a17cd4ff4abb0155bf303f7ee6fbe2cc6
+          path: .catalog-preview
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Draw every screen
@@ -44,8 +48,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/documents"
           printf '#!/bin/sh\n# Name: KOReader\n' > "$RUNNER_TEMP/documents/KOReader.sh"
           printf '#!/bin/sh\n# Name: Primitive Browser\n' > "$RUNNER_TEMP/documents/Primitive Browser.sh"
-          cargo run --release -p kl-desktop -- --documents "$RUNNER_TEMP/documents" --out "$RUNNER_TEMP/screens"
-          cargo run --release -p kl-desktop -- --launcher-icon "$RUNNER_TEMP/screens/launcher-icon.png"
+          cargo run --locked --release -p kl-desktop -- --documents "$RUNNER_TEMP/documents" --out "$RUNNER_TEMP/screens" --catalog .catalog-preview
+          test -s "$RUNNER_TEMP/screens/store-today.png"
+          cargo run --locked --release -p kl-desktop -- --launcher-icon "$RUNNER_TEMP/screens/launcher-icon.png"
       - name: Keep the screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -76,7 +81,7 @@ jobs:
       - name: zip
         run: command -v zip >/dev/null || { sudo apt-get update && sudo apt-get install -y zip; }
       - name: Build the device binary
-        run: cargo zigbuild --release -p kl-launcher --target armv7-unknown-linux-musleabihf
+        run: cargo zigbuild --locked --release -p kl-launcher --target armv7-unknown-linux-musleabihf
       - name: Check it is an ARM binary
         run: file target/armv7-unknown-linux-musleabihf/release/kl-launcher | grep -q ARM
       - name: Build the soft-float device binary

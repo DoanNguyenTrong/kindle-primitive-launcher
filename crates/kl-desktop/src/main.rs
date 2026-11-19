@@ -259,11 +259,20 @@ fn main() {
     // The power menu over the grid, and the quick panel with its Power tile.
     ui.screen = kl_core::Screen::PowerMenu;
     write_png(&out.join("power-menu.png"), W, H, &renderer.draw(&ui, &ssh_on));
-    // The store, as the App Store lays it out. The listings and pictures come from the sibling catalog repo; its drafts
-    // are used for this preview only (the device sees just the published apps).
+    // Use the sibling catalog and its drafts by default, or a freshly generated review catalog.
+    let review_catalog = arg(&args, "--catalog");
+    let catalog = PathBuf::from(review_catalog.as_deref().unwrap_or("../doannt-kindle-catalog"));
+    let mut folders = vec![catalog.join("apps")];
+    if review_catalog.is_none() {
+        folders.push(catalog.join("drafts"));
+    }
     let mut entries = Vec::new();
-    for folder in ["../doannt-kindle-catalog/apps", "../doannt-kindle-catalog/drafts"] {
-        let Ok(read) = fs::read_dir(folder) else { continue };
+    for folder in folders {
+        let read = match fs::read_dir(&folder) {
+            Ok(read) => read,
+            Err(error) if review_catalog.is_some() => panic!("read {}: {error}", folder.display()),
+            Err(_) => continue,
+        };
         for e in read.flatten() {
             let dir = e.path();
             let Ok(text) = fs::read_to_string(dir.join("app.json")) else { continue };
@@ -279,11 +288,12 @@ fn main() {
             entries.push(kl_core::store::StoreEntry::from_listing(&listing, None));
         }
     }
+    assert!(review_catalog.is_none() || !entries.is_empty(), "no listings in {}", catalog.display());
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     if !entries.is_empty() {
         use kl_core::store::{Status, StoreTab};
         ui.set_store(entries.clone());
-        if let Ok(data) = fs::read("../doannt-kindle-catalog/collections.json") {
+        if let Ok(data) = fs::read(catalog.join("collections.json")) {
             if let Ok(collections) = serde_json::from_slice::<kl_store::catalog::CollectionIndex>(&data) {
                 ui.store_collections = collections.collections;
             }
