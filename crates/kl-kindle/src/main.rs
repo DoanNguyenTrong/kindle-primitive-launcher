@@ -634,7 +634,18 @@ fn main() {
                 std::process::exit(EXIT_KINDLE_UI);
             }
             Action::Device(cmd) => {
+                // Power off: the screen says so, and stays that way once the Kindle is off (e-ink keeps its picture).
+                if cmd == DeviceCmd::PowerOff {
+                    let frame = renderer.message("Powered Off", "Press the power button to turn the Kindle on again.");
+                    display.show(frame, &settings, true);
+                    // Let the screen finish its refresh before the system halts.
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                }
                 run_device(cmd, &mut status, &mut settings, &dir, &run, &settings_path);
+                // The Kindle is going off: keep the "Powered Off" picture, do not draw the screen again.
+                if cmd == DeviceCmd::PowerOff {
+                    continue;
+                }
                 // Wi-Fi turned on from the Wi-Fi page: look for networks once it is up.
                 if cmd == DeviceCmd::ToggleWifi && status.wifi_on && ui.screen == Screen::Page(kl_core::layout::Page::Wifi) {
                     ui.wifi_scanning = true;

@@ -3,6 +3,14 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.3.20
+
+- Power off shows "Powered Off" on the screen, and the screen keeps that picture once the Kindle is off.
+
+## 0.3.19
+
+- Power off shows a message on the screen before the Kindle turns off.
+
 ## 0.3.18
 
 - Installing by USB is complete: opening Launcher once sets up the boot start by itself (the copy on `/var/local` and the
