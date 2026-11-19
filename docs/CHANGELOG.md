@@ -3,6 +3,12 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.4.5
+
+- Add standalone Store bootstrap and expose Store updates and preferences in Launcher.
+- Protect Launcher updates with a startup trial and automatic rollback.
+- Add Wi-Fi file transfer and storage lease support for the Store and native apps.
+
 ## 0.4.0
 
 - Primitive Store: a Store tile on the home grid. Its screens follow the App Store's layout: Today (a featured app and
