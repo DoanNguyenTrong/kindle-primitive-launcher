@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kl-core", "crates/kl-render", "crates/kl-kindle", "crates/kl-desktop"]
+members = ["crates/kl-core", "crates/kl-render", "crates/kl-kindle", "crates/kl-desktop", "crates/kl-store"]
 
 [workspace.package]
 version = "0.3.21"
