@@ -77,7 +77,10 @@ impl kl_store::refresh::Source for NetSource {
 /// store and the library. The download is refused when Wi-Fi is not connected (the caller checks).
 fn start_store_install(tx: Sender<Ev>, dir: PathBuf, id: String) {
     thread::spawn(move || {
-        let message = match store_install_app(&dir, &id) {
+        log(&format!("store: install of {id} started"));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| store_install_app(&dir, &id)))
+            .unwrap_or_else(|_| Err("an internal error".to_string()));
+        let message = match outcome {
             Ok(version) => format!("Installed {id} {version}."),
             Err(e) => format!("Could not install {id}: {e}"),
         };
@@ -115,7 +118,11 @@ fn store_install_app(dir: &Path, id: &str) -> Result<String, String> {
 fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) {
     thread::spawn(move || {
         let cache = dir.join("store/cache");
-        let message = match kl_store::refresh::refresh(STORE_CATALOG, &cache, &NetSource) {
+        log("store: refresh started");
+        // A panic must still end the refresh (the button waits for it), so it is caught and reported as an error.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kl_store::refresh::refresh(STORE_CATALOG, &cache, &NetSource)))
+            .unwrap_or_else(|_| Err("an internal error".to_string()));
+        let message = match outcome {
             Ok(report) => {
                 log(&format!("store: refreshed {} apps, {} failed, {} removed", report.refreshed, report.failed.len(), report.removed));
                 if report.failed.is_empty() {
@@ -766,6 +773,7 @@ fn main() {
                 std::process::exit(EXIT_KINDLE_UI);
             }
             Action::Device(DeviceCmd::StoreRefresh) => {
+                log(&format!("store: refresh requested (wifi on: {}, state: {})", status.wifi_on, status.wifi_state));
                 if status.wifi_on && status.wifi_state == "connected" {
                     start_store_refresh(tx.clone(), dir.clone());
                     ui.notice = Some("Updating the store...".to_string());
