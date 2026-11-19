@@ -13,8 +13,8 @@ FAIL=0
 
 setup() {
     ROOT=$(mktemp -d /tmp/kl-sup-test.XXXXXX)
-    export KL_DIR="$ROOT/dir" KL_RUN="$ROOT/run" STATE="$ROOT/state"
-    mkdir -p "$KL_DIR/fonts" "$STATE" "$ROOT/bin"
+    export KL_DIR="$ROOT/dir" KL_RUN="$ROOT/run" KL_DOCUMENTS="$ROOT/documents" STATE="$ROOT/state"
+    mkdir -p "$KL_DIR/fonts" "$STATE" "$ROOT/bin" "$KL_DOCUMENTS"
     : > "$KL_DIR/fonts/NotoSans-Regular.ttf"
     : > "$KL_DIR/fonts/NotoSans-Bold.ttf"
     : > "$KL_DIR/holder.lua"
@@ -75,6 +75,16 @@ echo "launcher says hello $code"
 [ -p /dev/fd/1 ] && echo "launcher stdout is a pipe" >> "$STATE/calls"
 case "$code" in
     10) printf '%s\nscript\n%s\n' "$STATE" "$STATE/app.sh" > "$KL_RUN/next"; exit 10 ;;
+    store) printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/Store.sh" > "$KL_RUN/next"; exit 10 ;;
+    open-request)
+        if [ -f "$KL_RUN/store-open" ]; then
+            printf 'store request: %s\n' "$(cat "$KL_RUN/store-open")" >> "$STATE/calls"
+            rm -f "$KL_RUN/store-open"
+            printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/Example.sh" > "$KL_RUN/next"
+            exit 10
+        fi
+        exit 0
+        ;;
     term) kill -TERM $$ ;;
     hang) while :; do sleep 1; done ;;
     "") exit 0 ;;
@@ -414,6 +424,37 @@ run_sup
 check "rollback ran" 'grep -q "driver revert" "$STATE/calls"'
 check "old mirror and launcher restored" 'grep -q "previous mirror" "$STATE/calls" && grep -q "launcher run: 0" "$STATE/calls"'
 check "failed mirror never accepted" '[ ! -f "$STATE/accepted" ]'
+teardown
+
+echo "test: only a Store launch can request opening another installed app"
+setup
+cat > "$KL_DOCUMENTS/Store.sh" <<'EOF'
+[ "$KL_STORE_OPEN_APP" = 1 ] || exit 3
+printf %s example-app > "$KL_RUN/store-open"
+exit 11
+EOF
+cat > "$KL_DOCUMENTS/Example.sh" <<'EOF'
+[ "$KL_STORE_OPEN_APP" = 0 ] || exit 3
+echo "example app opened" >> "$STATE/calls"
+EOF
+printf 'store\nopen-request\n0\n' > "$STATE/codes"
+run_sup
+check "the Store request reaches the new launcher process" 'grep -q "store request: example-app" "$STATE/calls"'
+check "the requested app runs as an ordinary app" 'grep -q "example app opened" "$STATE/calls"'
+check "the request is consumed" '[ ! -f "$KL_RUN/store-open" ]'
+teardown
+
+echo "test: another app's Store request is cleared"
+setup
+cat > "$STATE/app.sh" <<'EOF'
+[ "$KL_STORE_OPEN_APP" = 0 ] || exit 3
+printf %s example-app > "$KL_RUN/store-open"
+exit 11
+EOF
+printf '10\nopen-request\n0\n' > "$STATE/codes"
+run_sup
+check "the unrelated app request is discarded" '! grep -q "store request:" "$STATE/calls"'
+check "there is no stale request file" '[ ! -f "$KL_RUN/store-open" ]'
 teardown
 
 echo "passed $PASS, failed $FAIL"

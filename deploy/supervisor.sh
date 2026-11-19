@@ -21,6 +21,7 @@
 
 DIR=${KL_DIR:-/mnt/us/launcher}
 RUN=${KL_RUN:-/var/tmp/kl}
+DOCUMENTS=${KL_DOCUMENTS:-/mnt/us/documents}
 LOG=$DIR/log-launcher.txt
 MARK=$RUN/framework-stopped
 VOLUMD_MARK=$RUN/volumd-paused
@@ -38,9 +39,10 @@ UPDATE_JOURNAL=$DIR/store/journal.json
 UPDATE_DRIVER=$RUN/launcher-update-driver
 UPDATE_SETUP=$RUN/launcher-update-setup
 UPDATE_READY=$RUN/launcher-update-ready
+STORE_OPEN=$RUN/store-open
 
 mkdir -p "$RUN"
-export KL_DIR="$DIR" KL_RUN="$RUN" KL_LAUNCHER_SELF_UPDATE=1
+export KL_DIR="$DIR" KL_RUN="$RUN" KL_DOCUMENTS="$DOCUMENTS" KL_LAUNCHER_SELF_UPDATE=1
 # Nothing of this script may hold /mnt/us: the Kindle unmounts it to show its drive on a computer (a USB cable), and
 # it kills whatever still holds it. The working directory is /, and long-running programs log through a pipe.
 cd /
@@ -87,6 +89,7 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; the
     exit 0
 fi
 echo $$ > "$PIDFILE"
+rm -f "$STORE_OPEN" "$STORE_OPEN.tmp"
 log "start (pid $$)"
 
 if [ -e /etc/init.d/framework ]; then INIT=sysv; else INIT=upstart; fi
@@ -451,7 +454,7 @@ finish() {
     restore
     wait_screen_stop
     logger_stop
-    rm -f "$PIDFILE" "$LAUNCHER_PID" "$APP_PID" "$HOLDER_PID"
+    rm -f "$PIDFILE" "$LAUNCHER_PID" "$APP_PID" "$HOLDER_PID" "$STORE_OPEN" "$STORE_OPEN.tmp"
     log "end"
 }
 
@@ -471,14 +474,18 @@ run_app() {
         return
     fi
     { read -r adir; read -r kind; read -r arg; } < "$RUN/next"
-    rm -f "$RUN/next"
+    rm -f "$RUN/next" "$STORE_OPEN" "$STORE_OPEN.tmp"
+    store_can_open=0
+    if [ "$kind" = script ] && [ "$arg" = "$DOCUMENTS/Store.sh" ]; then
+        store_can_open=1
+    fi
     log "app start: $kind $arg (in $adir)"
     t0=$(date +%s)
     # While an app runs, a cable must not take /mnt/us from under it: volumd is paused until the app ends.
     volumd_pause
     (
         cd "$adir" 2>/dev/null || cd /mnt/us 2>/dev/null || cd /
-        export PRIMITIVE_LAUNCHER=1 PRIMITIVE_FRAMEWORK=stopped
+        export PRIMITIVE_LAUNCHER=1 PRIMITIVE_FRAMEWORK=stopped KL_STORE_OPEN_APP="$store_can_open"
         case "$kind" in
             script) exec /bin/sh "$arg" ;;
             hooks) exec /bin/sh -c '. "$1"; on_run' sh "$arg" ;;
@@ -492,6 +499,12 @@ run_app() {
     rc=$?
     rm -f "$APP_PID"
     log "app exit: rc=$rc after $(( $(date +%s) - t0 ))s"
+    # Only the installed Store may pass a request on exit 11. The launcher reads
+    # the app ID, checks the install record, and uses the ordinary app route.
+    if [ "$store_can_open" -ne 1 ] || [ "$rc" -ne 11 ]; then
+        rm -f "$STORE_OPEN"
+    fi
+    rm -f "$STORE_OPEN.tmp"
     # Apps written for the stock UI may start it again on exit, or resume volumd.
     if framework_running; then
         log "the app left the framework running; stopping it again"

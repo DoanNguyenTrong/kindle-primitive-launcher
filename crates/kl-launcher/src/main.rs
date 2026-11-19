@@ -23,6 +23,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use kl_core::store_open;
 use kl_core::{discover, Action, App, Config, DeviceCmd, Input, Launch, Layout, Screen, Settings, Status, Ui};
 use kl_render::Renderer;
 
@@ -196,6 +197,17 @@ fn launcher_update_command(dir: &Path, command: &str) -> i32 {
     }
 }
 
+fn store_launch_descriptor(dir: &Path, documents: &Path, apps: &[App], id: &str) -> std::io::Result<String> {
+    let filename = store_open::installed_entry(dir, documents, id)?;
+    let entry = documents.join(&filename);
+    apps.iter().find(|app| {
+        app.id == filename && !app.background
+            && matches!(&app.launch, Launch::Script { path, .. } if Path::new(path) == entry)
+    })
+    .and_then(App::next_file)
+    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Open this app from the launcher grid."))
+}
+
 fn main() {
     let mut dir = env_dir("KL_DIR", "/mnt/us/launcher");
     let mut args = std::env::args().skip(1);
@@ -269,6 +281,25 @@ fn main() {
     let mut status = device::status(&settings);
     ui.set_battery(status.battery, status.charging);
 
+    let update_trial = std::env::var("KL_LAUNCHER_UPDATE_TRIAL").as_deref() == Ok("1");
+    match store_open::take_request(&run) {
+        Ok(Some(id)) if !from_mirror && status.usb != kl_core::Usb::Drive && !update_trial => {
+            match store_launch_descriptor(&dir, &documents, ui.apps(), &id)
+                .and_then(|next| write_atomic(&run.join("next"), &next))
+            {
+                Ok(()) => {
+                    log(&format!("opening {id} from the Store"));
+                    std::process::exit(EXIT_LAUNCH);
+                }
+                Err(error) => ui.notice = Some(format!("Could not open the app from the Store. {error}")),
+            }
+        }
+        Ok(Some(_)) if update_trial => ui.notice = Some("You can open this app from the grid after the launcher update.".into()),
+        Ok(Some(_)) => ui.notice = Some("Eject the Kindle drive before opening the app.".into()),
+        Ok(None) => {}
+        Err(error) => ui.notice = Some(format!("Could not read the Store's request. {error}")),
+    }
+
     let (tx, rx) = channel();
     match input::find(profile::ACTIVE.touch_name) {
         Some(path) => {
@@ -333,7 +364,7 @@ fn main() {
     log(&format!("first screen after {} ms", started.elapsed().as_millis()));
     let mut sleep_picture = 0usize;
     let mut bootstrapping_store = false;
-    let mut mark_trial_ready = std::env::var("KL_LAUNCHER_UPDATE_TRIAL").as_deref() == Ok("1");
+    let mut mark_trial_ready = update_trial;
     let mut transfer_session = None;
 
     loop {
@@ -785,6 +816,7 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::RestartLauncher => device::restart_launcher(),
         DeviceCmd::StoreRefresh
         | DeviceCmd::StoreRemove(_)
+        | DeviceCmd::StoreOpen(_)
         | DeviceCmd::StoreInstall(_)
         | DeviceCmd::StoreUpdateAll
         | DeviceCmd::StoreToggleDailyCheck
@@ -875,6 +907,29 @@ mod tests {
             Ok(Ev::Background { name, line, ok }) => (name, line, ok),
             _ => panic!("no background result"),
         }
+    }
+
+    #[test]
+    fn a_store_request_uses_the_installed_apps_normal_launcher_entry() {
+        let root = std::env::temp_dir().join(format!("kl-launcher-store-open-{}", std::process::id()));
+        let documents = root.join("documents");
+        let dir = root.join("launcher");
+        fs::create_dir_all(&documents).unwrap();
+        let filename = documents.join("Example App.sh");
+        fs::write(&filename, "#!/bin/sh\n# Name: Example App\n").unwrap();
+        let app = kl_store::record::Installed {
+            id: "example-app".into(), files: vec!["documents/Example App.sh".into()], ..Default::default()
+        };
+        let mut record = kl_store::record::Record::new();
+        record.apps.insert(app.id.clone(), app);
+        kl_store::record::save(&dir.join("store/installed.json"), &record).unwrap();
+        let mut apps = kl_core::apps::scriptlets(&documents);
+        let next = store_launch_descriptor(&dir, &documents, &apps, "example-app").unwrap();
+        assert_eq!(next, format!("{}\nscript\n{}\n", documents.display(), filename.display()));
+        assert!(store_launch_descriptor(&dir, &documents, &apps, "uninstalled-app").is_err());
+        apps[0].launch = Launch::Shell { command: "echo ignored".into() };
+        assert!(store_launch_descriptor(&dir, &documents, &apps, "example-app").is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
