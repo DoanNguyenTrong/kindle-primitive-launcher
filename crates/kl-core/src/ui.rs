@@ -76,6 +76,8 @@ pub enum DeviceCmd {
     StoreInstall(usize),
     /// Primitive Store: download the catalog again (the Refresh button).
     StoreRefresh,
+    /// Primitive Store: remove the installed entry at this index (after a second tap on Remove).
+    StoreRemove(usize),
     ToggleAutostart,
     ToggleSleepScreen,
     /// Follow the device's turn again (Settings > Screen > Auto).
@@ -273,6 +275,8 @@ pub struct Ui {
     pub store_busy: bool,
     /// The app being installed from the store, if any (its page shows Installing, and its action waits).
     pub store_installing: Option<String>,
+    /// The app whose Remove was tapped once: a second tap removes it.
+    pub store_remove_armed: Option<String>,
     /// Background jobs still running (shown in the status bar).
     pub running: usize,
     /// The Wi-Fi page: the networks from the last scan, whether a scan is running, and the list's scroll.
@@ -323,6 +327,7 @@ impl Ui {
             store_scroll: 0,
             store_busy: false,
             store_installing: None,
+            store_remove_armed: None,
             running: 0,
             wifi: crate::wifi::WifiInfo::default(),
             wifi_scanning: false,
@@ -471,9 +476,9 @@ impl Ui {
         self.layout.store_pages(self.store_list_indices().len())
     }
 
-    /// The rows of a product page's information, and its screenshots, for its scroll limit.
+    /// The rows of a product page (information, and Remove when it applies), and its screenshots, for its scroll limit.
     fn store_info_count(&self, index: usize) -> (usize, usize) {
-        self.store.get(index).map_or((0, 0), |e| (e.info_rows().len(), e.screenshots))
+        self.store.get(index).map_or((0, 0), |e| (e.page_rows().len(), e.screenshots))
     }
 
     pub fn open_store(&mut self) -> Action {
@@ -591,6 +596,21 @@ impl Ui {
                             Action::Device(DeviceCmd::StoreInstall(index))
                         }
                     };
+                }
+                // The last row of an installed app: Remove, on a second tap.
+                let rows = entry.page_rows();
+                if entry.can_remove() {
+                    let last = rows.len() - 1;
+                    let row = l.store_info_row(last, self.store_scroll, entry.screenshots);
+                    if row.contains(x, y) {
+                        if self.store_remove_armed.as_deref() == Some(entry.id.as_str()) {
+                            self.store_remove_armed = None;
+                            return Action::Device(DeviceCmd::StoreRemove(index));
+                        }
+                        self.store_remove_armed = Some(entry.id.clone());
+                        self.notice = Some(format!("Tap Remove again to remove {} from this Kindle.", entry.name));
+                        return Action::Redraw { full: false };
+                    }
                 }
                 Action::None
             }
@@ -1325,6 +1345,24 @@ mod tests {
         a.hidden = true;
         let u = Ui::new(vec![a, script("y.sh")], Layout::new(1264, 1680, 3, 3));
         assert_eq!(u.apps().len(), 1);
+    }
+
+    #[test]
+    fn remove_takes_two_taps_on_an_installed_app_and_is_not_offered_otherwise() {
+        use crate::store::{test_entry, Status};
+        let mut u = ui(0);
+        u.set_store(vec![test_entry("a", "Alpha", Status::Installed("1.0.0".into())), test_entry("b", "Beta", Status::NotInstalled)]);
+        u.open_store();
+        u.store_open = Some(0);
+        u.screen = Screen::StoreApp;
+        let last = u.store[0].page_rows().len() - 1;
+        let row = u.layout.store_info_row(last, 0, 0);
+        assert_eq!(u.handle(centre(row)), Action::Redraw { full: false }, "the first tap asks");
+        assert!(u.notice.as_deref().unwrap_or("").contains("Tap Remove again"));
+        assert_eq!(u.handle(centre(row)), Action::Device(DeviceCmd::StoreRemove(0)), "the second tap removes");
+        // Not installed: no Remove row, so the last row is information.
+        assert!(!u.store[1].can_remove());
+        assert_ne!(u.store[1].page_rows().last().map(|r| r.0.as_str()), Some(crate::store::StoreEntry::REMOVE_LABEL));
     }
 
     #[test]

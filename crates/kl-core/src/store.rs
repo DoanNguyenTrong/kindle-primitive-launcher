@@ -150,6 +150,23 @@ impl StoreEntry {
         }
     }
 
+    /// The label of the product page's last row when the app can be removed from the Kindle.
+    pub const REMOVE_LABEL: &'static str = "Remove from this Kindle";
+
+    /// Whether the store installed this app (so the page offers Remove).
+    pub fn can_remove(&self) -> bool {
+        self.kind == Kind::Install && matches!(self.status, Status::Installed(_) | Status::Update { .. })
+    }
+
+    /// The rows the product page shows: the information rows, and Remove when the app is installed.
+    pub fn page_rows(&self) -> Vec<(String, String)> {
+        let mut rows = self.info_rows();
+        if self.can_remove() {
+            rows.push((Self::REMOVE_LABEL.to_string(), String::new()));
+        }
+        rows
+    }
+
     /// The information rows of the product page: label and value, in the order the page shows them.
     pub fn info_rows(&self) -> Vec<(String, String)> {
         let mut rows = vec![

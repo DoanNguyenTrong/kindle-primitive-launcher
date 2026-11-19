@@ -776,6 +776,29 @@ fn main() {
                 display.show(renderer.draw(&ui, &status), &settings, false);
             }
             Action::Device(cmd) => {
+                if let DeviceCmd::StoreRemove(index) = cmd {
+                    let name = ui.store.get(index).map(|e| (e.id.clone(), e.name.clone()));
+                    if let Some((id, name)) = name {
+                        let root = dir.parent().unwrap_or(Path::new("/mnt/us")).to_path_buf();
+                        match kl_store::install::remove(&kl_store::install::Paths::under(&root), &id) {
+                            Ok(()) => {
+                                let (_config, apps, extensions, _problems) = load_library(&dir, &documents);
+                                ui.set_apps(apps);
+                                ui.set_extensions(extensions);
+                                for problem in kl_render::load_icons(&mut renderer, ui.apps(), &layout, Some(&dir.join("cache"))) {
+                                    log(&format!("problem: {problem}"));
+                                }
+                                ui.set_store(load_store(&dir));
+                                ui.screen = Screen::Store;
+                                ui.notice = Some(format!("Removed {name} from this Kindle."));
+                                log(&format!("store: removed {id}"));
+                            }
+                            Err(e) => ui.notice = Some(format!("Could not remove {name}: {e}")),
+                        }
+                    }
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
+                }
                 if let DeviceCmd::StoreInstall(index) = cmd {
                     match ui.store.get(index).map(|e| (e.id.clone(), e.name.clone())) {
                         Some((id, name)) if status.wifi_on && status.wifi_state == "connected" => {
@@ -911,6 +934,8 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         // The download of a store app is the store's network step (implementation plan D2): not wired yet.
         // The catalog download runs on a thread (see `start_store_refresh`), not here.
         DeviceCmd::StoreRefresh => {}
+        // Remove runs in the device loop (it reloads the library): see the Action::Device arm.
+        DeviceCmd::StoreRemove(_) => {}
         DeviceCmd::StoreInstall(index) => log(&format!("store: install of entry {index} requested; the download is not wired yet")),
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::ToggleSleepScreen => {

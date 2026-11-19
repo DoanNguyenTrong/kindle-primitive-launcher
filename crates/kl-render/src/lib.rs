@@ -1079,15 +1079,18 @@ impl Renderer {
         self.text(Text { text: "About", x: 40.0, y: (about.y - 74) as f32, w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
         self.text(Text { text: &e.description, x: 40.0, y: about.y as f32, w, size: 30.0, bold: false, align: Align::Start, lines: 7, gray: BLACK });
 
-        let rows = e.info_rows();
+        let rows = e.page_rows();
         if !rows.is_empty() {
             let first = l.store_info_row(0, scroll, e.screenshots);
             self.text(Text { text: "Information", x: 40.0, y: (first.y - 74) as f32, w, size: 48.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
         }
         for (i, (label, value)) in rows.iter().enumerate() {
             let r = l.store_info_row(i, scroll, e.screenshots);
-            self.text(Text { text: label, x: r.x as f32, y: (r.y + 34) as f32, w: (r.w / 2) as f32, size: 30.0, bold: false, align: Align::Start, lines: 1, gray: BLACK });
-            self.text(Text { text: value, x: (r.x + r.w / 3) as f32, y: (r.y + 34) as f32, w: (r.w - r.w / 3) as f32, size: 30.0, bold: false, align: Align::End, lines: 1, gray: 85 });
+            let remove = label == kl_core::store::StoreEntry::REMOVE_LABEL;
+            self.text(Text { text: label, x: r.x as f32, y: (r.y + 34) as f32, w: (r.w * 2 / 3) as f32, size: 30.0, bold: remove, align: Align::Start, lines: 1, gray: BLACK });
+            if !value.is_empty() {
+                self.text(Text { text: value, x: (r.x + r.w / 3) as f32, y: (r.y + 34) as f32, w: (r.w - r.w / 3) as f32, size: 30.0, bold: false, align: Align::End, lines: 1, gray: 85 });
+            }
             self.hairline(r.bottom() - 1, r.x, r.right());
         }
 
