@@ -1,56 +1,22 @@
 name: Release
 
-# Runs when a version tag such as v0.2.6 is pushed. The tag must match the version in Cargo.toml.
 on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-
 jobs:
   release:
-    name: Build and publish the release package
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-
-      - name: The tag must match Cargo.toml
-        run: |
-          TAG=${GITHUB_REF_NAME#v}
-          VERSION=$(sed -n 's/^version = "\([0-9]*\.[0-9]*\.[0-9]*\)"/\1/p' Cargo.toml | head -n 1)
-          if [ "$TAG" != "$VERSION" ]; then
-            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $VERSION" >&2
-            exit 1
-          fi
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: armv7-unknown-linux-musleabihf
-      - uses: Swatinem/rust-cache@v2
-
-      # zig and a prebuilt cargo-zigbuild from setup actions, not pip or a source build: a pip install of ziglang
-      # can be refused on newer runner images (the first v0.2.6 release run failed in this step).
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.1          # the version the device builds are made with
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-zigbuild@0.24.1
-      - name: zip
-        run: command -v zip >/dev/null || { sudo apt-get update && sudo apt-get install -y zip; }
-
-      - name: Test, build the device binary and package
-        run: |
-          cargo test --workspace
-          sh tests/supervisor-test.sh
-          cargo zigbuild --release -p kl-kindle --target armv7-unknown-linux-musleabihf
-          sh scripts/package-release.sh
-
-      - name: Publish the GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          generate_release_notes: true
+    # Pin the shared workflow to @v1 once that release is approved and exists.
+    uses: DoanNguyenTrong/kindle-primitive-build/.github/workflows/package.yml@main
+    permissions:
+      contents: write
+    with:
+      id: primitive-launcher
+      dir: launcher
+      binary-crate: kl-launcher
+      arches: armhf
+      firmware-min: "5.16.3"
+      install-file: docs/INSTALL.md
+      changelog-file: docs/CHANGELOG.md
+      docs-licence-file: LICENSE-DOCS
+      legacy-usb: true

@@ -12,8 +12,12 @@ only. It does not jailbreak the Kindle and does not change any file of the Kindl
 
 ## Install with a USB cable
 
+Install the launcher over USB for the first setup. Launcher updates through Primitive Store require the launcher
+self-update flow and a published listing.
+
 1. Download `primitive-launcher-<version>.zip` from the
    [latest release](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases/latest) and unzip it.
+   You can also use a `primitive-launcher-<version>-armhf.zip` package when one is available.
 2. Connect the Kindle to the computer **while the stock Kindle UI is on the screen**. (While the launcher runs,
    the Kindle charges over USB but does not show up as a drive. Tap *Kindle UI* in the launcher first.)
 3. Copy the `launcher` and `documents` folders onto the root of the Kindle drive. Merge `documents` with the
@@ -36,7 +40,7 @@ With the SSH server running on the Kindle (start it in the launcher's Settings >
 settings' SSH switch), build and install from a checkout:
 
 ```sh
-cargo zigbuild --release -p kl-kindle --target armv7-unknown-linux-musleabihf
+cargo zigbuild --release -p kl-launcher --target armv7-unknown-linux-musleabihf
 KINDLE_HOST=<kindle-ip> sh deploy/install-ssh.sh
 ```
 
