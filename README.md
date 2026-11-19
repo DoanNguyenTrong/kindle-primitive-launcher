@@ -122,7 +122,7 @@ The screenshots are from the desktop build of the same code, with demo values. T
 | Kindle Oasis 3 (1264 × 1680, firmware 5.18.2) | ✅ Verified on hardware |
 | Other Kindle models | 🛠️ Not supported yet |
 
-**Current version: 0.4.5.** Each device build is a new patch version; each phase starts a new minor version.
+**Current version: 0.4.6.** Each device build is a new patch version; each phase starts a new minor version.
 Hardware observations are in the [device notes](docs/device-notes.md).
 
 ## Limits

@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.4.6
+
+- Show one Store tile, using the standalone app when installed and offering installation when needed.
+
 ## 0.4.5
 
 - Add standalone Store bootstrap and expose Store updates and preferences in Launcher.

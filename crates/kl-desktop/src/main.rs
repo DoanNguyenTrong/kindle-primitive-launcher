@@ -108,7 +108,7 @@ fn main() {
         ui.store_update_count = 2;
         shot(&mut renderer, &ui, "home-store-updates");
         ui.store_update_count = 0;
-        ui.notice = Some("Downloading Primitive Store…".into());
+        ui.notice = Some("Downloading Store…".into());
         shot(&mut renderer, &ui, "home-store-bootstrap");
     }
     ui.notice = problems.first().cloned();

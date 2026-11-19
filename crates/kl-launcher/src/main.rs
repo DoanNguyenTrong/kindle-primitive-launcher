@@ -107,7 +107,6 @@ fn load_library(dir: &Path, documents: &Path) -> (Config, Vec<App>, Vec<kl_core:
     };
     let (mut apps, more) = discover(documents, &config);
     problems.extend(more);
-    bootstrap::reconcile_tiles(&mut apps, documents);
     kl_core::apps::use_koreader_wrapper(&mut apps, &config, &dir.join("run-koreader.sh"));
     let extensions_root = documents.parent().unwrap_or(Path::new("/mnt/us")).join("extensions");
     let (extensions, more) = kl_core::kual::discover_root(&extensions_root, kl_core::kual::OASIS_3_MODEL);
@@ -400,7 +399,7 @@ fn main() {
                 match result {
                     Err(error) => {
                         log(&format!("Store bootstrap failed: {error}"));
-                        ui.notice = Some(format!("Could not install Primitive Store. {error}"));
+                        ui.notice = Some(format!("Could not install Store. {error}"));
                         Action::Redraw { full: false }
                     }
                     Ok(()) => {
@@ -412,7 +411,7 @@ fn main() {
                         for problem in kl_render::load_icons(&mut renderer, ui.apps(), &layout, Some(&dir.join("cache"))) {
                             log(&format!("problem: {problem}"));
                         }
-                        ui.notice = Some("Primitive Store is ready.".into());
+                        ui.notice = Some("Store is ready.".into());
                         match app {
                             Some(app) if ui.screen == Screen::Home && ui.usb != kl_core::Usb::Drive => Action::Launch(app),
                             _ => Action::Redraw { full: false },
@@ -588,24 +587,24 @@ fn main() {
             Action::Launch(mut app) => {
                 if bootstrapping_store {
                     ui.pressed = None;
-                    ui.notice = Some("Primitive Store is being installed. Please wait.".into());
+                    ui.notice = Some("Store is being installed. Please wait.".into());
                     display.show(renderer.draw(&ui, &status), &settings, false);
                     continue;
                 }
-                if app.launch == Launch::Store {
+                if app.launch == Launch::Store || app.id == bootstrap::ENTRY {
                     status = device::status(&settings);
                     if let Some(entry) = bootstrap::entry_for(app, &documents) {
                         app = entry;
                     } else {
                         ui.pressed = None;
                         ui.notice = Some(if from_mirror || status.usb == kl_core::Usb::Drive {
-                            "Eject the Kindle drive to install Primitive Store.".into()
+                            "Eject the Kindle drive to install Store.".into()
                         } else if !status.wifi_on || status.wifi_state != "connected" {
-                            "Connect to Wi-Fi to install Primitive Store.".into()
+                            "Connect to Wi-Fi to install Store.".into()
                         } else {
                             bootstrapping_store = true;
                             bootstrap::start(tx.clone(), documents.clone());
-                            "Preparing Primitive Store…".into()
+                            "Preparing Store…".into()
                         });
                         display.show(renderer.draw(&ui, &status), &settings, false);
                         continue;

@@ -10,15 +10,15 @@ only. It does not jailbreak the Kindle and does not change any file of the Kindl
 - Optional: [KOReader](https://koreader.rocks) and [Primitive Browser](https://github.com/DoanNguyenTrong/kindle-primitive-browser).
   The launcher finds them by their library entries (`KOReader.sh`, `Primitive Browser.sh`).
 
-## Update with Primitive Store
+## Update with Store
 
-If Launcher and Primitive Store are already on the Kindle, open **Primitive Store** and tap **Refresh**. When an
+If Launcher and Store are already on the Kindle, open **Store** and tap **Refresh**. When an
 approved Launcher release appears under **Updates**, select it and follow the prompts. The Launcher restarts to test
 the update. If the trial fails, the Launcher returns to the previous version. Your settings and library remain in place.
 
 ## Install with a USB cable
 
-Install the launcher over USB for the first setup. Launcher updates through Primitive Store require the launcher
+Install the launcher over USB for the first setup. Launcher updates through Store require the launcher
 self-update flow and a published listing.
 
 1. Download `primitive-launcher-<version>.zip` from the
