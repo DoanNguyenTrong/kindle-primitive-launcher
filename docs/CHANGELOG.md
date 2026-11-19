@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.4.10
+
+- Keep an uninstalled app's saved grid preferences without showing a missing-app warning. Reinstalling the app restores its preferences.
+
 ## 0.4.9
 
 - Find and install Store on Kindle firmware where the optional signing key is absent and the signing-policy directory is group-writable.
