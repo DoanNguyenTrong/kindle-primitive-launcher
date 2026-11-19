@@ -5,7 +5,7 @@
 # copy in $RUN (tmpfs), so installs can replace the files on /mnt/us while it runs.
 #
 #   1. Stops the stock framework (lab126_gui). volumd keeps running, so a USB cable gives the Kindle's drive mode
-#      as the stock UI does. While another program runs (an app from the grid), volumd is paused, so a cable
+#      as the stock UI does. While a legacy app runs, volumd is paused, so a cable
 #      cannot take /mnt/us from under it. Both are recorded in marker files first.
 #   2. Runs the launcher (kl-launcher, copied to $RUN). Exit 10: run the app described in $RUN/next, then
 #      start the launcher again. Exit 0: the user asked for the Kindle UI. TERM (143): restart the launcher
@@ -44,6 +44,7 @@ STORE_CHILD=$RUN/store-child.pid
 STORE_STORAGE_REQUEST=$RUN/store-storage-request
 STORE_STORAGE_REPLY=$RUN/store-storage-reply
 STORE_USB_PROC=${KL_STORE_USB_PROC:-/proc}
+NATIVE_APP_RUN=$RUN/native-app
 
 mkdir -p "$RUN"
 export KL_DIR="$DIR" KL_RUN="$RUN" KL_DOCUMENTS="$DOCUMENTS" KL_LAUNCHER_SELF_UPDATE=1
@@ -226,6 +227,7 @@ volumd_resume() {
 store_storage_clear() {
     rm -f "$STORE_CHILD" "$STORE_STORAGE_REQUEST" "$STORE_STORAGE_REQUEST.tmp" \
         "$STORE_STORAGE_REPLY" "$STORE_STORAGE_REPLY.tmp"
+    rm -rf "$NATIVE_APP_RUN"
 }
 
 store_storage_mounted() {
@@ -265,7 +267,10 @@ store_child_started_at() {
 }
 
 store_child_stop() {
-    [ -f "$STORE_CHILD" ] || return 0
+    if [ ! -f "$STORE_CHILD" ]; then
+        store_storage_clear
+        return
+    fi
     read -r store_pid store_started_at < "$STORE_CHILD"
     case "$store_pid" in ''|0|1|*[!0-9]*) return ;; esac
     if [ -n "$store_started_at" ] && [ "$(store_child_started_at "$store_pid")" != "$store_started_at" ]; then
@@ -281,7 +286,7 @@ store_child_stop() {
         done
         if store_child_alive "$store_pid"; then
             kill -KILL "$store_pid" 2>/dev/null
-            # Keep USB paused until the Store has stopped touching storage, even during shutdown.
+            # Keep USB paused until the app has stopped touching storage, even during shutdown.
             while store_child_alive "$store_pid"; do sleep 1; done
         fi
     fi
@@ -316,7 +321,11 @@ store_storage_watch() {
                 esac
             fi
         fi
-        sleep 1
+        if [ "$2" = native ]; then
+            pause_us 100000
+        else
+            sleep 1
+        fi
     done
 }
 
@@ -581,7 +590,10 @@ run_app() {
     store_storage_clear
     store_can_open=0
     store_can_lease=0
+    native_can_lease=0
     app_log=$LOG
+    # Keep volumd paused through launch, and until a storage-aware app reports it is idle.
+    volumd_pause
     if [ "$kind" = script ] && [ "$arg" = "$DOCUMENTS/Store.sh" ]; then
         store_can_open=1
         # Only advertise idle USB when the Store cannot retain a descriptor on the flash log.
@@ -589,15 +601,30 @@ run_app() {
             store_can_lease=1
             app_log=$LOG_OUT
         fi
+    elif [ "$kind" = script ] && [ -p "$LOG_OUT" ]; then
+        case "$arg" in
+            "$DOCUMENTS/"*.sh)
+                if [ -f "$arg" ] && [ ! -L "$arg" ] &&
+                    head -n 10 "$arg" | grep -Fxq '# PrimitiveUSBLease' &&
+                    mkdir "$NATIVE_APP_RUN" && cp "$arg" "$NATIVE_APP_RUN/launch"; then
+                    native_can_lease=1
+                    app_log=$LOG_OUT
+                fi
+                ;;
+        esac
     fi
     log "app start: $kind $arg (in $adir)"
     t0=$(date +%s)
-    # Keep volumd paused through launch, and until a Store with leases reports it is idle.
-    volumd_pause
     (
         cd "$adir" 2>/dev/null || cd /mnt/us 2>/dev/null || cd /
         export PRIMITIVE_LAUNCHER=1 PRIMITIVE_FRAMEWORK=stopped KL_STORE_OPEN_APP="$store_can_open"
         export KL_STORE_USB_LEASE="$store_can_lease"
+        unset KL_NATIVE_APP_RUN
+        if [ "$native_can_lease" -eq 1 ]; then
+            export KL_NATIVE_APP_RUN="$NATIVE_APP_RUN"
+            cd / || exit 1
+            exec /bin/sh "$NATIVE_APP_RUN/launch"
+        fi
         case "$kind" in
             script) exec /bin/sh "$arg" ;;
             hooks) exec /bin/sh -c '. "$1"; on_run' sh "$arg" ;;
@@ -607,9 +634,13 @@ run_app() {
     ) >> "$app_log" 2>&1 &
     apid=$!
     echo "$apid" > "$APP_PID"
-    if [ "$store_can_open" -eq 1 ]; then
+    if [ "$store_can_open" -eq 1 ] || [ "$native_can_lease" -eq 1 ]; then
         printf '%s %s\n' "$apid" "$(store_child_started_at "$apid")" > "$STORE_CHILD"
-        [ "$store_can_lease" -eq 0 ] || store_storage_watch "$apid"
+        if [ "$native_can_lease" -eq 1 ]; then
+            store_storage_watch "$apid" native
+        elif [ "$store_can_lease" -eq 1 ]; then
+            store_storage_watch "$apid" store
+        fi
     fi
     wait "$apid"
     rc=$?

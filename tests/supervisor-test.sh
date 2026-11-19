@@ -85,6 +85,7 @@ echo "launcher says hello $code"
 case "$code" in
     10) printf '%s\nscript\n%s\n' "$STATE" "$STATE/app.sh" > "$KL_RUN/next"; exit 10 ;;
     store) printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/Store.sh" > "$KL_RUN/next"; exit 10 ;;
+    native) printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/Native App.sh" > "$KL_RUN/next"; exit 10 ;;
     open-request)
         if [ -f "$KL_RUN/store-open" ]; then
             printf 'store request: %s\n' "$(cat "$KL_RUN/store-open")" >> "$STATE/calls"
@@ -588,6 +589,63 @@ done
 check "Store exited before USB and stock UI restoration" '! kill -0 "$store_pid" 2>/dev/null && [ "$(cat "$STATE/fw")" = running ] && grep -q "State:.*S (sleeping)" "$KL_STORE_USB_PROC/42/status"'
 check "watchdog cleared the Store lease" '[ ! -e "$KL_RUN/store-child.pid" ] && [ ! -e "$KL_RUN/store-storage-request" ]'
 unset KL_WATCH_EVERY
+teardown
+
+echo "test: an opted-in native app runs from RAM and reserves storage when it saves"
+setup
+cat > "$ROOT/bin/usleep" <<'EOF'
+#!/bin/sh
+if [ "$1" -eq 100000 ]; then sleep 0.05; fi
+EOF
+cat > "$KL_DOCUMENTS/Native App.sh" <<'EOF'
+#!/bin/sh
+# PrimitiveUSBLease
+[ "$KL_NATIVE_APP_RUN" = "$KL_RUN/native-app" ] && [ "$0" = "$KL_NATIVE_APP_RUN/launch" ] || exit 3
+[ "$KL_STORE_USB_LEASE" = 0 ] && [ "$KL_STORE_OPEN_APP" = 0 ] || exit 3
+cp "$STATE/native" "$KL_NATIVE_APP_RUN/run" && chmod 755 "$KL_NATIVE_APP_RUN/run" || exit 3
+exec "$KL_NATIVE_APP_RUN/run"
+EOF
+cat > "$STATE/native" <<'EOF'
+#!/bin/sh
+[ "$(pwd)" = / ] && [ "$0" = "$KL_NATIVE_APP_RUN/run" ] && [ -p /dev/fd/1 ] || exit 3
+echo 'native detached from flash' >> "$STATE/calls"
+request() {
+    printf '%s %s %s\n' "$$" "$1" "$2" > "$KL_RUN/store-storage-request.tmp"
+    mv "$KL_RUN/store-storage-request.tmp" "$KL_RUN/store-storage-request"
+}
+until_matches() {
+    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        grep -q "$1" "$2" 2>/dev/null && return 0
+        sleep 0.1
+    done
+    exit 3
+}
+daemon=$KL_STORE_USB_PROC/42/status
+mounts=$KL_STORE_USB_PROC/mounts
+until_matches 'State:.*T (stopped)' "$daemon"
+request 1 idle
+until_matches 'State:.*S (sleeping)' "$daemon"
+echo 'native idle permits USB' >> "$STATE/calls"
+mv "$mounts" "$mounts.exported"
+printf 'fsp /mnt/us fuse rw 0 0\n' > "$mounts"
+request 2 write
+until_matches "^$$ 2 unavailable$" "$KL_RUN/store-storage-reply"
+echo 'native cannot write while the drive is exported' >> "$STATE/calls"
+mv "$mounts.exported" "$mounts"
+request 3 write
+until_matches "^$$ 3 paused$" "$KL_RUN/store-storage-reply"
+until_matches 'State:.*T (stopped)' "$daemon"
+echo 'native saved locally' >> "$STATE/calls"
+request 4 idle
+until_matches 'State:.*S (sleeping)' "$daemon"
+EOF
+printf 'native\n0\n' > "$STATE/codes"
+run_sup
+check "native wrapper and executable have no working directory or log on flash" 'grep -q "native detached from flash" "$STATE/calls"'
+check "the SDK can release USB while idle" 'grep -q "native idle permits USB" "$STATE/calls"'
+check "exported storage rejects native writes" 'grep -q "native cannot write while the drive is exported" "$STATE/calls"'
+check "native writes are allowed after eject under the same app PID" 'grep -q "native saved locally" "$STATE/calls"'
+check "native RAM files and request are cleared when the app returns" '[ ! -e "$KL_RUN/native-app" ] && [ ! -e "$KL_RUN/store-storage-request" ] && [ "$(grep -c "launcher run:" "$STATE/calls")" -eq 2 ]'
 teardown
 
 echo "passed $PASS, failed $FAIL"
