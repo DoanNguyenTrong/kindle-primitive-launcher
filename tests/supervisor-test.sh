@@ -14,12 +14,15 @@ FAIL=0
 setup() {
     ROOT=$(mktemp -d /tmp/kl-sup-test.XXXXXX)
     export KL_DIR="$ROOT/dir" KL_RUN="$ROOT/run" KL_DOCUMENTS="$ROOT/documents" STATE="$ROOT/state"
-    mkdir -p "$KL_DIR/fonts" "$STATE" "$ROOT/bin" "$KL_DOCUMENTS"
+    export KL_STORE_USB_PROC="$STATE/proc"
+    mkdir -p "$KL_DIR/fonts" "$STATE" "$ROOT/bin" "$KL_DOCUMENTS" "$KL_STORE_USB_PROC/42"
     : > "$KL_DIR/fonts/NotoSans-Regular.ttf"
     : > "$KL_DIR/fonts/NotoSans-Bold.ttf"
     : > "$KL_DIR/holder.lua"
     echo running > "$STATE/fw"
     : > "$STATE/volumd"
+    printf 'State:\tS (sleeping)\n' > "$KL_STORE_USB_PROC/42/status"
+    printf '/dev/mmcblk0p4 /mnt/base-us vfat rw 0 0\nfsp /mnt/us fuse rw 0 0\n' > "$KL_STORE_USB_PROC/mounts"
     : > "$STATE/calls"
     cat > "$ROOT/bin/status" <<'EOF'
 #!/bin/sh
@@ -36,7 +39,7 @@ EOF
     cat > "$ROOT/bin/pidof" <<'EOF'
 #!/bin/sh
 case "$1" in
-    volumd) [ -f "$STATE/volumd" ] ;;
+    volumd) [ -f "$STATE/volumd" ] && echo 42 ;;
     cvm) [ "$(cat "$STATE/fw")" = running ] ;;
     *) exit 1 ;;
 esac
@@ -44,6 +47,12 @@ EOF
     cat > "$ROOT/bin/killall" <<'EOF'
 #!/bin/sh
 echo "killall $*" >> "$STATE/calls"
+case "$*" in
+    '-STOP volumd')
+        if [ ! -f "$STATE/volumd-wont-stop" ]; then printf 'State:\tT (stopped)\n' > "$KL_STORE_USB_PROC/42/status"; fi
+        ;;
+    '-CONT volumd') printf 'State:\tS (sleeping)\n' > "$KL_STORE_USB_PROC/42/status" ;;
+esac
 EOF
     cat > "$ROOT/bin/lipc-set-prop" <<'EOF'
 #!/bin/sh
@@ -79,11 +88,24 @@ case "$code" in
     open-request)
         if [ -f "$KL_RUN/store-open" ]; then
             printf 'store request: %s\n' "$(cat "$KL_RUN/store-open")" >> "$STATE/calls"
+            grep -q 'State:.*T (stopped)' "$KL_STORE_USB_PROC/42/status" && echo "store handoff stayed paused" >> "$STATE/calls"
             rm -f "$KL_RUN/store-open"
             printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/Example.sh" > "$KL_RUN/next"
             exit 10
         fi
         exit 0
+        ;;
+    open-refused)
+        rm -f "$KL_RUN/store-open"
+        echo "$(( $(date +%s) + 1 ))" > "$KL_RUN/heartbeat"
+        for i in 1 2 3 4 5 6; do
+            if grep -q 'State:.*S (sleeping)' "$KL_STORE_USB_PROC/42/status"; then
+                echo "launcher grid restored USB" >> "$STATE/calls"
+                exit 0
+            fi
+            sleep 1
+        done
+        exit 3
         ;;
     term) kill -TERM $$ ;;
     hang) while :; do sleep 1; done ;;
@@ -434,14 +456,26 @@ printf %s example-app > "$KL_RUN/store-open"
 exit 11
 EOF
 cat > "$KL_DOCUMENTS/Example.sh" <<'EOF'
-[ "$KL_STORE_OPEN_APP" = 0 ] || exit 3
+[ "$KL_STORE_OPEN_APP" = 0 ] && [ "$KL_STORE_USB_LEASE" = 0 ] || exit 3
 echo "example app opened" >> "$STATE/calls"
 EOF
 printf 'store\nopen-request\n0\n' > "$STATE/codes"
 run_sup
 check "the Store request reaches the new launcher process" 'grep -q "store request: example-app" "$STATE/calls"'
+check "the Store request keeps USB paused during handoff" 'grep -q "store handoff stayed paused" "$STATE/calls"'
 check "the requested app runs as an ordinary app" 'grep -q "example app opened" "$STATE/calls"'
 check "the request is consumed" '[ ! -f "$KL_RUN/store-open" ]'
+teardown
+
+echo "test: the launcher grid restores USB when a Store Open request is refused"
+setup
+cat > "$KL_DOCUMENTS/Store.sh" <<'EOF'
+printf %s missing-app > "$KL_RUN/store-open"
+exit 11
+EOF
+printf 'store\nopen-refused\n' > "$STATE/codes"
+run_sup
+check "a fresh grid heartbeat releases the inherited pause" 'grep -q "launcher grid restored USB" "$STATE/calls"'
 teardown
 
 echo "test: another app's Store request is cleared"
@@ -455,6 +489,105 @@ printf '10\nopen-request\n0\n' > "$STATE/codes"
 run_sup
 check "the unrelated app request is discarded" '! grep -q "store request:" "$STATE/calls"'
 check "there is no stale request file" '[ ! -f "$KL_RUN/store-open" ]'
+teardown
+
+echo "test: idle Store allows USB and only a mounted, paused volume grants write access"
+setup
+cat > "$KL_DOCUMENTS/Store.sh" <<'EOF'
+[ "$KL_STORE_USB_LEASE" = 1 ] || exit 3
+cd / || exit 3
+[ -p /dev/fd/1 ] && echo "store stdout is a pipe" >> "$STATE/calls"
+daemon_state() { awk '$1 == "State:" {print $2}' "$KL_STORE_USB_PROC/42/status"; }
+request() {
+    printf '%s %s %s\n' "$1" "$2" "$3" > "$KL_RUN/store-storage-request.tmp"
+    mv "$KL_RUN/store-storage-request.tmp" "$KL_RUN/store-storage-request"
+}
+reply() { cat "$KL_RUN/store-storage-reply" 2>/dev/null; }
+until_matches() {
+    count=0
+    while [ "$("$1")" != "$2" ]; do
+        [ "$count" -lt 6 ] || exit 4
+        sleep 1
+        count=$((count + 1))
+    done
+}
+request 999999 1 idle
+sleep 2
+[ "$(daemon_state)" = T ] && echo "foreign request ignored" >> "$STATE/calls"
+request $$ 1 idle
+until_matches daemon_state S
+echo "store idle permits USB" >> "$STATE/calls"
+cp "$KL_STORE_USB_PROC/mounts" "$STATE/mounts.saved"
+printf 'fsp /mnt/us fuse rw 0 0\n' > "$KL_STORE_USB_PROC/mounts"
+request $$ 2 write
+until_matches reply "$$ 2 unavailable"
+[ "$(daemon_state)" = S ] && echo "USB drive stayed attached" >> "$STATE/calls"
+cp "$STATE/mounts.saved" "$KL_STORE_USB_PROC/mounts"
+: > "$STATE/volumd-wont-stop"
+request $$ 3 write
+until_matches reply "$$ 3 unavailable"
+echo "running daemon denied" >> "$STATE/calls"
+rm "$STATE/volumd-wont-stop"
+request $$ 4 write
+until_matches reply "$$ 4 paused"
+[ "$(daemon_state)" = T ] && echo "store wrote with USB disabled" >> "$STATE/calls"
+request $$ 5 idle
+until_matches daemon_state S
+echo "store restored idle USB" >> "$STATE/calls"
+EOF
+printf 'store\n0\n' > "$STATE/codes"
+run_sup
+check "leased Store output does not hold the flash log" 'grep -q "store stdout is a pipe" "$STATE/calls"'
+check "stale process request is ignored" 'grep -q "foreign request ignored" "$STATE/calls"'
+check "idle Store allows the drive" 'grep -q "store idle permits USB" "$STATE/calls"'
+check "already ejected storage denies writes" 'grep -q "USB drive stayed attached" "$STATE/calls"'
+check "write is denied if volumd cannot be stopped" 'grep -q "running daemon denied" "$STATE/calls"'
+check "write is granted only with volumd stopped" 'grep -q "store wrote with USB disabled" "$STATE/calls"'
+check "USB works after the write" 'grep -q "store restored idle USB" "$STATE/calls"'
+check "Store lease files are removed on exit" '[ ! -e "$KL_RUN/store-storage-request" ] && [ ! -e "$KL_RUN/store-storage-reply" ] && [ ! -e "$KL_RUN/store-child.pid" ]'
+teardown
+
+echo "test: a legacy Store remains protected until exit"
+setup
+cat > "$KL_DOCUMENTS/Store.sh" <<'EOF'
+sleep 2
+if grep -q 'State:.*T (stopped)' "$KL_STORE_USB_PROC/42/status"; then
+    echo "legacy Store stayed paused" >> "$STATE/calls"
+fi
+EOF
+printf 'store\n0\n' > "$STATE/codes"
+run_sup
+check "legacy Store retains the startup pause" 'grep -q "legacy Store stayed paused" "$STATE/calls"'
+check "legacy Store exit restores volumd" 'grep -q "State:.*S (sleeping)" "$KL_STORE_USB_PROC/42/status"'
+teardown
+
+echo "test: the watchdog stops a Store with write access before restoring USB"
+setup
+cat > "$KL_DOCUMENTS/Store.sh" <<'EOF'
+cd / || exit 3
+trap '' TERM
+printf '%s 1 write\n' "$$" > "$KL_RUN/store-storage-request.tmp"
+mv "$KL_RUN/store-storage-request.tmp" "$KL_RUN/store-storage-request"
+exec sleep 1000
+EOF
+export KL_WATCH_EVERY=1
+printf 'store\n' > "$STATE/codes"
+sh "$SUP" &
+sp=$!
+for i in 1 2 3 4 5 6; do
+    grep -q ' 1 paused$' "$KL_RUN/store-storage-reply" 2>/dev/null && break
+    sleep 1
+done
+check "the Store held write access before shutdown" 'grep -q " 1 paused$" "$KL_RUN/store-storage-reply"'
+read -r store_pid _ < "$KL_RUN/store-child.pid"
+kill -9 "$sp"
+for i in 1 2 3 4 5 6; do
+    [ "$(cat "$STATE/fw")" = running ] && break
+    sleep 1
+done
+check "Store exited before USB and stock UI restoration" '! kill -0 "$store_pid" 2>/dev/null && [ "$(cat "$STATE/fw")" = running ] && grep -q "State:.*S (sleeping)" "$KL_STORE_USB_PROC/42/status"'
+check "watchdog cleared the Store lease" '[ ! -e "$KL_RUN/store-child.pid" ] && [ ! -e "$KL_RUN/store-storage-request" ]'
+unset KL_WATCH_EVERY
 teardown
 
 echo "passed $PASS, failed $FAIL"

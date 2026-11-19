@@ -40,6 +40,10 @@ UPDATE_DRIVER=$RUN/launcher-update-driver
 UPDATE_SETUP=$RUN/launcher-update-setup
 UPDATE_READY=$RUN/launcher-update-ready
 STORE_OPEN=$RUN/store-open
+STORE_CHILD=$RUN/store-child.pid
+STORE_STORAGE_REQUEST=$RUN/store-storage-request
+STORE_STORAGE_REPLY=$RUN/store-storage-reply
+STORE_USB_PROC=${KL_STORE_USB_PROC:-/proc}
 
 mkdir -p "$RUN"
 export KL_DIR="$DIR" KL_RUN="$RUN" KL_DOCUMENTS="$DOCUMENTS" KL_LAUNCHER_SELF_UPDATE=1
@@ -219,6 +223,103 @@ volumd_resume() {
     rm -f "$VOLUMD_MARK"
 }
 
+store_storage_clear() {
+    rm -f "$STORE_CHILD" "$STORE_STORAGE_REQUEST" "$STORE_STORAGE_REQUEST.tmp" \
+        "$STORE_STORAGE_REPLY" "$STORE_STORAGE_REPLY.tmp"
+}
+
+store_storage_mounted() {
+    # /mnt/us itself is FUSE and stays mounted when the backing partition is exported over USB.
+    awk '$2 == "/mnt/base-us" {mounted=1} END {exit !mounted}' "$STORE_USB_PROC/mounts" 2>/dev/null
+}
+
+store_storage_pause() {
+    store_storage_mounted && volumd_pause || return 1
+    store_poll=0
+    while [ "$store_poll" -lt 3 ]; do
+        store_volumd=$(pidof volumd 2>/dev/null) || return 1
+        [ -n "$store_volumd" ] || return 1
+        store_stopped=yes
+        for store_vpid in $store_volumd; do
+            [ "$(awk '$1 == "State:" {print $2}' "$STORE_USB_PROC/$store_vpid/status" 2>/dev/null)" = T ] || store_stopped=no
+        done
+        if [ "$store_stopped" = yes ]; then
+            store_storage_mounted
+            return
+        fi
+        store_poll=$((store_poll + 1))
+        [ "$store_poll" -eq 3 ] || pause_us 100000
+    done
+    return 1
+}
+
+store_child_alive() {
+    kill -0 "$1" 2>/dev/null || return 1
+    # A reparented child can remain a zombie after it has released all of its files.
+    [ "$(awk '$1 == "State:" {print $2}' "/proc/$1/status" 2>/dev/null)" != Z ]
+}
+
+store_child_started_at() {
+    # Remove the parenthesized process name before reading the kernel's start time (field 22).
+    awk '{sub(/^.*\) /, ""); print $20}' "/proc/$1/stat" 2>/dev/null
+}
+
+store_child_stop() {
+    [ -f "$STORE_CHILD" ] || return 0
+    read -r store_pid store_started_at < "$STORE_CHILD"
+    case "$store_pid" in ''|0|1|*[!0-9]*) return ;; esac
+    if [ -n "$store_started_at" ] && [ "$(store_child_started_at "$store_pid")" != "$store_started_at" ]; then
+        store_storage_clear
+        return
+    fi
+    if store_child_alive "$store_pid"; then
+        kill -TERM "$store_pid" 2>/dev/null
+        store_poll=0
+        while store_child_alive "$store_pid" && [ "$store_poll" -lt 5 ]; do
+            pause_us 100000
+            store_poll=$((store_poll + 1))
+        done
+        if store_child_alive "$store_pid"; then
+            kill -KILL "$store_pid" 2>/dev/null
+            # Keep USB paused until the Store has stopped touching storage, even during shutdown.
+            while store_child_alive "$store_pid"; do sleep 1; done
+        fi
+    fi
+    store_storage_clear
+}
+
+store_storage_release() {
+    # A prepared Launcher update takes over the paused volume at the next Launcher start.
+    [ -f "$UPDATE_JOURNAL" ] || volumd_resume
+}
+
+store_storage_watch() {
+    store_seq_seen=0
+    while store_child_alive "$1"; do
+        if [ -f "$STORE_STORAGE_REQUEST" ]; then
+            read -r store_request_pid store_seq store_state store_extra < "$STORE_STORAGE_REQUEST"
+            case "$store_seq" in ''|*[!0-9]*|??????????*) store_seq=0 ;; esac
+            if [ "$store_request_pid" = "$1" ] && [ -z "$store_extra" ] && [ "$store_seq" -gt "$store_seq_seen" ]; then
+                store_seq_seen=$store_seq
+                case "$store_state" in
+                    idle) store_storage_release ;;
+                    write)
+                        if store_storage_pause; then
+                            store_reply=paused
+                        else
+                            store_storage_release
+                            store_reply=unavailable
+                        fi
+                        printf '%s %s %s\n' "$1" "$store_seq" "$store_reply" > "$STORE_STORAGE_REPLY.tmp" &&
+                            mv "$STORE_STORAGE_REPLY.tmp" "$STORE_STORAGE_REPLY"
+                        ;;
+                esac
+            fi
+        fi
+        sleep 1
+    done
+}
+
 # The Kindle UI is ready only after the framework emits framework_ready (about 40 s after the start), the
 # library app (job kppmainapp) starts, registers its lipc service com.lab126.KPPMainApp, and then its
 # properties (load, go). If this script ends earlier, the library's script runner ends with it and appmgrd sends
@@ -269,6 +370,7 @@ wait_screen_stop() {
 
 # Give the UI back: undo exactly what the markers record.
 restore() {
+    store_child_stop
     volumd_resume
     holder_stop
     if [ -f "$MARK" ] || ! framework_running; then
@@ -471,37 +573,54 @@ on_signal() {
 run_app() {
     if [ ! -f "$RUN/next" ]; then
         log "launch requested but $RUN/next is missing"
+        store_storage_release
         return
     fi
     { read -r adir; read -r kind; read -r arg; } < "$RUN/next"
     rm -f "$RUN/next" "$STORE_OPEN" "$STORE_OPEN.tmp"
+    store_storage_clear
     store_can_open=0
+    store_can_lease=0
+    app_log=$LOG
     if [ "$kind" = script ] && [ "$arg" = "$DOCUMENTS/Store.sh" ]; then
         store_can_open=1
+        # Only advertise idle USB when the Store cannot retain a descriptor on the flash log.
+        if [ -p "$LOG_OUT" ]; then
+            store_can_lease=1
+            app_log=$LOG_OUT
+        fi
     fi
     log "app start: $kind $arg (in $adir)"
     t0=$(date +%s)
-    # While an app runs, a cable must not take /mnt/us from under it: volumd is paused until the app ends.
+    # Keep volumd paused through launch, and until a Store with leases reports it is idle.
     volumd_pause
     (
         cd "$adir" 2>/dev/null || cd /mnt/us 2>/dev/null || cd /
         export PRIMITIVE_LAUNCHER=1 PRIMITIVE_FRAMEWORK=stopped KL_STORE_OPEN_APP="$store_can_open"
+        export KL_STORE_USB_LEASE="$store_can_lease"
         case "$kind" in
             script) exec /bin/sh "$arg" ;;
             hooks) exec /bin/sh -c '. "$1"; on_run' sh "$arg" ;;
             shell) exec /bin/sh -c "$arg" ;;
             *) echo "unknown kind: $kind"; exit 1 ;;
         esac
-    ) >> "$LOG" 2>&1 &
+    ) >> "$app_log" 2>&1 &
     apid=$!
     echo "$apid" > "$APP_PID"
+    if [ "$store_can_open" -eq 1 ]; then
+        printf '%s %s\n' "$apid" "$(store_child_started_at "$apid")" > "$STORE_CHILD"
+        [ "$store_can_lease" -eq 0 ] || store_storage_watch "$apid"
+    fi
     wait "$apid"
     rc=$?
     rm -f "$APP_PID"
+    store_storage_clear
     log "app exit: rc=$rc after $(( $(date +%s) - t0 ))s"
     # Only the installed Store may pass a request on exit 11. The launcher reads
     # the app ID, checks the install record, and uses the ordinary app route.
-    if [ "$store_can_open" -ne 1 ] || [ "$rc" -ne 11 ]; then
+    if [ "$store_can_open" -eq 1 ] && [ "$rc" -eq 11 ] && [ -f "$STORE_OPEN" ]; then
+        store_open_pending=yes
+    else
         rm -f "$STORE_OPEN"
     fi
     rm -f "$STORE_OPEN.tmp"
@@ -510,9 +629,11 @@ run_app() {
         log "the app left the framework running; stopping it again"
         framework_stop
     fi
-    [ -f "$UPDATE_JOURNAL" ] || volumd_resume
+    [ "$store_open_pending" = yes ] || store_storage_release
 }
 
+# Recover a Store left behind if this startup beats the previous supervisor's watchdog.
+store_child_stop
 logger_start
 install_traps
 if framework_running; then
@@ -530,6 +651,7 @@ usb_watch $$ &
 trap 'log "supervisor exit (status $?)"' EXIT
 
 crashes=""
+store_open_pending=no
 while :; do
     update_begin || break
     refresh_files
@@ -543,6 +665,18 @@ while :; do
     KL_LAUNCHER_UPDATE_TRIAL=$trial "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
     lp=$!
     echo "$lp" > "$LAUNCHER_PID"
+    if [ "$store_open_pending" = yes ]; then
+        # Open either exits directly into the app runner or reaches the launcher grid and its heartbeat.
+        while store_child_alive "$lp"; do
+            store_open_heartbeat=$(cat "$RUN/heartbeat" 2>/dev/null)
+            if [ -n "$store_open_heartbeat" ] && [ "$store_open_heartbeat" != "$launch_started" ]; then
+                store_storage_release
+                store_open_pending=no
+                break
+            fi
+            sleep 1
+        done
+    fi
     update_failed=no
     if [ "$trial" -eq 1 ]; then
         while kill -0 "$lp" 2>/dev/null; do
@@ -559,6 +693,10 @@ while :; do
     wait "$lp"
     rc=$?
     rm -f "$LAUNCHER_PID"
+    if [ "$store_open_pending" = yes ]; then
+        store_open_pending=no
+        [ "$rc" -eq 10 ] || store_storage_release
+    fi
     if [ "$trial" -eq 1 ]; then
         # A user may open an app or leave before the second heartbeat. The ready marker from this process
         # and its clean protocol exit prove this start; a crash or an old marker does not.
