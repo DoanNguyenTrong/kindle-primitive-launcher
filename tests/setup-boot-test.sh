@@ -98,5 +98,33 @@ rm -f "$DIR/fonts/NotoSans-Regular.ttf"
 PATH="$STUB:$PATH" sh "$SETUP" "$DIR"
 check "missing file: exit status 0" "$?" "0"
 
+# A full mirror filesystem must leave the previous copy and boot job intact.
+cat > "$STUB/df" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' 'fixture 1024 1024 0 100% /var/local'
+EOF
+chmod 755 "$STUB/df"
+echo "launcher 3" > "$DIR/kl-launcher"
+echo "job 4" > "$DIR/primitive-launcher.conf"
+KL_SETUP_BOOT_STRICT=1 PATH="$STUB:$PATH" sh "$SETUP" "$DIR"
+check "no mirror space: strict failure" "$?" "1"
+check "no mirror space: launcher kept" "$(cat "$M/kl-launcher")" "launcher 2"
+check "no mirror space: job kept" "$(cat "$JOB")" "job 3"
+check "no mirror space: useful log" "$(grep -c 'check free space' "$LOG")" "1"
+rm -f "$STUB/df"
+
+cat > "$STUB/cat" <<'EOF'
+#!/bin/sh
+case "$1" in
+    */kl-launcher) printf 'incomplete'; exit 1 ;;
+esac
+exec /bin/cat "$@"
+EOF
+chmod 755 "$STUB/cat"
+KL_SETUP_BOOT_STRICT=1 PATH="$STUB:$PATH" sh "$SETUP" "$DIR"
+check "interrupted mirror write: strict failure" "$?" "1"
+check "interrupted mirror write: launcher kept" "$(cat "$M/kl-launcher")" "launcher 2"
+check "interrupted mirror write: temporary copy removed" "$([ -e "$M/kl-launcher.new" ] && echo yes || echo no)" "no"
+
 echo "setup-boot tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

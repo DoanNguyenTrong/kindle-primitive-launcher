@@ -14,6 +14,7 @@ JOB=${KL_JOB:-/etc/upstart/primitive-launcher.conf}
 LOG=${KL_LOG:-$DIR/log-launcher.txt}
 strict=${KL_SETUP_BOOT_STRICT:-0}
 failed=0
+mirror_files='kl-launcher supervisor.sh boot.sh holder.lua ssh.sh fonts/NotoSans-Regular.ttf fonts/NotoSans-Bold.ttf ssh/bin/dropbear ssh/lib/libz.so.1 ssh/dropbear_ed25519_host_key'
 
 log() { echo "[setup $(date '+%H:%M:%S')] $*" >> "$LOG" 2>/dev/null; }
 
@@ -24,24 +25,41 @@ copy() {
     if mkdir -p "$(dirname "$2")" && cat "$1" > "$2.new" && sync && mv "$2.new" "$2"; then
         log "copied $2"
     else
+        rm -f "$2.new"
         log "copy failed: $2"
         failed=1
     fi
 }
 
+mirror_has_space() {
+    free=$(df -Pk "$M" | awk 'NR == 2 { print $4 }')
+    case "$free" in ''|*[!0-9]*) return 1 ;; esac
+    for relative in $mirror_files; do
+        source=$DIR/$relative
+        target=$M/$relative
+        [ -f "$source" ] || continue
+        cmp -s "$source" "$target" 2>/dev/null && continue
+        bytes=$(wc -c < "$source") || return 1
+        required=$(( (bytes + 1023) / 1024 ))
+        [ "$free" -ge "$required" ] || return 1
+        # Each atomic rename frees its predecessor before the next file is staged.
+        previous=0
+        if [ -f "$target" ]; then
+            previous=$(wc -c < "$target") || return 1
+        fi
+        free=$((free - required + (previous + 1023) / 1024))
+    done
+}
+
 mkdir -p "$M/fonts" "$M/ssh/bin" "$M/ssh/lib" 2>/dev/null || failed=1
-copy "$DIR/kl-launcher" "$M/kl-launcher"
-for f in supervisor.sh boot.sh holder.lua ssh.sh; do
+if [ "$strict" = 1 ] && ! mirror_has_space; then
+    log "cannot stage the Launcher boot copy: check free space in $M"
+    exit 1
+fi
+# A USB install may have no host key yet. The mirror generates one when SSH first starts.
+for f in $mirror_files; do
     copy "$DIR/$f" "$M/$f"
 done
-for f in NotoSans-Regular.ttf NotoSans-Bold.ttf; do
-    copy "$DIR/fonts/$f" "$M/fonts/$f"
-done
-# The SSH server and its host key, when the launcher's folder has them (a USB install has no host key yet: the
-# server makes one on its first start in the copy).
-copy "$DIR/ssh/bin/dropbear" "$M/ssh/bin/dropbear"
-copy "$DIR/ssh/lib/libz.so.1" "$M/ssh/lib/libz.so.1"
-copy "$DIR/ssh/dropbear_ed25519_host_key" "$M/ssh/dropbear_ed25519_host_key"
 for f in kl-launcher supervisor.sh boot.sh ssh.sh ssh/bin/dropbear; do
     [ ! -f "$M/$f" ] || chmod 755 "$M/$f" 2>/dev/null || failed=1
 done
@@ -52,6 +70,7 @@ if [ -f "$DIR/primitive-launcher.conf" ] && ! cmp -s "$DIR/primitive-launcher.co
         if cat "$DIR/primitive-launcher.conf" > "$JOB.new" && sync && mv "$JOB.new" "$JOB"; then
             log "boot job written: $JOB"
         else
+            rm -f "$JOB.new"
             log "boot job not written: $JOB"
             failed=1
         fi
