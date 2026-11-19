@@ -519,6 +519,9 @@ impl Ui {
             Input::PageBack => self.store_turn(-1),
             Input::Swipe { dx, dy, .. } if dx.abs() > SWIPE_MIN && dx.abs() > dy.abs() * 1.5 => self.store_turn(if dx < 0.0 { 1 } else { -1 }),
             Input::Tap(x, y) => {
+                if l.store_done().inset(-16).contains(x, y) {
+                    return self.go(Screen::Home);
+                }
                 if l.store_refresh().inset(-16).contains(x, y) {
                     if self.store_busy {
                         return Action::None;
@@ -1363,6 +1366,19 @@ mod tests {
         // Not installed: no Remove row, so the last row is information.
         assert!(!u.store[1].can_remove());
         assert_ne!(u.store[1].page_rows().last().map(|r| r.0.as_str()), Some(crate::store::StoreEntry::REMOVE_LABEL));
+    }
+
+    #[test]
+    fn done_leaves_the_store_from_every_tab() {
+        use crate::store::{test_entry, Status, StoreTab};
+        let mut u = ui(0);
+        u.set_store(vec![test_entry("a", "Alpha", Status::NotInstalled)]);
+        for tab in [StoreTab::Today, StoreTab::Apps, StoreTab::Updates] {
+            u.open_store();
+            u.store_tab = tab;
+            u.handle(centre(u.layout.store_done()));
+            assert_eq!(u.screen, Screen::Home, "Done leaves the store from {tab:?}");
+        }
     }
 
     #[test]

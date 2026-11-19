@@ -860,6 +860,7 @@ impl Renderer {
         self.text(Text { text: title, x: 40.0, y: 50.0, w: (l.width - 80) as f32, size: 84.0, bold: true, align: Align::Start, lines: 1, gray: BLACK });
         let refresh = if ui.store_busy { "Updating" } else { "Refresh" };
         self.store_capsule(l.store_refresh(), refresh, false, BLACK);
+        self.store_capsule(l.store_done(), "Done", true, BLACK);
         match ui.store_tab {
             kl_core::store::StoreTab::Today => self.store_today(ui),
             kl_core::store::StoreTab::Apps => self.store_rows(ui, &ui.store_apps(), "No apps yet. The store lists the apps once its catalog has been downloaded."),

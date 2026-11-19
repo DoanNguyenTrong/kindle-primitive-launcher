@@ -808,9 +808,14 @@ impl Layout {
         (0..3).find(|&i| self.store_tab(i).contains(x, y))
     }
 
-    /// The Refresh button, at the right of the title row.
+    /// The Done button, at the top right of every store tab: it returns to the home screen.
+    pub fn store_done(&self) -> Rect {
+        Rect::new(self.width - 40 - 200, 62, 200, 84)
+    }
+
+    /// The Refresh button, at the top of every store tab, left of Done.
     pub fn store_refresh(&self) -> Rect {
-        Rect::new(self.width - 40 - 260, 62, 260, 84)
+        Rect::new(self.width - 40 - 200 - 24 - 240, 62, 240, 84)
     }
 
     /// The large title at the top of a store tab ("Today", "Apps", "Updates").
