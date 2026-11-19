@@ -232,3 +232,22 @@ on one network).
   (`g_mass_storage gadget: high-speed config #1: Linux File-Backed Storage`) but with no disk behind it:
   volumd gives it `/mnt/us`'s device only after unmounting, and it was stopped.
 - Open: entering drive mode on demand (resume volumd with the cable in, then pause it again after unplugging).
+
+## Device identity (A4.3, 2026-11-19, read-only)
+
+The Kindle has no model code file that the store can read. What the stock Device info screen shows, and where this
+device gives it:
+
+| Field | Where it comes from here | Used by the store |
+|---|---|---|
+| Device type | Not in a file we can read by name. The stock help text says "Kindle Oasis – 10th Gen", which is the Oasis 3. | `tested_on` and the device check: "KindleOasis3" |
+| Device name | Set by the owner in the stock UI. Not found in the system files checked. | Not used |
+| Wi-Fi MAC address | `/sys/class/net/wlan0/address` (readable, 17 characters, in the form `xx:xx:xx:xx:xx:xx`) | Not used. Never stored or shown. |
+| Serial number | `androidboot.serialno` on the kernel command line. On this device it starts with zeros, so it does not give a model code. | Not used. Never stored or shown. |
+| Network capability | Wi-Fi interface `wlan0` present. Bluetooth not confirmed (see the Bluetooth item in the plan). | Wi-Fi: yes |
+| Firmware version | `/etc/prettyversion.txt` ("Kindle 5.18.2 (…)") and `/etc/version.txt` ("System Software Version") | Firmware checks |
+| Space available | `df`: `/mnt/us` 4.9 GB free of 6.1 GB; `/var/local` 164 MB free of 240 MB | Installer space checks |
+
+Decision: the store uses the firmware version, the architecture (`armhf`, from `/lib/ld-linux-armhf.so.3`) and the device
+type name. Identifiers (serial number, Wi-Fi MAC) are read only where a check needs them, and their values are never
+written to a file, a log or a commit.
