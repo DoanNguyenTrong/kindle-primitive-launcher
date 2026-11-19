@@ -1042,7 +1042,8 @@ impl Renderer {
         let sub = l.store_subtitle(scroll);
         self.text(Text { text: &e.subtitle, x: 40.0, y: sub.y as f32, w, size: 32.0, bold: false, align: Align::Center, lines: 2, gray: 85 });
         let installed = matches!(e.status, kl_core::store::Status::Installed(_));
-        self.store_capsule(l.store_action(scroll), e.action_label(), !installed, BLACK);
+        let label = if ui.store_installing.as_deref() == Some(e.id.as_str()) { "Installing" } else { e.action_label() };
+        self.store_capsule(l.store_action(scroll), label, !installed, BLACK);
         let dev = l.store_developer(scroll);
         self.text(Text { text: &format!("Offered by {}", e.developer), x: 40.0, y: dev.y as f32, w, size: 26.0, bold: false, align: Align::Center, lines: 1, gray: 85 });
 

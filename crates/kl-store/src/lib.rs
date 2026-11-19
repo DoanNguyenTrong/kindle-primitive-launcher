@@ -6,6 +6,7 @@
 pub mod catalog;
 pub mod refresh;
 pub mod install;
+pub mod pipeline;
 pub mod record;
 pub mod resolve;
 pub mod unpack;

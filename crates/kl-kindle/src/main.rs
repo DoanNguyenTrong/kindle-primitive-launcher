@@ -54,6 +54,8 @@ pub enum Ev {
     Notice(String),
     /// The store's catalog refresh finished: the store's entries again, and what to tell the user.
     StoreRefreshed { entries: Vec<kl_core::store::StoreEntry>, message: String },
+    /// An app from the store was installed (or not): the store's entries, the library's apps again, and the message.
+    StoreInstalled { entries: Vec<kl_core::store::StoreEntry>, message: String },
 }
 
 /// The catalog's published site (the store's source of listings, icons and screenshots).
@@ -69,6 +71,43 @@ impl kl_store::refresh::Source for NetSource {
     fn bytes(&self, url: &str, max: u64) -> Result<Vec<u8>, String> {
         primitive_net::fetch_bytes(url, &primitive_net::Policy::store(max)).map_err(|e| e.to_string())
     }
+}
+
+/// Install an app from the store on a thread: download its package for this Kindle, check it, install it, and tell the
+/// store and the library. The download is refused when Wi-Fi is not connected (the caller checks).
+fn start_store_install(tx: Sender<Ev>, dir: PathBuf, id: String) {
+    thread::spawn(move || {
+        let message = match store_install_app(&dir, &id) {
+            Ok(version) => format!("Installed {id} {version}."),
+            Err(e) => format!("Could not install {id}: {e}"),
+        };
+        log(&format!("store: {message}"));
+        let entries = load_store(&dir);
+        let _ = tx.send(Ev::StoreInstalled { entries, message });
+    });
+}
+
+fn store_install_app(dir: &Path, id: &str) -> Result<String, String> {
+    let listing_text = fs::read_to_string(dir.join("store/cache/apps").join(format!("{id}.json")))
+        .map_err(|_| "the app is not in the catalog the store has".to_string())?;
+    let listing: kl_store::catalog::Listing = serde_json::from_str(&listing_text).map_err(|e| e.to_string())?;
+    let device = device::store_device().ok_or("the Kindle's firmware version cannot be read")?;
+    let version = kl_store::resolve::pick_version(&listing, &device).map_err(|e| e.to_string())?;
+    let asset = version.assets.get(&device.arch).ok_or("no package for this Kindle")?;
+    let root = dir.parent().unwrap_or(Path::new("/mnt/us")).to_path_buf();
+    let paths = kl_store::install::Paths::under(&root);
+    let downloads = dir.join("store/downloads");
+    fs::create_dir_all(&downloads).map_err(|e| e.to_string())?;
+    let zip = downloads.join(format!("{id}-{}-{}.zip", version.version, device.arch));
+    let policy = primitive_net::Policy::store(asset.size + 1);
+    primitive_net::download(&asset.url, &zip, &policy, |_, _| {}).map_err(|e| e.to_string())?;
+    let installed_at = std::process::Command::new("date")
+        .arg("+%Y-%m-%d")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    kl_store::pipeline::install_downloaded(&paths, &listing, &device, &zip, &asset.url, &installed_at)
 }
 
 /// Refresh the store's catalog cache on a thread, then send the store's entries and a message. The screen is not held
@@ -370,6 +409,13 @@ fn main() {
     let mut ui = Ui::new(apps, layout);
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_extensions(extensions);
+    // An install that a power cut interrupted is finished or undone before the store reads what is installed.
+    let store_root = dir.parent().unwrap_or(Path::new("/mnt/us")).to_path_buf();
+    match kl_store::install::recover(&kl_store::install::Paths::under(&store_root)) {
+        Ok(Some(what)) => log(&format!("store: {what}")),
+        Ok(None) => {}
+        Err(e) => log(&format!("store: cannot check an unfinished install: {e}")),
+    }
     kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
     ui.set_store(load_store(&dir));
     for app in ui.apps() {
@@ -455,6 +501,22 @@ fn main() {
             Ev::WifiResult { ok, message } => {
                 ui.set_join_result(ok, message);
                 status = device::status(&settings);
+                Action::Redraw { full: false }
+            }
+            Ev::StoreInstalled { entries, message } => {
+                // The library reads the app's entries from documents/ and its folder again, as after an eject.
+                let (_config, apps, extensions, _problems) = load_library(&dir, &documents);
+                ui.set_apps(apps);
+                ui.set_extensions(extensions);
+                for problem in kl_render::load_icons(&mut renderer, ui.apps(), &layout, Some(&dir.join("cache"))) {
+                    log(&format!("problem: {problem}"));
+                }
+                ui.set_store(entries);
+                ui.store_installing = None;
+                if ui.screen == Screen::StoreApp {
+                    ui.screen = Screen::Store;
+                }
+                ui.notice = Some(message);
                 Action::Redraw { full: false }
             }
             Ev::StoreRefreshed { entries, message } => {
@@ -714,9 +776,20 @@ fn main() {
                 display.show(renderer.draw(&ui, &status), &settings, false);
             }
             Action::Device(cmd) => {
-                if let DeviceCmd::StoreInstall(_) = cmd {
-                    // Until the store's download is wired (implementation plan D2), say so on the screen.
-                    ui.notice = Some("Installing from the store is not in this build yet.".to_string());
+                if let DeviceCmd::StoreInstall(index) = cmd {
+                    match ui.store.get(index).map(|e| (e.id.clone(), e.name.clone())) {
+                        Some((id, name)) if status.wifi_on && status.wifi_state == "connected" => {
+                            start_store_install(tx.clone(), dir.clone(), id);
+                            ui.notice = Some(format!("Installing {name}..."));
+                        }
+                        Some(_) => {
+                            ui.store_installing = None;
+                            ui.notice = Some("Connect to Wi-Fi to install from the store.".to_string());
+                        }
+                        None => ui.store_installing = None,
+                    }
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
                 }
                 // Power off: the screen says so, and stays that way once the Kindle is off (e-ink keeps its picture).
                 if cmd == DeviceCmd::PowerOff {

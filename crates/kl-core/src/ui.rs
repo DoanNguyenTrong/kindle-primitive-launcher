@@ -271,6 +271,8 @@ pub struct Ui {
     pub store_scroll: i32,
     /// A catalog refresh is running (the button shows Updating).
     pub store_busy: bool,
+    /// The app being installed from the store, if any (its page shows Installing, and its action waits).
+    pub store_installing: Option<String>,
     /// Background jobs still running (shown in the status bar).
     pub running: usize,
     /// The Wi-Fi page: the networks from the last scan, whether a scan is running, and the list's scroll.
@@ -320,6 +322,7 @@ impl Ui {
             store_tab: crate::store::StoreTab::Today,
             store_scroll: 0,
             store_busy: false,
+            store_installing: None,
             running: 0,
             wifi: crate::wifi::WifiInfo::default(),
             wifi_scanning: false,
@@ -581,8 +584,12 @@ impl Ui {
                             self.notice = Some(format!("{} is on its own website: {}", entry.name, entry.repo));
                             Action::Redraw { full: false }
                         }
+                        _ if self.store_installing.is_some() => Action::None,
                         (crate::store::Kind::Install, crate::store::Status::Installed(_)) => Action::None,
-                        (crate::store::Kind::Install, _) => Action::Device(DeviceCmd::StoreInstall(index)),
+                        (crate::store::Kind::Install, _) => {
+                            self.store_installing = Some(entry.id.clone());
+                            Action::Device(DeviceCmd::StoreInstall(index))
+                        }
                     };
                 }
                 Action::None

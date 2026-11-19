@@ -605,3 +605,14 @@ mod tests {
         assert_eq!(power_event(""), None);
     }
 }
+
+/// What the store needs to know about this Kindle to choose a package: its architecture (`armhf` when the hard-float
+/// loader is there, else `armel`) and its firmware version (`/etc/prettyversion.txt`, else `/etc/version.txt`).
+pub fn store_device() -> Option<kl_store::resolve::Device> {
+    let text = |path: &str| std::fs::read_to_string(path).ok();
+    let firmware = text("/etc/prettyversion.txt")
+        .and_then(|t| kl_store::version::firmware_from_text(&t))
+        .or_else(|| text("/etc/version.txt").and_then(|t| kl_store::version::firmware_from_text(&t)))?;
+    let arch = if std::path::Path::new("/lib/ld-linux-armhf.so.3").exists() { "armhf" } else { "armel" };
+    Some(kl_store::resolve::Device { arch: arch.to_string(), firmware })
+}
