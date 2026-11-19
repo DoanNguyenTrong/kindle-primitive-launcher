@@ -116,7 +116,10 @@ install_traps() {
 # (see holder.lua). Optional: without lua or holder.lua the launcher still runs, but the button may not sleep.
 holder_start() {
     holder_stop
-    refresh_copy holder.lua
+    if ! refresh_copy holder.lua "${1:-}" && [ "${1:-}" = verify ]; then
+        log "holder not started: could not refresh holder.lua"
+        return
+    fi
     if [ ! -f "$RUN/holder.lua" ] || ! command -v lua >/dev/null 2>&1; then
         log "holder not started: lua or holder.lua missing"
         return
@@ -166,7 +169,7 @@ framework_stop() {
     fi
     install_traps
     log "framework stopped after $(( $(date +%s) - t0 ))s"
-    holder_start
+    holder_start "${1:-}"
 }
 
 # The stock lipc-daemon answers com.lab126.system properties (usid and others) by forking small scripts. It
@@ -361,7 +364,7 @@ framework_wait_ready() {
 
 # The waiting screen ("Opening the Kindle UI" with a moving bar) covers the minute the stock UI takes to start.
 wait_screen_start() {
-    [ -x "$RUN/kl-launcher" ] || return 0
+    [ "${launcher_cache_failed:-no}" = no ] && [ -x "$RUN/kl-launcher" ] || return 0
     "$RUN/kl-launcher" --wait-screen >> "$LOG_OUT" 2>&1 &
     echo $! > "$WAIT_PID"
 }
@@ -390,20 +393,26 @@ restore() {
     fi
 }
 
-# Copy a file from $DIR to $RUN when it is newer there (or the copy is missing).
+# Check bytes on a cold start: archived files can have timestamps older than the RAM copy.
+# Later starts use the timestamp shortcut, while update transactions explicitly force the copy.
 refresh_copy() {
-    if [ "${2:-}" = force ] || [ ! -f "$RUN/$1" ] || [ "$DIR/$1" -nt "$RUN/$1" ]; then
-        cp "$DIR/$1" "$RUN/$1.new" 2>/dev/null && mv "$RUN/$1.new" "$RUN/$1" && log "copied $1 to $RUN"
+    if [ "${2:-}" = force ] || [ ! -f "$RUN/$1" ] || [ "$DIR/$1" -nt "$RUN/$1" ] ||
+        { [ "${2:-}" = verify ] && [ -f "$DIR/$1" ] && ! cmp -s "$DIR/$1" "$RUN/$1" 2>/dev/null; }; then
+        cp "$DIR/$1" "$RUN/$1.new" 2>/dev/null && mv "$RUN/$1.new" "$RUN/$1" || return 1
+        log "copied $1 to $RUN" || true
     fi
 }
 
 refresh_files() {
     mkdir -p "$RUN/fonts"
-    refresh_copy kl-launcher
+    if ! refresh_copy kl-launcher "$1" && [ "$1" = verify ]; then
+        return 1
+    fi
     chmod 755 "$RUN/kl-launcher" 2>/dev/null
-    refresh_copy fonts/NotoSans-Regular.ttf
-    refresh_copy fonts/NotoSans-Bold.ttf
+    refresh_copy fonts/NotoSans-Regular.ttf "$1"
+    refresh_copy fonts/NotoSans-Bold.ttf "$1"
     refresh_copy holder.lua
+    return 0
 }
 
 # The driver stays the pre-update launcher throughout the transaction. A cold restart can recover it from
@@ -668,13 +677,13 @@ store_child_stop
 logger_start
 install_traps
 if framework_running; then
-    framework_stop
+    framework_stop verify
 else
     # Already stopped (an earlier run left it so): the marker makes leaving start it again, and the holder is what
     # keeps the launcher's sleep and wake working without the framework.
     log "framework not running; it will be started when the launcher leaves"
     echo stopped > "$MARK"
-    holder_start
+    holder_start verify
 fi
 [ -f "$UPDATE_JOURNAL" ] || volumd_resume
 watchdog $$ &
@@ -683,9 +692,15 @@ trap 'log "supervisor exit (status $?)"' EXIT
 
 crashes=""
 store_open_pending=no
+refresh_mode=verify
 while :; do
     update_begin || break
-    refresh_files
+    if ! refresh_files "$refresh_mode"; then
+        log "could not refresh the launcher binary from $DIR; giving up"
+        launcher_cache_failed=yes
+        break
+    fi
+    refresh_mode=
     if [ ! -x "$RUN/kl-launcher" ]; then
         log "no launcher binary in $DIR; giving up"
         break

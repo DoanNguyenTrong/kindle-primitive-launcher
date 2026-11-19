@@ -124,6 +124,7 @@ EOF
     cat > "$ROOT/bin/lua" <<'EOF'
 #!/bin/sh
 echo "holder run: $*" >> "$STATE/calls"
+if [ -s "$1" ]; then cat "$1" >> "$STATE/calls"; fi
 if [ -f "$STATE/holder-ignores-term" ]; then
     trap '' TERM
     while :; do sleep 1; done
@@ -172,6 +173,43 @@ run_sup() {
     kill -0 "$sp" 2>/dev/null && { echo "supervisor did not end"; kill -9 "$sp"; }
     sleep 1
 }
+
+echo "test: a cold supervisor uses the installed bytes even when the cached files are newer"
+setup
+mkdir -p "$KL_RUN/fonts"
+cat > "$KL_RUN/kl-launcher" <<'EOF'
+#!/bin/sh
+echo "stale launcher ran" >> "$STATE/calls"
+EOF
+chmod 755 "$KL_RUN/kl-launcher"
+printf 'stale holder\n' > "$KL_RUN/holder.lua"
+printf 'stale font\n' > "$KL_RUN/fonts/NotoSans-Regular.ttf"
+printf 'installed holder\n' > "$KL_DIR/holder.lua"
+printf 'installed font\n' > "$KL_DIR/fonts/NotoSans-Regular.ttf"
+touch -t 200001010000 "$KL_DIR/kl-launcher" "$KL_DIR/holder.lua" "$KL_DIR/fonts/NotoSans-Regular.ttf"
+printf '10\n0\n' > "$STATE/codes"
+run_sup
+check "installed launcher runs both before and after the app" '[ "$(grep -c "launcher run:" "$STATE/calls")" = 2 ]'
+check "the older installed binary replaces the stale one" 'cmp -s "$KL_DIR/kl-launcher" "$KL_RUN/kl-launcher"'
+check "the correct holder starts before the launcher" 'grep -qx "installed holder" "$STATE/calls" && ! grep -qx "stale holder" "$STATE/calls"'
+check "the older installed font replaces the stale one" 'cmp -s "$KL_DIR/fonts/NotoSans-Regular.ttf" "$KL_RUN/fonts/NotoSans-Regular.ttf"'
+check "the launcher is copied only once in the session" '[ "$(grep -c "copied kl-launcher to" "$KL_DIR/log-launcher.txt")" = 1 ]'
+teardown
+
+echo "test: a failed cold refresh cannot run the stale launcher or wait screen"
+setup
+mkdir -p "$KL_RUN/kl-launcher.new"
+cat > "$KL_RUN/kl-launcher" <<'EOF'
+#!/bin/sh
+echo "stale launcher ran" >> "$STATE/calls"
+EOF
+chmod 755 "$KL_RUN/kl-launcher"
+touch -t 200001010000 "$KL_DIR/kl-launcher"
+run_sup
+check "stale binary did not run" '! grep -q "stale launcher ran" "$STATE/calls"'
+check "refresh failure logged" 'grep -q "could not refresh the launcher binary" "$KL_DIR/log-launcher.txt"'
+check "framework restored without running the stale wait screen" '[ "$(cat "$STATE/fw")" = running ]'
+teardown
 
 echo "test: launch an app, then ask for the Kindle UI"
 setup
