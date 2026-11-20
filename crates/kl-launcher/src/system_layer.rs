@@ -124,6 +124,12 @@ fn signal_app(run: &Path, signal: libc::c_int) {
     }
 }
 
+/// An app the supervisor runs is still alive (its `app.pid` names a live process): another must not start yet.
+pub fn app_running(run: &Path) -> bool {
+    // SAFETY: kill with signal 0 only checks that the process exists.
+    read_pid(&run.join("app.pid")).is_some_and(|pid| unsafe { libc::kill(pid, 0) } == 0)
+}
+
 fn read_pid(path: &Path) -> Option<i32> {
     fs::read_to_string(path).ok()?.trim().parse().ok().filter(|pid: &i32| *pid > 1)
 }

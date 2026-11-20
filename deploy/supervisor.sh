@@ -647,6 +647,14 @@ on_signal() {
 # An app that redraws itself on wake declares it: a line "# Wake: redraw" in the first ten lines of its entry. The
 # supervisor then sends SIGUSR1 to the app's process group. Other apps are restarted on wake, so the screen is never
 # left blank.
+# Stop a process and its children (busybox has no pkill -P).
+kill_tree() {
+    for child in $(ps -o pid,ppid 2>/dev/null | awk -v p="$1" '$2 == p { print $1 }'); do
+        kill_tree "$child"
+    done
+    kill "$1" 2>/dev/null
+}
+
 app_redraws_on_wake() {
     [ -f "$1" ] && [ ! -L "$1" ] && head -n 10 "$1" | grep -Fxq '# Wake: redraw'
 }
@@ -659,6 +667,8 @@ app_power_watch() {
     command -v lipc-wait-event >/dev/null 2>&1 || return 0
     lipc-wait-event -m com.lab126.powerd goingToScreenSaver,outOfScreenSaver 2>/dev/null |
     while IFS= read -r event; do
+        # A watcher acts only for its own app: one left behind by an earlier app must never restart the next.
+        [ "$(cat "$APP_PID" 2>/dev/null)" = "$pgid" ] || break
         case "$event" in
             goingToScreenSaver*)
                 [ -x "$RUN/kl-launcher" ] && "$RUN/kl-launcher" --sleep-screen >> "$LOG_OUT" 2>&1
@@ -683,6 +693,8 @@ run_app() {
     fi
     # A fourth line may open a specific screen in the standalone Store.
     { read -r adir; read -r kind; read -r arg; IFS= read -r start_tab || :; } < "$RUN/next"
+    # A restart flag belongs to one app run: one left from an earlier run must not reopen this app.
+    rm -f "$APP_RESTART"
     # Kept so a restart after wake can open the same app again.
     printf '%s\n%s\n%s\n%s\n' "$adir" "$kind" "$arg" "$start_tab" > "$APP_REQUEST.tmp" && mv "$APP_REQUEST.tmp" "$APP_REQUEST"
     rm -f "$RUN/next" "$STORE_OPEN" "$STORE_OPEN.tmp"
@@ -755,11 +767,16 @@ run_app() {
             store_storage_watch "$apid" store
         fi
     fi
-    wait "$apid"
-    rc=$?
+    # The launcher's launch request (SIGUSR1) interrupts wait while the app still runs: wait again until it ends.
+    while :; do
+        wait "$apid"
+        rc=$?
+        kill -0 "$apid" 2>/dev/null || break
+    done
     rm -f "$APP_PID"
     watch=$(cat "$APP_WATCH" 2>/dev/null)
-    [ -n "$watch" ] && kill "$watch" 2>/dev/null
+    # Stop the watcher and its children (lipc-wait-event and the loop that reads it), or they outlive it.
+    [ -n "$watch" ] && kill_tree "$watch"
     rm -f "$APP_WATCH"
     if [ -f "$APP_RESTART" ]; then
         rm -f "$APP_RESTART"

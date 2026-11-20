@@ -763,6 +763,14 @@ fn main() {
                 display.show(renderer.draw(&ui, &status), &settings, full);
             }
             Action::Launch(mut app) => {
+                // The supervisor still runs an app (one closing, or one it started again): a second must wait.
+                if system_layer_on && system_layer::app_running(&run) {
+                    log(&format!("system layer: {} not opened, an app is still running", app.name));
+                    ui.pressed = None;
+                    ui.notice = Some("An app is still closing. Try again in a moment.".into());
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
+                }
                 if bootstrapping_store.is_some() {
                     ui.pressed = None;
                     ui.notice = Some("Store is being installed. Please wait.".into());
