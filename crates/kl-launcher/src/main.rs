@@ -249,7 +249,7 @@ fn main() {
     settings.sleep_screen_launcher = wallpapers.sleep != WallpaperChoice::Default;
     let mut startup_wallpaper_until = None;
     if !from_mirror && std::env::var("KL_SHOW_STARTUP_WALLPAPER").as_deref() == Ok("1") {
-        if let Some(image) = wallpaper::saved_picture(&dir, WallpaperTarget::Startup, &wallpapers.startup) {
+        if let Some(image) = wallpaper::saved_picture(&dir, WallpaperTarget::Startup, &wallpapers, &mut 0) {
             // A startup image cannot by itself prove the Launcher update reached the app grid.
             let mut splash = Display::open();
             splash.show(image.pixels, &settings, true);
@@ -552,6 +552,9 @@ fn main() {
                     Action::None
                 } else {
                     log(&format!("usb: {usb:?}"));
+                    if usb == kl_core::Usb::Drive {
+                        ui.finish_wallpaper_preview();
+                    }
                     if ui.usb == kl_core::Usb::Drive && from_mirror && Path::new("/mnt/us/launcher/apps.toml").exists() {
                         // Ejected: /mnt/us is back. This launcher reads its settings, apps and extensions from it again.
                         dir = PathBuf::from("/mnt/us/launcher");
@@ -610,7 +613,7 @@ fn main() {
                 if input == Input::Wake && before == Screen::Sleep && ui.usb != kl_core::Usb::Drive
                     && ui.wallpapers.sleep == WallpaperChoice::Rotate
                 {
-                    let sleep = wallpaper::rotated_picture(&dir, &mut sleep_rotation);
+                    let sleep = wallpaper::saved_picture(&dir, WallpaperTarget::Sleep, &ui.wallpapers, &mut sleep_rotation);
                     wallpaper::use_launcher_sleep(&run, sleep.is_some());
                     renderer.set_sleep_image(sleep);
                 }
@@ -646,10 +649,15 @@ fn main() {
             } else {
                 WallpaperChoice::Default
             };
-            Action::SetWallpaper { target: WallpaperTarget::Sleep, choice }
+            Action::SetWallpaper {
+                target: WallpaperTarget::Sleep, choice, opacity: ui.wallpapers.opacity(WallpaperTarget::Sleep),
+            }
         } else {
             action
         };
+        if ui.wallpaper_preview.is_none() {
+            renderer.set_wallpaper_preview(None);
+        }
         let transfer_screen = Screen::Page(kl_core::layout::Page::FileTransfer);
         if ui.screen != transfer_screen || ui.usb == kl_core::Usb::Drive {
             transfer_session = None;
@@ -815,25 +823,40 @@ fn main() {
                 }
                 display.show(renderer.draw(&ui, &status), &settings, false);
             }
-            Action::SetWallpaper { target, choice } => {
+            Action::PreviewWallpaper { target, choice } => {
+                let result = save_library_setting(from_mirror, &mut power, || {
+                    wallpaper::selected_picture(&dir, target, &choice, &mut 0)
+                });
+                match result {
+                    Ok(image) => renderer.set_wallpaper_preview(image),
+                    Err(error) => {
+                        renderer.set_wallpaper_preview(None);
+                        if let Some(draft) = ui.wallpaper_preview.as_mut() {
+                            draft.error = Some(format!("Could not preview wallpaper. {error}"));
+                        }
+                    }
+                }
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::SetWallpaper { target, choice, opacity } => {
                 let mut updated = ui.wallpapers.clone();
                 updated.set_selection(target, choice);
+                updated.set_opacity(target, opacity);
                 let mut next = 0;
                 let result = if bootstrapping_store.is_some() {
                     Err(std::io::Error::other("Wait for the Store to finish installing."))
                 } else {
                     save_library_setting(from_mirror, &mut power, || {
-                        let mut image = wallpaper::selected_picture(&dir, target, updated.selection(target))?;
-                        if target == WallpaperTarget::Sleep && updated.sleep == WallpaperChoice::Rotate {
-                            image = wallpaper::rotated_picture(&dir, &mut next);
-                        }
+                        let image = wallpaper::prepared_picture(&dir, target, &updated, &mut next)?;
                         write_atomic(&wallpaper::preferences_path(&dir), &wallpaper::preferences(&updated))?;
                         Ok(image)
                     })
                 };
                 match result {
                     Ok(image) => {
+                        ui.finish_wallpaper_preview();
                         ui.set_wallpapers(updated);
+                        renderer.set_wallpaper_preview(None);
                         ui.notice = None;
                         match target {
                             WallpaperTarget::Home => renderer.set_home_wallpaper(image),

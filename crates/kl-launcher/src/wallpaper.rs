@@ -44,12 +44,19 @@ fn parse(input: &str, legacy_sleep: bool) -> WallpaperSettings {
         wallpapers.sleep = WallpaperChoice::Rotate;
     }
     for (key, value) in input.lines().filter_map(|line| line.split_once('=')) {
-        let target = match key {
+        let opacity_setting = key.strip_suffix("-opacity");
+        let target = match opacity_setting.unwrap_or(key) {
             "home" => WallpaperTarget::Home,
             "sleep" => WallpaperTarget::Sleep,
             "startup" => WallpaperTarget::Startup,
             _ => continue,
         };
+        if opacity_setting.is_some() {
+            if let Ok(opacity @ 0..=100) = value.parse::<u8>() {
+                wallpapers.set_opacity(target, opacity);
+            }
+            continue;
+        }
         let choice = match value {
             "default" => WallpaperChoice::Default,
             "rotate" if target == WallpaperTarget::Sleep => WallpaperChoice::Rotate,
@@ -69,7 +76,12 @@ pub fn preferences(wallpapers: &WallpaperSettings) -> String {
         WallpaperChoice::Rotate => "rotate".into(),
         WallpaperChoice::File(name) => format!("file:{name}"),
     };
-    format!("home={}\nsleep={}\nstartup={}\n", name(&wallpapers.home), name(&wallpapers.sleep), name(&wallpapers.startup))
+    format!(
+        "home={}\nsleep={}\nstartup={}\nhome-opacity={}\nsleep-opacity={}\nstartup-opacity={}\n",
+        name(&wallpapers.home), name(&wallpapers.sleep), name(&wallpapers.startup),
+        wallpapers.opacity(WallpaperTarget::Home), wallpapers.opacity(WallpaperTarget::Sleep),
+        wallpapers.opacity(WallpaperTarget::Startup),
+    )
 }
 
 fn valid_name(name: &str) -> bool {
@@ -128,17 +140,34 @@ fn picture(dir: &Path, name: &str, target: WallpaperTarget, w: u32, h: u32) -> i
 
 /// Prepare a fixed picture before updating preferences or a display buffer. Neither the stock
 /// screensaver state nor the previous selection changes if reading or decoding this file fails.
-pub fn selected_picture(dir: &Path, target: WallpaperTarget, choice: &WallpaperChoice) -> io::Result<Option<GrayImage>> {
+pub fn selected_picture(
+    dir: &Path, target: WallpaperTarget, choice: &WallpaperChoice, next: &mut usize,
+) -> io::Result<Option<GrayImage>> {
     match choice {
         WallpaperChoice::File(name) => picture(&dir.join(GALLERY), name, target, super::W, super::H).map(Some),
         WallpaperChoice::Default => Ok(None),
-        WallpaperChoice::Rotate if target == WallpaperTarget::Sleep => Ok(None),
+        WallpaperChoice::Rotate if target == WallpaperTarget::Sleep => Ok(rotated_picture(dir, next)),
         WallpaperChoice::Rotate => Err(io::Error::new(io::ErrorKind::InvalidInput, "Rotation applies to Sleep only.")),
     }
 }
 
-pub fn saved_picture(dir: &Path, target: WallpaperTarget, choice: &WallpaperChoice) -> Option<GrayImage> {
-    match selected_picture(dir, target, choice) {
+pub fn prepared_picture(
+    dir: &Path, target: WallpaperTarget, wallpapers: &WallpaperSettings, next: &mut usize,
+) -> io::Result<Option<GrayImage>> {
+    let mut picture = selected_picture(dir, target, wallpapers.selection(target), next)?;
+    // Home blends into its themed interface. The Sleep and Startup canvases are white.
+    if target != WallpaperTarget::Home {
+        if let Some(image) = picture.as_mut() {
+            image::blend_wallpaper(image, wallpapers.opacity(target));
+        }
+    }
+    Ok(picture)
+}
+
+pub fn saved_picture(
+    dir: &Path, target: WallpaperTarget, wallpapers: &WallpaperSettings, next: &mut usize,
+) -> Option<GrayImage> {
+    match prepared_picture(dir, target, wallpapers, next) {
         Ok(image) => image,
         Err(error) => {
             log(&format!("{target:?} wallpaper: {error}"));
@@ -149,7 +178,7 @@ pub fn saved_picture(dir: &Path, target: WallpaperTarget, choice: &WallpaperChoi
 
 /// Prepare the next valid legacy picture before sleep. Missing and damaged files never suppress
 /// the stock screensaver when no Launcher picture can be drawn.
-pub fn rotated_picture(dir: &Path, next: &mut usize) -> Option<GrayImage> {
+fn rotated_picture(dir: &Path, next: &mut usize) -> Option<GrayImage> {
     let folder = dir.join(LEGACY_GALLERY);
     let names = png_names(&folder);
     if names.is_empty() {
@@ -167,17 +196,10 @@ pub fn rotated_picture(dir: &Path, next: &mut usize) -> Option<GrayImage> {
     None
 }
 
-pub fn prepare_sleep(dir: &Path, choice: &WallpaperChoice, next: &mut usize) -> Option<GrayImage> {
-    if *choice == WallpaperChoice::Rotate {
-        return rotated_picture(dir, next);
-    }
-    saved_picture(dir, WallpaperTarget::Sleep, choice)
-}
-
 pub fn refresh_images(dir: &Path, run: &Path, wallpapers: &WallpaperSettings, renderer: &mut Renderer) -> usize {
-    renderer.set_home_wallpaper(saved_picture(dir, WallpaperTarget::Home, &wallpapers.home));
+    renderer.set_home_wallpaper(saved_picture(dir, WallpaperTarget::Home, wallpapers, &mut 0));
     let mut next = 0;
-    let sleep = prepare_sleep(dir, &wallpapers.sleep, &mut next);
+    let sleep = saved_picture(dir, WallpaperTarget::Sleep, wallpapers, &mut next);
     use_launcher_sleep(run, sleep.is_some());
     renderer.set_sleep_image(sleep);
     next
@@ -219,6 +241,18 @@ mod tests {
     }
 
     #[test]
+    fn opacity_round_trips_independently_and_legacy_values_default_to_full() {
+        let values = parse("home=file:River.png\nhome-opacity=45\nsleep-opacity=0\nstartup-opacity=110\n", false);
+        assert_eq!(values.opacity(WallpaperTarget::Home), 45);
+        assert_eq!(values.opacity(WallpaperTarget::Sleep), 0);
+        assert_eq!(values.opacity(WallpaperTarget::Startup), 100);
+        assert_eq!(parse(&preferences(&values), false), values);
+        for target in [WallpaperTarget::Home, WallpaperTarget::Sleep, WallpaperTarget::Startup] {
+            assert_eq!(parse("", true).opacity(target), 100);
+        }
+    }
+
+    #[test]
     fn rejects_invalid_paths_and_rotation_outside_sleep() {
         let parsed = parse("home=file:../photo.png\nsleep=rotate\nstartup=rotate\n", false);
         assert_eq!(parsed.home, WallpaperChoice::Default);
@@ -255,12 +289,16 @@ mod tests {
         fs::create_dir(&folder).unwrap();
         fs::write(folder.join("A.png"), b"broken PNG").unwrap();
         let mut next = 0;
-        assert!(prepare_sleep(&dir, &WallpaperChoice::Rotate, &mut next).is_none());
-        let missing = WallpaperChoice::File("Missing.png".into());
-        assert!(prepare_sleep(&dir, &missing, &mut next).is_none());
+        let mut wallpapers = parse("", true);
+        assert!(saved_picture(&dir, WallpaperTarget::Sleep, &wallpapers, &mut next).is_none());
+        wallpapers.sleep = WallpaperChoice::File("Missing.png".into());
+        assert!(saved_picture(&dir, WallpaperTarget::Sleep, &wallpapers, &mut next).is_none());
         let icon = include_bytes!("../../../assets/launcher-icon.png");
         fs::write(folder.join("B.png"), icon).unwrap();
-        assert!(prepare_sleep(&dir, &WallpaperChoice::Rotate, &mut next).is_some());
+        wallpapers.sleep = WallpaperChoice::Rotate;
+        wallpapers.set_opacity(WallpaperTarget::Sleep, 0);
+        let faded = saved_picture(&dir, WallpaperTarget::Sleep, &wallpapers, &mut next).unwrap();
+        assert!(faded.pixels.iter().all(|&pixel| pixel == 255));
         assert_eq!(next, 2);
         fs::remove_dir_all(dir).unwrap();
     }

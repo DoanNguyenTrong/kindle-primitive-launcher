@@ -6,10 +6,11 @@
 //!
 //! Screens written: home (each page), pressed tile, settings, confirm, sleep.
 
-use std::{fs, path::PathBuf};
+use std::{fs, path::{Path, PathBuf}};
 
 use kl_core::{
-    discover, Config, Input, Layout, Rotation, Screen, Status, Ui,
+    discover, Action, Config, Input, Layout, Rotation, Screen, Status, Ui,
+    layout::{Page, Rect, Row},
     wallpaper::{WallpaperChoice, WallpaperSettings, WallpaperTarget},
 };
 use kl_render::Renderer;
@@ -77,6 +78,122 @@ fn demo_status() -> Status {
     }
 }
 
+fn show_wallpaper_demo(renderer: &mut Renderer, ui: &mut Ui, status: &Status, out: &Path, path: &Path) {
+    let png = fs::read(path).expect("read wallpaper PNG");
+    let filename = path.file_name().expect("wallpaper filename").to_string_lossy().into_owned();
+    let choice = WallpaperChoice::File(filename.clone());
+    let home = kl_render::image::wallpaper_tile(&png, W, H).expect("decode Home wallpaper");
+    let fitted = kl_render::image::picture_tile(&png, W, H).expect("decode Sleep and Startup wallpaper");
+    let capture = |renderer: &mut Renderer, ui: &Ui, theme: &Status, name: &str| {
+        write_png(&out.join(format!("{name}.png")), W, H, &renderer.draw(ui, theme));
+    };
+    let tap = |r: Rect| Input::Tap(r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0);
+    let row = |ui: &Ui, page, label| ui.layout.page_sections(page).into_iter()
+        .flat_map(|section| section.rows).find(|item| item.row == label).expect("wallpaper settings row").rect;
+
+    ui.set_wallpapers(WallpaperSettings { images: vec![filename], ..WallpaperSettings::default() });
+    ui.screen = Screen::Settings;
+    let display = ui.layout.settings_home_rows(0).into_iter()
+        .find(|&(page, _)| page == Page::Display).expect("Display settings row").1;
+    ui.handle(tap(display));
+    ui.handle(tap(row(ui, Page::Display, Row::WallpaperLink)));
+    assert_eq!(ui.screen, Screen::Page(Page::Wallpaper));
+
+    for (target, picture, name) in [
+        (WallpaperTarget::Home, &home, "settings-wallpaper-preview-home"),
+        (WallpaperTarget::Sleep, &fitted, "settings-wallpaper-preview-sleep"),
+        (WallpaperTarget::Startup, &fitted, "settings-wallpaper-preview-startup"),
+    ] {
+        let picker = Screen::WallpaperPicker(target);
+        ui.handle(tap(row(ui, Page::Wallpaper, Row::Wallpaper(target))));
+        assert_eq!(ui.screen, picker);
+        if target == WallpaperTarget::Sleep {
+            capture(renderer, ui, status, "settings-wallpaper-picker");
+        }
+        let index = ui.wallpapers.choices(target).position(|entry| entry == choice).expect("sample wallpaper in picker");
+        let photo = tap(ui.layout.visibility_row(index, ui.wallpaper_scroll));
+        let preview = Action::PreviewWallpaper { target, choice: choice.clone() };
+        assert_eq!(ui.handle(photo), preview);
+        assert_eq!(ui.screen, Screen::WallpaperPreview);
+        assert_eq!(ui.wallpapers.selection(target), &WallpaperChoice::Default);
+        assert_eq!(ui.wallpaper_preview.as_ref().unwrap().opacity, 100);
+        renderer.set_wallpaper_preview(Some(picture.clone()));
+        capture(renderer, ui, status, name);
+
+        let controls = ui.layout.wallpaper_preview();
+        let opacity = if target == WallpaperTarget::Home {
+            let dark = Status { dark_mode: true, ..status.clone() };
+            capture(renderer, ui, &dark, "settings-wallpaper-preview-home-dark");
+            ui.handle(tap(controls.opacity_track));
+            assert_eq!(ui.wallpaper_preview.as_ref().unwrap().opacity, 50);
+            ui.handle(tap(controls.opacity_down));
+            assert_eq!(ui.wallpaper_preview.as_ref().unwrap().opacity, 40);
+            ui.handle(tap(controls.opacity_up));
+            assert_eq!(ui.wallpaper_preview.as_ref().unwrap().opacity, 50);
+            capture(renderer, ui, status, "settings-wallpaper-preview-home-opacity");
+
+            let dismiss = ui.handle(tap(ui.layout.done_button()));
+            assert!(!matches!(dismiss, Action::SetWallpaper { .. }));
+            renderer.set_wallpaper_preview(None);
+            assert_eq!(ui.screen, picker);
+            assert!(ui.wallpaper_preview.is_none());
+            assert_eq!(ui.wallpapers.selection(target), &WallpaperChoice::Default);
+            assert_eq!(ui.wallpapers.opacity(target), 100);
+
+            assert_eq!(ui.handle(photo), preview);
+            assert_eq!(ui.wallpaper_preview.as_ref().unwrap().opacity, 100);
+            renderer.set_wallpaper_preview(Some(home.clone()));
+            ui.handle(tap(controls.opacity_track));
+            50
+        } else {
+            100
+        };
+
+        assert_eq!(ui.handle(tap(controls.apply)), Action::SetWallpaper {
+            target, choice: choice.clone(), opacity,
+        });
+        assert_eq!(ui.wallpapers.selection(target), &WallpaperChoice::Default);
+        assert_eq!(ui.wallpapers.opacity(target), 100);
+        // Simulate the successful save callback after Apply. Only this step changes the saved choices.
+        let mut saved = ui.wallpapers.clone();
+        saved.set_selection(target, choice.clone());
+        saved.set_opacity(target, opacity);
+        ui.set_wallpapers(saved);
+        ui.finish_wallpaper_preview();
+        assert_eq!(ui.screen, picker);
+        assert!(ui.wallpaper_preview.is_none());
+        assert_eq!(ui.wallpapers.selection(target), &choice);
+        assert_eq!(ui.wallpapers.opacity(target), opacity);
+        renderer.set_wallpaper_preview(None);
+        ui.handle(tap(ui.layout.done_button()));
+        assert_eq!(ui.screen, Screen::Page(Page::Wallpaper));
+    }
+
+    ui.handle(Input::PageBack);
+    ui.handle(Input::PageBack);
+    ui.handle(tap(ui.layout.done_button()));
+    assert_eq!(ui.screen, Screen::Home);
+
+    renderer.set_home_wallpaper(Some(home));
+    capture(renderer, ui, status, "home-wallpaper");
+    capture(renderer, ui, &Status { dark_mode: true, ..status.clone() }, "dark-home-wallpaper");
+    let configured = ui.wallpapers.clone();
+    let mut full_opacity = configured.clone();
+    full_opacity.set_opacity(WallpaperTarget::Home, 100);
+    ui.set_wallpapers(full_opacity);
+    capture(renderer, ui, status, "home-wallpaper-full-opacity");
+    ui.set_wallpapers(configured);
+    renderer.set_home_wallpaper(None);
+
+    write_png(&out.join("startup-wallpaper.png"), W, H, &fitted.pixels);
+    renderer.set_sleep_image(Some(fitted));
+    ui.handle(Input::Sleep);
+    capture(renderer, ui, status, "sleep-wallpaper");
+    renderer.set_sleep_image(None);
+    ui.handle(Input::Wake);
+    assert_eq!(ui.screen, Screen::Home);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let font_dir = arg(&args, "--fonts").unwrap_or_else(|| "assets/fonts".into());
@@ -121,28 +238,7 @@ fn main() {
         write_png(&out.join(format!("{name}.png")), W, H, &gray);
     };
     if let Some(path) = wallpaper_path {
-        let png = fs::read(&path).expect("read wallpaper PNG");
-        let filename = path.file_name().unwrap().to_string_lossy().into_owned();
-        let choice = WallpaperChoice::File(filename.clone());
-        ui.set_wallpapers(WallpaperSettings {
-            images: vec![filename], home: choice.clone(), sleep: choice,
-            ..WallpaperSettings::default()
-        });
-        renderer.set_home_wallpaper(Some(kl_render::image::wallpaper_tile(&png, W, H).expect("decode Home wallpaper")));
-        shot(&mut renderer, &ui, "home-wallpaper");
-        let dark = Status { dark_mode: true, ..status.clone() };
-        write_png(&out.join("dark-home-wallpaper.png"), W, H, &renderer.draw(&ui, &dark));
-        renderer.set_home_wallpaper(None);
-        ui.screen = Screen::WallpaperPicker(WallpaperTarget::Sleep);
-        shot(&mut renderer, &ui, "settings-wallpaper-picker");
-        let picture = kl_render::image::picture_tile(&png, W, H).expect("decode Sleep and Startup wallpaper");
-        write_png(&out.join("startup-wallpaper.png"), W, H, &picture.pixels);
-        renderer.set_sleep_image(Some(picture));
-        ui.handle(Input::Sleep);
-        shot(&mut renderer, &ui, "sleep-wallpaper");
-        renderer.set_sleep_image(None);
-        ui.handle(Input::Wake);
-        ui.screen = Screen::Home;
+        show_wallpaper_demo(&mut renderer, &mut ui, &status, &out, &path);
     }
     for page in 0..ui.pages() {
         ui.page = page;

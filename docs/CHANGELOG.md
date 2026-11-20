@@ -3,6 +3,11 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.5.5
+
+- Preview Home, Sleep, and Startup wallpapers before applying them. Each screen saves its own opacity.
+- Extend the Home wallpaper behind the status bar and page indicator while keeping controls readable.
+
 ## 0.5.4
 
 - Use the PrimitiveOS organization’s Store catalog for bootstrap and update checks.

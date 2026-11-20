@@ -140,9 +140,9 @@ The screenshots are from the desktop build of the same code, with demo values. T
 | Kindle Oasis 3 (1264 × 1680, firmware 5.18.2) | ✅ Verified on hardware |
 | Other Kindle models | 🛠️ Not supported yet |
 
-Launcher **0.5.4** uses the PrimitiveOS organization's catalog to install Store. It includes vertical Settings
-navigation, separate wallpaper choices, clock and time zone, and expanded device and app settings.
-[Launcher 0.5.4 release](https://github.com/PrimitiveOS/kindle-primitive-launcher/releases/tag/v0.5.4) · [Device notes](docs/device-notes.md)
+Launcher **0.5.5** previews wallpapers before you apply them, saves opacity separately for each screen,
+and extends the Home wallpaper behind the status bar and page indicator.
+[Launcher 0.5.5 release](https://github.com/PrimitiveOS/kindle-primitive-launcher/releases/tag/v0.5.5) · [Device notes](docs/device-notes.md)
 
 ## Limits
 
@@ -186,10 +186,12 @@ The milestones and their checklists are in the [plan](docs/03-plan.md).
 - **Appearance.** Display and Quick Settings use the same light and warmth controls. Accessibility offers larger
   text, higher contrast, and opening animation.
 - **Wallpaper.** Copy PNG pictures to `launcher/wallpapers/` on the Kindle drive and eject it. Open
-  **Settings › Display › Wallpaper** and choose a picture or the default for each screen. The Oasis 3 screen
-  is 1264 × 1680 pixels. Use files up to 4 million pixels and 20 MiB. Home fills the screen
-  and keeps app labels readable. Sleep and Startup fit the whole image. Startup appears when Launcher starts
-  automatically after the Kindle's own startup screen. [Wallpaper settings](docs/images/settings-wallpaper.png)
+  **Settings › Display › Wallpaper**, choose a screen, then tap a picture to preview it. Adjust **Opacity**
+  and tap **Apply** to save, or **Back** to return to the picker. Each screen keeps its own choice and opacity.
+  The Oasis 3 screen is 1264 × 1680 pixels. Use files up to 4 million pixels and 20 MiB. Home extends
+  behind the top and bottom bars while keeping app labels readable. Sleep and Startup fit the whole image.
+  Startup appears when Launcher starts automatically after the Kindle's own startup screen.
+  [Wallpaper preview](docs/images/settings-wallpaper-preview.png) · [Full-screen Home](docs/images/home-wallpaper-full-screen.png)
 - **Manage apps.** From **Settings › Apps**, choose grid dimensions, change app visibility, or open the installed
   list in Store. **Settings › Storage** shows user-space usage and links to app management and Store settings.
 - **Kindle UI.** Tap its icon and confirm. To come back, open *Launcher* in the Kindle library.
