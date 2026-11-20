@@ -718,10 +718,12 @@ fn main() {
                 input::grab_touch(false);
                 ui.pressed = None;
                 renderer.set_backdrop(None);
-                system_layer::freeze(&run, false);
+                // The redraw request goes first, while the app is still frozen: the signal is delivered the moment
+                // the app runs again, before anything it had queued, so nothing is drawn in the old theme.
                 if (theme_changed || !restored) && !system_layer::ask_redraw(&run) && !restored {
                     log("system layer: the screen could not be saved and the app cannot redraw");
                 }
+                system_layer::freeze(&run, false);
                 log("system layer: back to the app");
                 Action::None
             }
