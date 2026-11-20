@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.5.2
+
+- Scroll vertically through Settings and App visibility. Back from a setting returns to the same position in Settings.
+
 ## 0.5.1
 
 - Add Date and time with an on-demand Wi-Fi clock sync and the Kindle's current time zone.

@@ -84,8 +84,8 @@ The [install guide](docs/INSTALL.md) covers first-time setup, updates, and recov
   ([device notes](docs/device-notes.md)).
 - **Quicker to be useful at boot (opt-in).** With the boot start on, the launcher opens when the stock start-up animation
   has finished, instead of waiting for the stock home screen.
-- **One place for settings.** Wi-Fi and networks, SSH and DNS, display, sleep, device and about, in pages you can read
-  at a glance, and a quick panel from the top edge with the same controls.
+- **One place for settings.** Swipe up or down through Battery, Display, Network, Apps, and System. The quick panel
+  puts frequent controls at the top edge.
 
 ## Screenshots
 
@@ -140,7 +140,7 @@ The screenshots are from the desktop build of the same code, with demo values. T
 | Kindle Oasis 3 (1264 × 1680, firmware 5.18.2) | ✅ Verified on hardware |
 | Other Kindle models | 🛠️ Not supported yet |
 
-The published Launcher version is **0.4.10**. This branch contains the **0.5.1** settings update. Earlier Oasis 3
+The published Launcher version is **0.4.10**. This branch contains the **0.5.2** settings update. Earlier Oasis 3
 results are recorded in the [device notes](docs/device-notes.md). The new settings are ready for desktop review.
 
 ## Limits
@@ -175,8 +175,9 @@ The milestones and their checklists are in the [plan](docs/03-plan.md).
 - **Pages.** Swipe left or right, or use the page buttons. The dots at the bottom show the page.
 - **Edit.** Long-press an app: Move earlier, Move later, Change icon (PNG files in `launcher/icons/`), Hide.
   **Settings › Apps › App visibility** shows every app that can be hidden. **Show all** restores the hidden entries.
-- **Settings.** Tap the status bar or the Settings icon.
-- **Date and time.** On the second Settings page, see the Kindle's local clock and time zone. **Sync** under
+- **Settings.** Tap the status bar or the Settings icon. Swipe up or down through the list. **Back** from a setting
+  returns to the same position. [Settings after scrolling](docs/images/settings-scrolled.png)
+- **Date and time.** Scroll to System in Settings to see the Kindle's local clock and time zone. **Sync** under
   **Internet time** uses Cloudflare's time service over Wi-Fi where supported. **Refresh** re-reads the Kindle's
   configured time zone. [Desktop preview](docs/images/settings-date-and-time.png)
 - **Battery.** See the charge level, power state, and observed battery history. Enabling **Low power mode**

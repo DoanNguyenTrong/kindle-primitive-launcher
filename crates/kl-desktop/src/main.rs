@@ -202,14 +202,23 @@ fn main() {
     ui.wifi_hidden = false;
     ui.network_name = primitive_keyboard::Editor::new(32);
     ui.screen = kl_core::Screen::Settings;
-    assert_eq!(ui.settings_index, 0);
-    let page_next = ui.layout.settings_nav()[1];
-    ui.handle(Input::Tap((page_next.x + 24) as f32, (page_next.y + 24) as f32));
-    assert_eq!(ui.settings_index, 1);
-    shot(&mut renderer, &ui, "settings-apps-and-system");
-    let page_prev = ui.layout.settings_nav()[0];
-    ui.handle(Input::Tap((page_prev.x + 24) as f32, (page_prev.y + 24) as f32));
-    assert_eq!(ui.settings_index, 0);
+    let swipe = |dy| Input::Swipe { dx: 0.0, dy, start_y: H as f32 / 2.0 };
+    assert_eq!(ui.settings_scroll, 0);
+    let bottom = ui.layout.settings_scroll_max();
+    assert!(bottom > 0, "the Settings overview needs to scroll at Oasis size");
+    ui.handle(swipe(-((bottom + 80) as f32)));
+    assert_eq!(ui.settings_scroll, bottom);
+    shot(&mut renderer, &ui, "settings-scrolled");
+    let date_time = kl_core::layout::Page::DateTime;
+    let (_, row) = ui.layout.settings_home_rows(bottom).into_iter()
+        .find(|(page, _)| *page == date_time).expect("Date and time row");
+    ui.handle(Input::Tap((row.x + row.w / 2) as f32, (row.y + row.h / 2) as f32));
+    assert_eq!(ui.screen, kl_core::Screen::Page(date_time));
+    ui.handle(Input::PageBack);
+    assert_eq!(ui.screen, kl_core::Screen::Settings);
+    assert_eq!(ui.settings_scroll, bottom, "Back restores the Settings position");
+    ui.handle(swipe((bottom + 80) as f32));
+    assert_eq!(ui.settings_scroll, 0);
     for page in kl_core::layout::Page::ALL {
         ui.screen = kl_core::Screen::Page(page);
         if page == kl_core::layout::Page::Wifi {
@@ -218,6 +227,16 @@ fn main() {
         }
         let name = format!("settings-{}", page.title().to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-"));
         shot(&mut renderer, &ui, &name);
+        if page == kl_core::layout::Page::AppVisibility {
+            let bottom = ui.visibility_scroll_max();
+            if bottom > 0 {
+                ui.handle(swipe(-((bottom + 80) as f32)));
+                assert_eq!(ui.visibility_scroll, bottom);
+                shot(&mut renderer, &ui, "settings-app-visibility-scrolled");
+                ui.handle(swipe((bottom + 80) as f32));
+                assert_eq!(ui.visibility_scroll, 0);
+            }
+        }
     }
     ui.screen = kl_core::Screen::Settings;
     ui.screen = kl_core::Screen::ConfirmKindle;
