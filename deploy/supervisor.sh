@@ -740,8 +740,13 @@ run_app() {
     echo "$apid" > "$APP_PID"
     app_redraw=no
     [ "$kind" = script ] && app_redraws_on_wake "$arg" && app_redraw=yes
-    app_power_watch "$apid" "$app_redraw" &
-    echo $! > "$APP_WATCH"
+    # The launcher reads this before it asks the app to redraw: SIGUSR1 ends an app that does not handle it.
+    if [ "$app_redraw" = yes ]; then : > "$RUN/app-redraws"; else rm -f "$RUN/app-redraws"; fi
+    # A launcher that stays (the system layer) keeps sleep and wake itself; otherwise the supervisor does.
+    if [ "$resident_app" != yes ]; then
+        app_power_watch "$apid" "$app_redraw" &
+        echo $! > "$APP_WATCH"
+    fi
     if [ "$store_can_open" -eq 1 ] || [ "$native_can_lease" -eq 1 ]; then
         printf '%s %s\n' "$apid" "$(store_child_started_at "$apid")" > "$STORE_CHILD"
         if [ "$native_can_lease" -eq 1 ]; then
@@ -806,6 +811,10 @@ launcher_can_lease=0
 usb_watch $$ &
 USB_MONITOR=$!
 trap 'log "supervisor exit (status $?)"' EXIT
+# The system layer: the launcher asks for its app with SIGUSR1 and stays running (docs/system-architecture.md).
+launch_requested=no
+resident_app=no
+trap 'launch_requested=yes' USR1
 
 crashes=""
 store_open_pending=no
@@ -828,7 +837,7 @@ while :; do
     launch_started=$(date +%s)
     echo "$launch_started" > "$RUN/heartbeat"
     rm -f "$RUN/next" "$UPDATE_READY"
-    KL_SHOW_STARTUP_WALLPAPER=$startup_wallpaper KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
+    KL_SYSTEM_LAYER=1 KL_SHOW_STARTUP_WALLPAPER=$startup_wallpaper KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
     lp=$!
     startup_wallpaper=0
     echo "$lp" > "$LAUNCHER_PID"
@@ -857,8 +866,26 @@ while :; do
             sleep 1
         done
     fi
-    wait "$lp"
-    rc=$?
+    # The launcher stays while its app runs: a launch request (SIGUSR1) interrupts the wait, the app runs, and the
+    # wait goes on. A request that came before the wait started is handled first.
+    while :; do
+        [ "$launch_requested" = yes ] || wait "$lp"
+        rc=$?
+        if [ "$launch_requested" = yes ]; then
+            launch_requested=no
+            if kill -0 "$lp" 2>/dev/null; then
+                resident_app=yes
+                run_app
+                resident_app=no
+                # The Store asked for another app: the launcher starts again and opens it, as before.
+                [ "$store_open_pending" = yes ] && kill -TERM "$lp" 2>/dev/null
+                continue
+            fi
+            wait "$lp"
+            rc=$?
+        fi
+        break
+    done
     rm -f "$LAUNCHER_PID"
     launcher_storage_end
     if [ "$store_open_pending" = yes ]; then

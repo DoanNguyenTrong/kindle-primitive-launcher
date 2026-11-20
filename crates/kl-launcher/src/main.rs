@@ -12,6 +12,7 @@ mod bootstrap;
 mod clock_sync;
 mod management;
 mod power;
+mod system_layer;
 mod transfer;
 mod wallpaper;
 
@@ -409,6 +410,9 @@ fn main() {
     let mut mark_trial_ready = update_trial;
     let mut transfer_session = None;
     let mut clock_sync = None::<clock_sync::ClockSync>;
+    // The system layer: an app runs under the launcher, which keeps sleep, the lock screen and quick settings.
+    let system_layer_on = system_layer::enabled();
+    let mut app_session: Option<system_layer::AppSession> = None;
 
     loop {
         if mark_trial_ready && display.has_presented_frame() {
@@ -596,7 +600,40 @@ fn main() {
                     Action::Redraw { full: true }
                 }
             }
+            Ev::AppEnded => {
+                if app_session.take().is_some() {
+                    log("system layer: the app ended; the launcher takes the screen back");
+                    input::grab_touch(false);
+                    display.set_paused(false);
+                    ui.pressed = None;
+                    if ui.screen == Screen::Sleep {
+                        Action::None
+                    } else {
+                        ui.screen = Screen::Home;
+                        status = device::status(&settings);
+                        Action::Redraw { full: true }
+                    }
+                } else {
+                    Action::None
+                }
+            }
             Ev::Input(input) => {
+                // An app is in front: its input is its own, except the swipe that opens quick settings and the power
+                // events. For those the app is frozen and its screen saved, and the launcher draws again.
+                if let Some(session) = app_session.as_mut().filter(|s| s.in_front()) {
+                    let opens = system_layer::opens_quick_settings(input, ui.layout.status().bottom());
+                    if input != Input::Sleep && !opens {
+                        continue;
+                    }
+                    system_layer::freeze(&run, true);
+                    if opens {
+                        input::grab_touch(true);
+                    }
+                    session.saved = Some(display.snapshot().unwrap_or_default());
+                    session.dark_mode_at_open = settings.dark_mode;
+                    display.set_paused(false);
+                    log(&format!("system layer: {} over the app", if opens { "quick settings" } else { "sleep" }));
+                }
                 if !matches!(input, Input::Sleep | Input::Wake) {
                     log(&format!("input {input:?}"));
                 }
@@ -609,7 +646,9 @@ fn main() {
                 }
                 // A key of the keyboard is drawn as pressed before its action runs: the tap is seen at once.
                 if ui.press_feedback(input) {
-                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    let mut frame = renderer.draw(&ui, &status);
+                    app_under_panel(&mut frame, &app_session, &ui, &settings, display.fb_turn());
+                    display.show(frame, &settings, false);
                 }
                 let before = ui.screen;
                 ui.display_support = status.display_support;
@@ -659,6 +698,27 @@ fn main() {
         } else {
             action
         };
+        // Quick settings or the sleep screen closed over an app: put the app's screen back and let it run.
+        let action = match app_session.as_mut() {
+            Some(session) if !session.in_front() && ui.screen == Screen::Home => {
+                let saved = session.saved.take().unwrap_or_default();
+                let theme_changed = settings.dark_mode != session.dark_mode_at_open;
+                let restored = !saved.is_empty();
+                if restored {
+                    display.restore(saved);
+                }
+                display.set_paused(true);
+                input::grab_touch(false);
+                ui.pressed = None;
+                system_layer::freeze(&run, false);
+                if (theme_changed || !restored) && !system_layer::ask_redraw(&run) && !restored {
+                    log("system layer: the screen could not be saved and the app cannot redraw");
+                }
+                log("system layer: back to the app");
+                Action::None
+            }
+            _ => action,
+        };
         if ui.wallpaper_preview.is_none() {
             renderer.set_wallpaper_preview(None);
         }
@@ -692,7 +752,9 @@ fn main() {
                 if full {
                     status = device::status(&settings);
                 }
-                display.show(renderer.draw(&ui, &status), &settings, full);
+                let mut frame = renderer.draw(&ui, &status);
+                app_under_panel(&mut frame, &app_session, &ui, &settings, display.fb_turn());
+                display.show(frame, &settings, full);
             }
             Action::Launch(mut app) => {
                 if bootstrapping_store.is_some() {
@@ -746,6 +808,15 @@ fn main() {
                         display.show(frame, &settings, false);
                         thread::sleep(Duration::from_millis(70));
                     }
+                }
+                // The system layer: the supervisor runs the app and the launcher stays, its drawing paused.
+                if system_layer_on && system_layer::request_launch(&run) {
+                    log("system layer: the supervisor runs the app; the launcher stays");
+                    app_session = Some(system_layer::AppSession::new());
+                    display.set_paused(true);
+                    ui.pressed = None;
+                    system_layer::watch(run.clone(), tx.clone());
+                    continue;
                 }
                 std::process::exit(EXIT_LAUNCH);
             }
@@ -1058,6 +1129,14 @@ fn wait_screen(dir: &Path, run: &Path, settings: &Settings) {
         display.show_region(frame, area, settings);
         thread::sleep(Duration::from_millis(1500));
         step += 1;
+    }
+}
+
+/// Over an app, quick settings floats over the app's saved screen rather than over the home screen.
+fn app_under_panel(frame: &mut [u8], app: &Option<system_layer::AppSession>, ui: &Ui, settings: &Settings, fb_turn: u32) {
+    let Some(saved) = app.as_ref().and_then(|s| s.saved.as_deref()) else { return };
+    if !saved.is_empty() && ui.screen == Screen::QuickSettings {
+        system_layer::app_under(frame, saved, W as usize, ui.layout.quick_panel(), settings.rotation, fb_turn);
     }
 }
 
