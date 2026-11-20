@@ -120,8 +120,9 @@ Apps were written to start from the library with the framework running. Under th
 - One `lipc-wait-event -m com.lab126.powerd …` child process, restarted with backoff if it dies. It
   listens for `goingToScreenSaver`, `outOfScreenSaver`, `exitingScreenSaver`, `readyToSuspend`,
   `wakeupFromSuspend`, `battLevelChanged`, `charging`, `notCharging` and `battLevelCrit`.
-- Sleep screen: a 1264 × 1680 image from `/mnt/us/launcher/screensavers/` (rotating or fixed), loaded
-  into memory at start, or a drawn default.
+- The Wallpaper page selects one sleep PNG from `/mnt/us/launcher/wallpapers/`, rotates PNGs in
+  `/mnt/us/launcher/screensavers/`, or leaves the screen to the Kindle screensaver. Launcher prepares
+  the selected image while awake and gives the low-battery warning priority over the picture.
 - If S2 shows `powerd` will not sleep on its own without the framework, the launcher reports activity
   on input (rate-limited `touchScreenSaverTimeout`) and the sleep cover/power button handling follows
   KOReader's Kindle implementation.

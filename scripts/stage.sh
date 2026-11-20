@@ -37,7 +37,7 @@ else
 fi
 
 L=$STAGE/launcher
-mkdir -p "$L/fonts" "$L/icons" "$L/screensavers" "$L/ssh/bin" "$L/ssh/lib" "$L/ssh/licenses" "$STAGE/documents"
+mkdir -p "$L/fonts" "$L/icons" "$L/screensavers" "$L/wallpapers" "$L/ssh/bin" "$L/ssh/lib" "$L/ssh/licenses" "$STAGE/documents"
 install -m 755 "$BIN" "$L/kl-launcher"
 for f in supervisor.sh ssh.sh dns.sh boot.sh holder.lua run-koreader.sh apps.toml.example setup-boot.sh primitive-launcher.conf; do
     cp "deploy/$f" "$L/$f"
@@ -51,7 +51,8 @@ esac
 cp assets/device/licenses/DROPBEAR-LICENSE.txt assets/device/licenses/ZLIB-LICENSE.txt "$L/ssh/licenses/"
 cp assets/fonts/NotoSans-Regular.ttf assets/fonts/NotoSans-Bold.ttf assets/fonts/NOTO-LICENSE.txt "$L/fonts/"
 printf 'PNG files here can be chosen as app icons: long-press an app, then Change icon.\n' > "$L/icons/README.txt"
-printf 'PNG files here are shown on sleep when Settings > Sleep screen is "The launcher'"'"'s own".\n' > "$L/screensavers/README.txt"
+printf 'Launcher uses PNGs here when Settings > Display > Wallpaper > Sleep Screen is set to Rotate sleep pictures.\n' > "$L/screensavers/README.txt"
+printf 'Copy PNG images into this folder, then go to Launcher > Settings > Display > Wallpaper to choose an image for Home, Sleep, or Startup. Each PNG can be up to 4 megapixels and 20 MiB.\n' > "$L/wallpapers/README.txt"
 
 # Embed the same library icon as the installer, immediately after the Author line.
 ICON_LINE="# Icon: data:image/png;base64,$(base64 < assets/launcher-icon.png | tr -d '\n')"

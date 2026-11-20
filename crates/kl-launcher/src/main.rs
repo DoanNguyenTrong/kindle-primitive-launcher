@@ -13,6 +13,7 @@ mod clock_sync;
 mod management;
 mod power;
 mod transfer;
+mod wallpaper;
 
 use std::{
     fs,
@@ -28,6 +29,7 @@ use std::{
 
 use kl_core::store_open;
 use kl_core::layout::Page;
+use kl_core::wallpaper::{WallpaperChoice, WallpaperTarget};
 use kl_core::{discover, Action, App, Config, DeviceCmd, Input, Launch, Layout, Screen, Settings, Status, Ui};
 use kl_render::Renderer;
 
@@ -229,9 +231,6 @@ fn main() {
 
     let mut settings_path = dir.join("settings.txt");
     let mut settings = Settings::load(&settings_path);
-    if settings.sleep_screen_launcher {
-        device::unload_stock_screensaver();
-    }
     // With automatic rotation the saved turn can be stale (it is only saved on manual changes): read the
     // device's turn now, so the first screen is drawn the right way up.
     if settings.auto_rotation {
@@ -244,6 +243,20 @@ fn main() {
     if std::env::args().any(|a| a == "--wait-screen") {
         wait_screen(&dir, &run, &settings);
         return;
+    }
+
+    let wallpapers = wallpaper::load(&dir, settings.sleep_screen_launcher);
+    settings.sleep_screen_launcher = wallpapers.sleep != WallpaperChoice::Default;
+    let mut startup_wallpaper_until = None;
+    if !from_mirror && std::env::var("KL_SHOW_STARTUP_WALLPAPER").as_deref() == Ok("1") {
+        if let Some(image) = wallpaper::saved_picture(&dir, WallpaperTarget::Startup, &wallpapers.startup) {
+            // A startup image cannot by itself prove the Launcher update reached the app grid.
+            let mut splash = Display::open();
+            splash.show(image.pixels, &settings, true);
+            if splash.has_presented_frame() {
+                startup_wallpaper_until = Some(Instant::now() + Duration::from_millis(800));
+            }
+        }
     }
 
     // Reviewable system changes recover in Store with its storage write lease.
@@ -269,6 +282,7 @@ fn main() {
         }
     };
     problems.extend(kl_render::load_icons(&mut renderer, &apps, &layout, Some(&dir.join("cache"))));
+    let mut sleep_rotation = wallpaper::refresh_images(&dir, &run, &wallpapers, &mut renderer);
     for p in &problems {
         log(&format!("problem: {p}"));
     }
@@ -284,6 +298,7 @@ fn main() {
     });
     ui.managed_count = if from_mirror { None } else { management::installed_count(&dir) };
     ui.set_icon_choices(png_files(&dir.join("icons")));
+    ui.set_wallpapers(wallpapers);
     ui.set_extensions(extensions);
     ui.store_update_count = bootstrap::available_updates(&dir);
     ui.store_daily_check = settings.store_daily_check;
@@ -308,6 +323,7 @@ fn main() {
             {
                 Ok(()) => {
                     log(&format!("opening {id} from the Store"));
+                    wallpaper::use_launcher_sleep(&run, false);
                     std::process::exit(EXIT_LAUNCH);
                 }
                 Err(error) => ui.notice = Some(format!("Could not open the app from the Store. {error}")),
@@ -379,9 +395,12 @@ fn main() {
         });
     }
 
-    display.show(renderer.draw(&ui, &status), &settings, true);
+    let first = renderer.draw(&ui, &status);
+    if let Some(until) = startup_wallpaper_until {
+        thread::sleep(until.saturating_duration_since(Instant::now()));
+    }
+    display.show(first, &settings, true);
     log(&format!("first screen after {} ms", started.elapsed().as_millis()));
-    let mut sleep_picture = 0usize;
     let mut bootstrapping_store = None;
     let mut mark_trial_ready = update_trial;
     let mut transfer_session = None;
@@ -554,6 +573,11 @@ fn main() {
                     }
                     if ui.usb == kl_core::Usb::Drive && usb != kl_core::Usb::Drive && !from_mirror {
                         ui.managed_count = management::installed_count(&dir);
+                        let legacy_sleep = Settings::load(&settings_path).sleep_screen_launcher;
+                        let wallpapers = wallpaper::load(&dir, legacy_sleep);
+                        settings.sleep_screen_launcher = wallpapers.sleep != WallpaperChoice::Default;
+                        sleep_rotation = wallpaper::refresh_images(&dir, &run, &wallpapers, &mut renderer);
+                        ui.set_wallpapers(wallpapers);
                     }
                     if ui.screen != Screen::Sleep {
                         status = device::status(&settings);
@@ -576,24 +600,6 @@ fn main() {
                         ui.notice = Some("Clock sync stopped when the Kindle went to sleep.".into());
                     }
                 }
-                // The launcher's own sleep screen: the next picture from the screensavers folder, if any.
-                if input == Input::Sleep && settings.sleep_screen_launcher && ui.screen != Screen::Sleep {
-                    let pictures = png_files(&dir.join("screensavers"));
-                    let picture = if pictures.is_empty() {
-                        None
-                    } else {
-                        let path = &pictures[sleep_picture % pictures.len()];
-                        sleep_picture += 1;
-                        match kl_render::sleep_image(Path::new(path), W, H) {
-                            Ok(picture) => Some(picture),
-                            Err(e) => {
-                                log(&format!("sleep picture: {e}"));
-                                None
-                            }
-                        }
-                    };
-                    renderer.set_sleep_image(picture);
-                }
                 // A key of the keyboard is drawn as pressed before its action runs: the tap is seen at once.
                 if ui.press_feedback(input) {
                     display.show(renderer.draw(&ui, &status), &settings, false);
@@ -601,6 +607,13 @@ fn main() {
                 let before = ui.screen;
                 ui.display_support = status.display_support;
                 let action = ui.handle(input);
+                if input == Input::Wake && before == Screen::Sleep && ui.usb != kl_core::Usb::Drive
+                    && ui.wallpapers.sleep == WallpaperChoice::Rotate
+                {
+                    let sleep = wallpaper::rotated_picture(&dir, &mut sleep_rotation);
+                    wallpaper::use_launcher_sleep(&run, sleep.is_some());
+                    renderer.set_sleep_image(sleep);
+                }
                 // A Settings page opens with a fresh status: the About text shows the current address and storage.
                 if input == Input::Wake || (matches!(ui.screen, Screen::Page(_)) && ui.screen != before) {
                     status = device::status(&settings);
@@ -627,6 +640,13 @@ fn main() {
                 ui.notice = Some("Store is unavailable. Reopen Launcher and try again.".into());
                 Action::Redraw { full: false }
             }
+        } else if action == Action::Device(DeviceCmd::ToggleSleepScreen) {
+            let choice = if ui.wallpapers.sleep == WallpaperChoice::Default {
+                WallpaperChoice::Rotate
+            } else {
+                WallpaperChoice::Default
+            };
+            Action::SetWallpaper { target: WallpaperTarget::Sleep, choice }
         } else {
             action
         };
@@ -715,6 +735,7 @@ fn main() {
                         thread::sleep(Duration::from_millis(70));
                     }
                 }
+                wallpaper::use_launcher_sleep(&run, false);
                 std::process::exit(EXIT_LAUNCH);
             }
             Action::SetHidden(changes) => {
@@ -794,8 +815,48 @@ fn main() {
                 }
                 display.show(renderer.draw(&ui, &status), &settings, false);
             }
+            Action::SetWallpaper { target, choice } => {
+                let mut updated = ui.wallpapers.clone();
+                updated.set_selection(target, choice);
+                let mut next = 0;
+                let result = if bootstrapping_store.is_some() {
+                    Err(std::io::Error::other("Wait for the Store to finish installing."))
+                } else {
+                    save_library_setting(from_mirror, &mut power, || {
+                        let mut image = wallpaper::selected_picture(&dir, target, updated.selection(target))?;
+                        if target == WallpaperTarget::Sleep && updated.sleep == WallpaperChoice::Rotate {
+                            image = wallpaper::rotated_picture(&dir, &mut next);
+                        }
+                        write_atomic(&wallpaper::preferences_path(&dir), &wallpaper::preferences(&updated))?;
+                        Ok(image)
+                    })
+                };
+                match result {
+                    Ok(image) => {
+                        ui.set_wallpapers(updated);
+                        ui.notice = None;
+                        match target {
+                            WallpaperTarget::Home => renderer.set_home_wallpaper(image),
+                            WallpaperTarget::Sleep => {
+                                sleep_rotation = next;
+                                settings.sleep_screen_launcher = ui.wallpapers.sleep != WallpaperChoice::Default;
+                                status.sleep_launcher = settings.sleep_screen_launcher;
+                                wallpaper::use_launcher_sleep(&run, image.is_some());
+                                if ui.wallpapers.sleep == WallpaperChoice::Rotate && image.is_none() {
+                                    ui.notice = Some("Copy PNGs to launcher/screensavers to use rotation.".into());
+                                }
+                                renderer.set_sleep_image(image);
+                            }
+                            WallpaperTarget::Startup => {}
+                        }
+                    }
+                    Err(error) => ui.notice = Some(format!("Could not save wallpaper. {error}")),
+                }
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
             Action::KindleMode => {
                 log("leaving for the Kindle UI");
+                wallpaper::use_launcher_sleep(&run, false);
                 // The dialog turns into "Opening the Kindle UI"; the wait screen fills its blocks from here.
                 let (frame, area) = renderer.waiting_dialog(&ui.layout, 0, settings.dark_mode);
                 display.show_region(frame, area, &settings);
@@ -1026,18 +1087,18 @@ fn update_apps_toml(dir: &Path, change: impl FnOnce(&mut Config)) -> std::io::Re
     write_atomic(&path, &config.to_toml())
 }
 
-fn save_library_setting(
+fn save_library_setting<T>(
     from_mirror: bool,
     power: &mut power::Runtime,
-    change: impl FnOnce() -> std::io::Result<()>,
-) -> std::io::Result<()> {
+    change: impl FnOnce() -> std::io::Result<T>,
+) -> std::io::Result<T> {
     if from_mirror {
         return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "Eject the Kindle drive and try again."));
     }
     power.with_storage(change)
 }
 
-/// The PNG files in a folder, sorted: icons for the app menu, pictures for the sleep screen.
+/// The PNG files available as app icons, sorted.
 fn png_files(dir: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
     let mut files: Vec<String> = entries
@@ -1084,21 +1145,10 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         | DeviceCmd::ToggleLargeText
         | DeviceCmd::ToggleHighContrast
         | DeviceCmd::ToggleAnimation
-        | DeviceCmd::ToggleDarkMode => {}
+        | DeviceCmd::ToggleDarkMode
+        | DeviceCmd::ToggleSleepScreen => {}
         DeviceCmd::SyncClock | DeviceCmd::RefreshTimeZone => {}
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
-        DeviceCmd::ToggleSleepScreen => {
-            settings.sleep_screen_launcher = !settings.sleep_screen_launcher;
-            status.sleep_launcher = settings.sleep_screen_launcher;
-            if let Err(e) = write_atomic(settings_path, &settings.base_text()) {
-                log(&format!("settings: {e}"));
-            }
-            if settings.sleep_screen_launcher {
-                device::unload_stock_screensaver();
-            } else {
-                log("sleep screen: the Kindle's; it returns after Kindle mode or a reboot");
-            }
-        }
         DeviceCmd::SetLight(level) => device::set_light(level),
         DeviceCmd::SetWarmth(level) => device::set_warmth(level),
         DeviceCmd::ToggleAutoRotation => {

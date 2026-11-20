@@ -140,7 +140,7 @@ The screenshots are from the desktop build of the same code, with demo values. T
 | Kindle Oasis 3 (1264 × 1680, firmware 5.18.2) | ✅ Verified on hardware |
 | Other Kindle models | 🛠️ Not supported yet |
 
-The published Launcher version is **0.4.10**. This branch contains the **0.5.2** settings update. Earlier Oasis 3
+The published Launcher version is **0.4.10**. This branch contains the **0.5.3** settings update. Earlier Oasis 3
 results are recorded in the [device notes](docs/device-notes.md). The new settings are ready for desktop review.
 
 ## Limits
@@ -184,14 +184,20 @@ The milestones and their checklists are in the [plan](docs/03-plan.md).
   dims a bright front light and defers automatic checks in Store 0.1.5 and later.
 - **Appearance.** Display and Quick Settings use the same light and warmth controls. Accessibility offers larger
   text, higher contrast, and opening animation.
+- **Wallpaper.** Copy PNG pictures to `launcher/wallpapers/` on the Kindle drive and eject it. Open
+  **Settings › Display › Wallpaper** and choose a picture or the default for each screen. The Oasis 3 screen
+  is 1264 × 1680 pixels. Use files up to 4 million pixels and 20 MiB. Home fills the screen
+  and keeps app labels readable. Sleep and Startup fit the whole image. Startup appears when Launcher starts
+  automatically after the Kindle's own startup screen. [Wallpaper settings](docs/images/settings-wallpaper.png)
 - **Manage apps.** From **Settings › Apps**, choose grid dimensions, change app visibility, or open the installed
   list in Store. **Settings › Storage** shows user-space usage and links to app management and Store settings.
 - **Kindle UI.** Tap its icon and confirm. To come back, open *Launcher* in the Kindle library.
-- **Sleep.** The power button and the cover work as usual. With Settings › Sleep screen set to the launcher's own,
-  PNG files in `launcher/screensavers/` are shown in turn.
+- **Sleep.** The power button and the cover work as usual. Choose **Rotate sleep pictures** under
+  **Display › Wallpaper › Sleep Screen** to show PNGs from `launcher/screensavers/` in turn while Launcher is open.
 - **KOReader** runs through `launcher/run-koreader.sh`, so leaving it returns to the launcher.
 
-Your settings live in `launcher/settings.txt`, `launcher/launcher-preferences.txt`, and `launcher/apps.toml`.
+Your settings live in `launcher/settings.txt`, `launcher/launcher-preferences.txt`, `launcher/wallpaper-settings.txt`,
+and `launcher/apps.toml`.
 Battery history stays on the Kindle in `launcher/battery-history.txt`. The log is `launcher/log-launcher.txt`.
 
 </details>

@@ -2,8 +2,8 @@
 # Most of this can also be done on the Kindle: long-press an app to move it, change its icon (PNG files in
 # /mnt/us/launcher/icons) or hide it; Settings > Hidden apps shows them again. The launcher then rewrites
 # this file (comments are not kept). KUAL extensions (/mnt/us/extensions/*/menu.json) appear behind the
-# Extensions tile. Sleep pictures: PNG files in /mnt/us/launcher/screensavers, with Settings > Sleep screen
-# set to the launcher's own.
+# Extensions tile. To choose a PNG from /mnt/us/launcher/wallpapers, use Settings > Display > Wallpaper.
+# Sleep Screen also offers rotation through PNG files in /mnt/us/launcher/screensavers.
 # Scriptlets in /mnt/us/documents appear without any entry here. Use entries to add other programs,
 # rename, reorder, hide, or set an icon (a PNG; square looks best: icons are rounded squares).
 

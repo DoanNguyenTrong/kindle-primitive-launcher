@@ -756,6 +756,9 @@ trap 'log "supervisor exit (status $?)"' EXIT
 crashes=""
 store_open_pending=no
 refresh_mode=verify
+# Only the initial launcher after the boot guard may draw a startup wallpaper.
+startup_wallpaper=${KL_SHOW_STARTUP_WALLPAPER:-0}
+unset KL_SHOW_STARTUP_WALLPAPER
 while :; do
     update_begin || break
     if ! refresh_files "$refresh_mode"; then
@@ -771,8 +774,9 @@ while :; do
     launch_started=$(date +%s)
     echo "$launch_started" > "$RUN/heartbeat"
     rm -f "$RUN/next" "$UPDATE_READY"
-    KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
+    KL_SHOW_STARTUP_WALLPAPER=$startup_wallpaper KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
     lp=$!
+    startup_wallpaper=0
     echo "$lp" > "$LAUNCHER_PID"
     if [ "$store_open_pending" = yes ]; then
         # Open either exits directly into the app runner or reaches the launcher grid and its heartbeat.

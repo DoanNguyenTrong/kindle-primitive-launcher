@@ -1,14 +1,17 @@
 //! Desktop driver: draws the launcher's screens to PNG files for review, with the same core and renderer
 //! as the Kindle build. No device calls.
 //!
-//!   kl-desktop --documents DIR [--config apps.toml] [--fonts DIR] --out DIR
+//!   kl-desktop --documents DIR [--config apps.toml] [--fonts DIR] [--wallpaper FILE.png] --out DIR
 //!   kl-desktop --launcher-icon FILE.png [--fonts DIR]
 //!
 //! Screens written: home (each page), pressed tile, settings, confirm, sleep.
 
 use std::{fs, path::PathBuf};
 
-use kl_core::{discover, Config, Input, Layout, Rotation, Status, Ui};
+use kl_core::{
+    discover, Config, Input, Layout, Rotation, Screen, Status, Ui,
+    wallpaper::{WallpaperChoice, WallpaperSettings, WallpaperTarget},
+};
 use kl_render::Renderer;
 
 const W: u32 = 1264;
@@ -109,13 +112,38 @@ fn main() {
     ui.device_profile = Some("Kindle Oasis 3".into());
     ui.managed_count = Some(ui.apps().iter().filter(|app| matches!(app.launch, kl_core::Launch::Script { .. })).count());
     ui.set_extensions(extensions);
-    let status = demo_status();
+    let wallpaper_path = arg(&args, "--wallpaper").map(PathBuf::from);
+    let status = Status { sleep_launcher: wallpaper_path.is_some(), ..demo_status() };
     let shot = |r: &mut Renderer, ui: &Ui, name: &str| {
         let t = std::time::Instant::now();
         let gray = r.draw(ui, &status);
         eprintln!("{name}: drawn in {} ms", t.elapsed().as_millis());
         write_png(&out.join(format!("{name}.png")), W, H, &gray);
     };
+    if let Some(path) = wallpaper_path {
+        let png = fs::read(&path).expect("read wallpaper PNG");
+        let filename = path.file_name().unwrap().to_string_lossy().into_owned();
+        let choice = WallpaperChoice::File(filename.clone());
+        ui.set_wallpapers(WallpaperSettings {
+            images: vec![filename], home: choice.clone(), sleep: choice,
+            ..WallpaperSettings::default()
+        });
+        renderer.set_home_wallpaper(Some(kl_render::image::wallpaper_tile(&png, W, H).expect("decode Home wallpaper")));
+        shot(&mut renderer, &ui, "home-wallpaper");
+        let dark = Status { dark_mode: true, ..status.clone() };
+        write_png(&out.join("dark-home-wallpaper.png"), W, H, &renderer.draw(&ui, &dark));
+        renderer.set_home_wallpaper(None);
+        ui.screen = Screen::WallpaperPicker(WallpaperTarget::Sleep);
+        shot(&mut renderer, &ui, "settings-wallpaper-picker");
+        let picture = kl_render::image::picture_tile(&png, W, H).expect("decode Sleep and Startup wallpaper");
+        write_png(&out.join("startup-wallpaper.png"), W, H, &picture.pixels);
+        renderer.set_sleep_image(Some(picture));
+        ui.handle(Input::Sleep);
+        shot(&mut renderer, &ui, "sleep-wallpaper");
+        renderer.set_sleep_image(None);
+        ui.handle(Input::Wake);
+        ui.screen = Screen::Home;
+    }
     for page in 0..ui.pages() {
         ui.page = page;
         shot(&mut renderer, &ui, &format!("home-{}", page + 1));
