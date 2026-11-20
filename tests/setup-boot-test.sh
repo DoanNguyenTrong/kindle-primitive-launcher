@@ -126,5 +126,23 @@ check "interrupted mirror write: strict failure" "$?" "1"
 check "interrupted mirror write: launcher kept" "$(cat "$M/kl-launcher")" "launcher 2"
 check "interrupted mirror write: temporary copy removed" "$([ -e "$M/kl-launcher.new" ] && echo yes || echo no)" "no"
 
+# A new launcher replaces the whole copy: a stale file from the old install goes, the SSH host key stays, and no
+# temporary folder is left behind.
+echo "host key" > "$M/ssh/dropbear_ed25519_host_key"
+echo "leftover" > "$M/old-component.txt"
+echo "launcher 3" > "$DIR/kl-launcher"
+BEFORE=$(grep -c "replaced the boot copy" "$LOG")
+KL_SETUP_BOOT_STRICT=0 sh "$SETUP" "$DIR"
+check "replace: new launcher copied" "$(cat "$M/kl-launcher")" "launcher 3"
+check "replace: stale file removed" "$([ -e "$M/old-component.txt" ] && echo yes || echo no)" "no"
+check "replace: host key kept" "$(cat "$M/ssh/dropbear_ed25519_host_key")" "host key"
+check "replace: no temporary folders left" "$(ls "$ROOT" | grep -c '^mirror\.')" "0"
+check "replace: replacement logged" "$(( $(grep -c 'replaced the boot copy' "$LOG") - BEFORE ))" "1"
+
+# Nothing differs: the folder is not replaced (same directory).
+INO=$(ls -di "$M" | awk '{print $1}')
+sh "$SETUP" "$DIR"
+check "unchanged: folder not replaced" "$(ls -di "$M" | awk '{print $1}')" "$INO"
+
 echo "setup-boot tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
