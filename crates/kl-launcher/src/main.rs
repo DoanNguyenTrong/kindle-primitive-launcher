@@ -9,6 +9,7 @@
 //!   KL_DOCUMENTS  /mnt/us/documents   scriptlets
 
 mod bootstrap;
+mod clock_sync;
 mod management;
 mod power;
 mod transfer;
@@ -26,6 +27,7 @@ use std::{
 };
 
 use kl_core::store_open;
+use kl_core::layout::Page;
 use kl_core::{discover, Action, App, Config, DeviceCmd, Input, Launch, Layout, Screen, Settings, Status, Ui};
 use kl_render::Renderer;
 
@@ -383,6 +385,7 @@ fn main() {
     let mut bootstrapping_store = None;
     let mut mark_trial_ready = update_trial;
     let mut transfer_session = None;
+    let mut clock_sync = None::<clock_sync::ClockSync>;
 
     loop {
         if mark_trial_ready && display.has_presented_frame() {
@@ -471,6 +474,17 @@ fn main() {
             Ev::Tick => {
                 let now = now_secs();
                 let _ = write_atomic(&run.join("heartbeat"), &now.to_string());
+                let clock_sync_result = clock_sync.as_mut().and_then(clock_sync::ClockSync::poll);
+                if let Some(result) = clock_sync_result {
+                    clock_sync = None;
+                    ui.clock_syncing = false;
+                    if result.is_ok() {
+                        power.break_history();
+                    }
+                    if ui.screen == Screen::Page(Page::DateTime) {
+                        ui.notice = Some(result.err().unwrap_or("Clock synchronized.").into());
+                    }
+                }
                 // Screens with the status bar re-read battery, charging, Wi-Fi and the clock every tick (5 s) and
                 // redraw only when the bar would show something new.
                 let shown = matches!(ui.screen, Screen::Home | Screen::QuickSettings | Screen::AppMenu | Screen::ConfirmKindle);
@@ -485,8 +499,12 @@ fn main() {
                         status.bar_differs(&fresh) || (ui.screen == Screen::QuickSettings
                             && (status.system != fresh.system || status.display_differs(&fresh)))
                     } else {
-                        status.settings_differs(&fresh) || (ui.screen == Screen::Page(kl_core::layout::Page::Battery)
+                        status.settings_differs(&fresh) || (ui.screen == Screen::Page(Page::Battery)
                             && (status.power != fresh.power || history_changed))
+                            || (ui.screen == Screen::Page(Page::DateTime) && (clock_sync_result.is_some()
+                                || status.clock != fresh.clock || status.date != fresh.date
+                                || status.clock_year != fresh.clock_year || status.utc_offset != fresh.utc_offset
+                                || status.clock_sync_available != fresh.clock_sync_available))
                     };
                     let warned = ui.set_battery(fresh.battery, fresh.charging);
                     status = fresh;
@@ -507,6 +525,10 @@ fn main() {
                 }
             }
             Ev::Usb(usb) => {
+                if usb == kl_core::Usb::Drive && clock_sync.take().is_some() {
+                    ui.clock_syncing = false;
+                    ui.notice = Some("Eject the Kindle drive to sync the clock.".into());
+                }
                 if usb == ui.usb {
                     Action::None
                 } else {
@@ -549,6 +571,10 @@ fn main() {
                 }
                 if input == Input::Sleep && ui.screen != Screen::Sleep {
                     power.break_history();
+                    if clock_sync.take().is_some() {
+                        ui.clock_syncing = false;
+                        ui.notice = Some("Clock sync stopped when the Kindle went to sleep.".into());
+                    }
                 }
                 // The launcher's own sleep screen: the next picture from the screensavers folder, if any.
                 if input == Input::Sleep && settings.sleep_screen_launcher && ui.screen != Screen::Sleep {
@@ -776,6 +802,45 @@ fn main() {
                 std::process::exit(EXIT_KINDLE_UI);
             }
             Action::Device(cmd) => {
+                if cmd == DeviceCmd::RefreshTimeZone {
+                    device::refresh_clock(&mut status);
+                    ui.notice = Some(if status.utc_offset.is_some() {
+                        "Time zone read from Kindle."
+                    } else {
+                        "Could not read the Kindle’s time zone."
+                    }.into());
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
+                }
+                if cmd == DeviceCmd::SyncClock {
+                    let problem = if from_mirror || device::usb_state() == kl_core::Usb::Drive {
+                        Some("Eject the Kindle drive before syncing the clock.")
+                    } else if bootstrapping_store.is_some() || (update_trial && run.join("launcher-update-driver").exists()) {
+                        Some("Wait for installation to finish before syncing the clock.")
+                    } else if !status.clock_sync_available {
+                        Some("Clock sync is unavailable on this firmware.")
+                    } else if !status.wifi_on || status.wifi_state != "connected" {
+                        Some("Connect to Wi-Fi before syncing the clock.")
+                    } else {
+                        None
+                    };
+                    if let Some(problem) = problem {
+                        ui.notice = Some(problem.into());
+                    } else if clock_sync.is_none() {
+                        match clock_sync::ClockSync::start() {
+                            Ok(job) => {
+                                clock_sync = Some(job);
+                                ui.clock_syncing = true;
+                            }
+                            Err(error) => {
+                                log(&format!("clock sync: {error}"));
+                                ui.notice = Some("Could not start clock sync.".into());
+                            }
+                        }
+                    }
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
+                }
                 if matches!(cmd, DeviceCmd::StoreToggleDailyCheck | DeviceCmd::StoreClearCache) {
                     ui.notice = if from_mirror || device::usb_state() == kl_core::Usb::Drive {
                         Some("Eject the Kindle drive before changing Store settings.".into())
@@ -1020,6 +1085,7 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         | DeviceCmd::ToggleHighContrast
         | DeviceCmd::ToggleAnimation
         | DeviceCmd::ToggleDarkMode => {}
+        DeviceCmd::SyncClock | DeviceCmd::RefreshTimeZone => {}
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::ToggleSleepScreen => {
             settings.sleep_screen_launcher = !settings.sleep_screen_launcher;

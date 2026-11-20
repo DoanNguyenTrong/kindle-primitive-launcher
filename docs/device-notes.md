@@ -251,3 +251,11 @@ device gives it:
 Decision: the store uses the firmware version, the architecture (`armhf`, from `/lib/ld-linux-armhf.so.3`) and the device
 type name. Identifiers (serial number, Wi-Fi MAC) are read only where a check needs them, and their values are never
 written to a file, a log or a commit.
+
+## Screen recovery on Launcher 0.4.10 (20 November 2026)
+
+The owner reported a stale image and unresponsive touch. The Launcher heartbeat advanced, the touchscreen
+was open, and the running Launcher logged gestures after a supervised restart. The stale image persisted
+when the stock Kindle Library became active. A normal Kindle restart restored the Library, and the owner
+verified that touch also opened Settings from the existing Launcher. The cause of the stale frame remains
+unconfirmed. Normal sleep was enabled before the device restart.

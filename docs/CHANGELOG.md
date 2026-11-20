@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.5.1
+
+- Add Date and time with an on-demand Wi-Fi clock sync and the Kindle's current time zone.
+
 ## 0.5.0
 
 - Add Battery with charge state, local 24-hour history, and an opt-in Low power mode.

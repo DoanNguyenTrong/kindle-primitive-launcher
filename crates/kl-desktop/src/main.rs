@@ -37,6 +37,9 @@ fn demo_status() -> Status {
     Status {
         clock: "10:42".into(),
         date: "Tue 17 Nov".into(),
+        clock_year: Some(2026),
+        utc_offset: Some(7 * 3600),
+        clock_sync_available: true,
         battery: Some(78),
         charging: false,
         power: Reading { percent: Some(78), source: Source::OnBattery },
