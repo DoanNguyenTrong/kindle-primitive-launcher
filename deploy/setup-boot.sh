@@ -31,62 +31,6 @@ copy() {
     fi
 }
 
-# The copy on /var/local is the launcher folder's copy when every file on the boot list is the same as there.
-mirror_current() {
-    [ -d "$M" ] || return 1
-    for f in $mirror_files; do
-        [ -f "$DIR/$f" ] || continue
-        cmp -s "$DIR/$f" "$M/$f" 2>/dev/null || return 1
-    done
-    return 0
-}
-
-# Replace the whole copy on /var/local, as a fresh install does: a new copy is built beside the old one and checked,
-# then the two are swapped and the old one is removed. The SSH host key comes from the old copy, so computers that
-# already trust the Kindle are not warned about a new key. Until the swap the old copy stays, so a failure leaves the
-# boot as it was.
-replace_mirror() {
-    N=$M.next
-    rm -rf "$N"
-    if ! mkdir -p "$N/fonts" "$N/ssh/bin" "$N/ssh/lib"; then
-        log "boot copy not replaced: cannot create $N"
-        return 1
-    fi
-    for f in $mirror_files; do
-        copy "$DIR/$f" "$N/$f"
-    done
-    if [ -f "$M/ssh/dropbear_ed25519_host_key" ]; then
-        if ! cat "$M/ssh/dropbear_ed25519_host_key" > "$N/ssh/dropbear_ed25519_host_key"; then
-            rm -rf "$N"
-            log "boot copy not replaced: the SSH host key could not be kept"
-            return 1
-        fi
-    fi
-    for f in $mirror_files; do
-        [ -f "$DIR/$f" ] || continue
-        if ! cmp -s "$DIR/$f" "$N/$f"; then
-            rm -rf "$N"
-            log "boot copy not replaced: $f did not copy"
-            return 1
-        fi
-    done
-    sync
-    if [ -d "$M" ] && ! mv "$M" "$M.old"; then
-        rm -rf "$N"
-        log "boot copy not replaced: the old copy could not be moved aside"
-        return 1
-    fi
-    if mv "$N" "$M"; then
-        rm -rf "$M.old"
-        log "replaced the boot copy in $M"
-        return 0
-    fi
-    [ -d "$M.old" ] && mv "$M.old" "$M"
-    rm -rf "$N"
-    log "boot copy not replaced: $M"
-    return 1
-}
-
 mirror_has_space() {
     free=$(df -Pk "$M" | awk 'NR == 2 { print $4 }')
     case "$free" in ''|*[!0-9]*) return 1 ;; esac
@@ -107,15 +51,15 @@ mirror_has_space() {
     done
 }
 
+mkdir -p "$M/fonts" "$M/ssh/bin" "$M/ssh/lib" 2>/dev/null || failed=1
 if [ "$strict" = 1 ] && ! mirror_has_space; then
     log "cannot stage the Launcher boot copy: check free space in $M"
     exit 1
 fi
-# Any difference replaces the whole copy (a first start after a USB install, or an update). A USB install may have
-# no host key yet: the copy keeps the one it has, and the mirror generates one when SSH first starts.
-if ! mirror_current; then
-    replace_mirror || failed=1
-fi
+# A USB install may have no host key yet. The mirror generates one when SSH first starts.
+for f in $mirror_files; do
+    copy "$DIR/$f" "$M/$f"
+done
 for f in kl-launcher supervisor.sh boot.sh ssh.sh ssh/bin/dropbear; do
     [ ! -f "$M/$f" ] || chmod 755 "$M/$f" 2>/dev/null || failed=1
 done
