@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use kl_core::{Input, Rect, Rotation};
+use kl_core::{Input, Rotation};
 use kl_kindle::{log, Ev};
 
 /// How long the supervisor gets to start the app before the request is sent again, and before the launcher gives up.
@@ -95,11 +95,23 @@ pub fn freeze(run: &Path, on: bool) {
 /// `# Wake: redraw` gets the signal (the supervisor marks it with `run/app-redraws`): SIGUSR1 ends any other process.
 /// Returns whether the app was asked.
 pub fn ask_redraw(run: &Path) -> bool {
-    if !run.join("app-redraws").exists() {
+    if !can_redraw(run) {
         return false;
     }
     signal_app(run, libc::SIGUSR1);
     true
+}
+
+/// The app declares `# Wake: redraw`: it draws its whole screen again on SIGUSR1, in the current theme.
+pub fn can_redraw(run: &Path) -> bool {
+    run.join("app-redraws").exists()
+}
+
+/// The app's screen as it will look in the other theme: dark mode is the whole screen inverted.
+pub fn in_other_theme(picture: &mut [u8]) {
+    for px in picture.iter_mut() {
+        *px = 255 - *px;
+    }
 }
 
 /// Signal the app's process group (the supervisor starts apps in their own group), or the app alone without one.
@@ -122,29 +134,13 @@ pub fn opens_quick_settings(input: Input, status_bottom: i32) -> bool {
         if dy > 150.0 && dy.abs() > dx.abs() * 1.5 && start_y <= status_bottom as f32 + 40.0)
 }
 
-/// Draw the app under a system panel: every pixel of `frame` (upright) outside `panel` comes from `saved` (the app's
-/// screen in panel orientation), so the panel floats over the app instead of over the home screen.
-pub fn app_under(frame: &mut [u8], saved: &[u8], width: usize, panel: Rect, rotation: Rotation, fb_turn: u32) {
-    if frame.len() != saved.len() || width == 0 {
-        return;
-    }
-    // The panel orientation is upright or a half turn; a half turn is its own inverse.
-    let upright: Vec<u8> = if (rotation.turn() + fb_turn) % 4 == 2 {
+/// The app's screen upright, from the panel's memory (`saved`): the panel is upright or a half turn, and a half turn
+/// is its own inverse. The renderer draws the system's pop-ups over it (`Renderer::set_backdrop`).
+pub fn upright(saved: &[u8], rotation: Rotation, fb_turn: u32) -> Vec<u8> {
+    if (rotation.turn() + fb_turn) % 4 == 2 {
         saved.iter().rev().copied().collect()
     } else {
         saved.to_vec()
-    };
-    let rows = frame.len() / width;
-    let (x0, x1) = (panel.x.clamp(0, width as i32) as usize, panel.right().clamp(0, width as i32) as usize);
-    let (y0, y1) = (panel.y.clamp(0, rows as i32) as usize, panel.bottom().clamp(0, rows as i32) as usize);
-    for y in 0..rows {
-        let row = y * width..(y + 1) * width;
-        if y < y0 || y >= y1 {
-            frame[row.clone()].copy_from_slice(&upright[row]);
-        } else {
-            frame[y * width..y * width + x0].copy_from_slice(&upright[y * width..y * width + x0]);
-            frame[y * width + x1..(y + 1) * width].copy_from_slice(&upright[y * width + x1..(y + 1) * width]);
-        }
     }
 }
 
@@ -153,22 +149,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_app_shows_outside_the_panel_and_the_panel_stays() {
-        let width = 4;
-        let mut frame = vec![1u8; 16];
-        let saved = vec![9u8; 16];
-        app_under(&mut frame, &saved, width, Rect { x: 0, y: 0, w: 4, h: 2 }, Rotation::Upright, 0);
-        assert_eq!(&frame[..8], &[1u8; 8], "the panel (top two rows) is the launcher's");
-        assert_eq!(&frame[8..], &[9u8; 8], "below the panel is the app");
+    fn upright_keeps_an_upright_panel_and_turns_a_half_turned_one() {
+        assert_eq!(upright(&[1, 2, 3, 4], Rotation::Upright, 0), vec![1, 2, 3, 4]);
+        assert_eq!(upright(&[1, 2, 3, 4], Rotation::UpsideDown, 0), vec![4, 3, 2, 1]);
+        assert_eq!(upright(&[1, 2, 3, 4], Rotation::UpsideDown, 2), vec![1, 2, 3, 4], "two half turns cancel");
     }
 
     #[test]
-    fn a_half_turn_puts_the_app_back_upright() {
-        let width = 2;
-        let mut frame = vec![0u8; 4];
-        let saved = vec![1, 2, 3, 4];
-        app_under(&mut frame, &saved, width, Rect { x: 0, y: 0, w: 0, h: 0 }, Rotation::UpsideDown, 0);
-        assert_eq!(frame, vec![4, 3, 2, 1]);
+    fn the_other_theme_is_the_picture_inverted() {
+        let mut picture = vec![0u8, 17, 255];
+        in_other_theme(&mut picture);
+        assert_eq!(picture, vec![255, 238, 0]);
     }
 
     #[test]

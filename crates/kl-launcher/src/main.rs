@@ -603,6 +603,7 @@ fn main() {
             Ev::AppEnded => {
                 if app_session.take().is_some() {
                     log("system layer: the app ended; the launcher takes the screen back");
+                    renderer.set_backdrop(None);
                     input::grab_touch(false);
                     display.set_paused(false);
                     ui.pressed = None;
@@ -630,6 +631,11 @@ fn main() {
                         input::grab_touch(true);
                     }
                     session.saved = Some(display.snapshot().unwrap_or_default());
+                    // Every system pop-up over the app is drawn over the app's screen, not the home screen.
+                    renderer.set_backdrop(
+                        session.saved.as_deref().filter(|s| !s.is_empty())
+                            .map(|s| system_layer::upright(s, settings.rotation, display.fb_turn())),
+                    );
                     session.dark_mode_at_open = settings.dark_mode;
                     display.set_paused(false);
                     log(&format!("system layer: {} over the app", if opens { "quick settings" } else { "sleep" }));
@@ -646,9 +652,7 @@ fn main() {
                 }
                 // A key of the keyboard is drawn as pressed before its action runs: the tap is seen at once.
                 if ui.press_feedback(input) {
-                    let mut frame = renderer.draw(&ui, &status);
-                    app_under_panel(&mut frame, &app_session, &ui, &settings, display.fb_turn());
-                    display.show(frame, &settings, false);
+                    display.show(renderer.draw(&ui, &status), &settings, false);
                 }
                 let before = ui.screen;
                 ui.display_support = status.display_support;
@@ -703,13 +707,17 @@ fn main() {
             Some(session) if !session.in_front() && ui.screen == Screen::Home => {
                 let saved = session.saved.take().unwrap_or_default();
                 let theme_changed = settings.dark_mode != session.dark_mode_at_open;
-                let restored = !saved.is_empty();
+                let app_redraws = system_layer::can_redraw(&run);
+                // After a theme change an app that redraws draws itself in the new theme: putting its old screen back
+                // first would be one more full update, showing the wrong theme.
+                let restored = !saved.is_empty() && !(theme_changed && app_redraws);
                 if restored {
                     display.restore(saved);
                 }
                 display.set_paused(true);
                 input::grab_touch(false);
                 ui.pressed = None;
+                renderer.set_backdrop(None);
                 system_layer::freeze(&run, false);
                 if (theme_changed || !restored) && !system_layer::ask_redraw(&run) && !restored {
                     log("system layer: the screen could not be saved and the app cannot redraw");
@@ -752,9 +760,7 @@ fn main() {
                 if full {
                     status = device::status(&settings);
                 }
-                let mut frame = renderer.draw(&ui, &status);
-                app_under_panel(&mut frame, &app_session, &ui, &settings, display.fb_turn());
-                display.show(frame, &settings, full);
+                display.show(renderer.draw(&ui, &status), &settings, full);
             }
             Action::Launch(mut app) => {
                 if bootstrapping_store.is_some() {
@@ -1080,6 +1086,19 @@ fn main() {
                             Err(error) => Some(format!("Could not save appearance settings. {error}")),
                         }
                     };
+                    // Over an app that follows the theme, the app under the panel is shown in the new theme at once
+                    // (its picture inverted), so this one update shows the whole screen as it will be.
+                    if cmd == DeviceCmd::ToggleDarkMode {
+                        if let Some(session) = app_session.as_ref() {
+                            if let Some(saved) = session.saved.as_deref().filter(|s| !s.is_empty()) {
+                                let mut picture = system_layer::upright(saved, settings.rotation, display.fb_turn());
+                                if settings.dark_mode != session.dark_mode_at_open && system_layer::can_redraw(&run) {
+                                    system_layer::in_other_theme(&mut picture);
+                                }
+                                renderer.set_backdrop(Some(picture));
+                            }
+                        }
+                    }
                     display.show(renderer.draw(&ui, &status), &settings, cmd != DeviceCmd::ToggleAnimation);
                     continue;
                 }
@@ -1129,14 +1148,6 @@ fn wait_screen(dir: &Path, run: &Path, settings: &Settings) {
         display.show_region(frame, area, settings);
         thread::sleep(Duration::from_millis(1500));
         step += 1;
-    }
-}
-
-/// Over an app, quick settings floats over the app's saved screen rather than over the home screen.
-fn app_under_panel(frame: &mut [u8], app: &Option<system_layer::AppSession>, ui: &Ui, settings: &Settings, fb_turn: u32) {
-    let Some(saved) = app.as_ref().and_then(|s| s.saved.as_deref()) else { return };
-    if !saved.is_empty() && ui.screen == Screen::QuickSettings {
-        system_layer::app_under(frame, saved, W as usize, ui.layout.quick_panel(), settings.rotation, fb_turn);
     }
 }
 
