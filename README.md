@@ -107,6 +107,16 @@ The screenshots are from the desktop build of the same code, with demo values. T
     <td align="center"><img src="docs/images/settings-device.png" alt="Device settings" width="240"><br><sub>Device settings</sub></td>
     <td align="center"><img src="docs/images/usb-drive.png" alt="USB drive mode" width="240"><br><sub>USB drive mode, with the cable</sub></td>
   </tr>
+  <tr>
+    <td align="center"><img src="docs/images/settings-battery.png" alt="Battery level, power mode, and 24-hour history" width="240"><br><sub>Battery</sub></td>
+    <td align="center"><img src="docs/images/settings-accessibility-larger.png" alt="Accessibility with larger text and higher contrast enabled" width="240"><br><sub>Accessibility</sub></td>
+    <td align="center"><img src="docs/images/settings-storage.png" alt="User storage used and free, with app and Store links" width="240"><br><sub>Storage</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/settings-apps.png" alt="App management and home screen grid controls" width="240"><br><sub>Apps</sub></td>
+    <td align="center"><img src="docs/images/settings-app-visibility.png" alt="Individual home screen visibility switches" width="240"><br><sub>App visibility</sub></td>
+    <td align="center"><img src="docs/images/settings-about.png" alt="Device profile, firmware, and USB status" width="240"><br><sub>Device information</sub></td>
+  </tr>
 </table>
 
 ## Highlights
@@ -130,8 +140,8 @@ The screenshots are from the desktop build of the same code, with demo values. T
 | Kindle Oasis 3 (1264 × 1680, firmware 5.18.2) | ✅ Verified on hardware |
 | Other Kindle models | 🛠️ Not supported yet |
 
-**Current version: 0.4.6.** Each device build is a new patch version; each phase starts a new minor version.
-Hardware observations are in the [device notes](docs/device-notes.md).
+The published Launcher version is **0.4.10**. This branch contains the **0.5.0** settings update. Earlier Oasis 3
+results are recorded in the [device notes](docs/device-notes.md). The new settings are ready for desktop review.
 
 ## Limits
 
@@ -164,14 +174,21 @@ The milestones and their checklists are in the [plan](docs/03-plan.md).
   `launcher/apps.toml` (see `launcher/apps.toml.example`).
 - **Pages.** Swipe left or right, or use the page buttons. The dots at the bottom show the page.
 - **Edit.** Long-press an app: Move earlier, Move later, Change icon (PNG files in `launcher/icons/`), Hide.
-  Settings › Hidden apps shows them again.
+  **Settings › Apps › App visibility** shows every app that can be hidden. **Show all** restores the hidden entries.
 - **Settings.** Tap the status bar or the Settings icon.
+- **Battery.** See the charge level, power state, and observed battery history. Enabling **Low power mode**
+  dims a bright front light and defers automatic checks in Store 0.1.5 and later.
+- **Appearance.** Display and Quick Settings use the same light and warmth controls. Accessibility offers larger
+  text, higher contrast, and opening animation.
+- **Manage apps.** From **Settings › Apps**, choose grid dimensions, change app visibility, or open the installed
+  list in Store. **Settings › Storage** shows user-space usage and links to app management and Store settings.
 - **Kindle UI.** Tap its icon and confirm. To come back, open *Launcher* in the Kindle library.
 - **Sleep.** The power button and the cover work as usual. With Settings › Sleep screen set to the launcher's own,
   PNG files in `launcher/screensavers/` are shown in turn.
 - **KOReader** runs through `launcher/run-koreader.sh`, so leaving it returns to the launcher.
 
-Your settings live in `launcher/settings.txt` and `launcher/apps.toml`. The log is `launcher/log-launcher.txt`.
+Your settings live in `launcher/settings.txt`, `launcher/launcher-preferences.txt`, and `launcher/apps.toml`.
+Battery history stays on the Kindle in `launcher/battery-history.txt`. The log is `launcher/log-launcher.txt`.
 
 </details>
 

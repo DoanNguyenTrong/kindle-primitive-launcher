@@ -83,8 +83,34 @@ echo "launcher run: $code" >> "$STATE/calls"
 echo "launcher says hello $code"
 [ -p /dev/fd/1 ] && echo "launcher stdout is a pipe" >> "$STATE/calls"
 case "$code" in
+    settings-write)
+        [ "$KL_LAUNCHER_USB_LEASE" = 1 ] || exit 3
+        mailbox=$KL_RUN/launcher-usb
+        # Ask for the same write/idle sequence used by Launcher Settings.
+        printf '%s 1 write\n' "$$" > "$mailbox/store-storage-request.tmp"
+        mv "$mailbox/store-storage-request.tmp" "$mailbox/store-storage-request"
+        for i in 1 2 3 4 5; do
+            [ "$(cat "$mailbox/store-storage-reply" 2>/dev/null)" != "$$ 1 paused" ] || break
+            sleep 1
+        done
+        [ "$(cat "$mailbox/store-storage-reply" 2>/dev/null)" = "$$ 1 paused" ] || exit 3
+        grep -q 'State:.*T (stopped)' "$KL_STORE_USB_PROC/42/status" || exit 3
+        echo "settings write had the lease" >> "$STATE/calls"
+        printf '%s 2 idle\n' "$$" > "$mailbox/store-storage-request.tmp"
+        mv "$mailbox/store-storage-request.tmp" "$mailbox/store-storage-request"
+        for i in 1 2 3 4 5; do
+            if grep -q 'State:.*S (sleeping)' "$KL_STORE_USB_PROC/42/status"; then
+                echo "settings released the lease while open" >> "$STATE/calls"
+                exit 0
+            fi
+            sleep 1
+        done
+        exit 3
+        ;;
     10) printf '%s\nscript\n%s\n' "$STATE" "$STATE/app.sh" > "$KL_RUN/next"; exit 10 ;;
     store) printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/Store.sh" > "$KL_RUN/next"; exit 10 ;;
+    store-installed) printf '%s\nscript\n%s\ninstalled\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/Store.sh" > "$KL_RUN/next"; exit 10 ;;
+    other-installed) printf '%s\nscript\n%s\ninstalled\n' "$STATE" "$STATE/app.sh" > "$KL_RUN/next"; exit 10 ;;
     native) printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/Native App.sh" > "$KL_RUN/next"; exit 10 ;;
     open-request)
         if [ -f "$KL_RUN/store-open" ]; then
@@ -223,6 +249,15 @@ check "framework running at the end" '[ "$(cat "$STATE/fw")" = running ]'
 check "volumd resumed" 'grep -q "killall -CONT volumd" "$STATE/calls"'
 check "markers removed" '[ ! -f "$KL_RUN/framework-stopped" ] && [ ! -f "$KL_RUN/volumd-paused" ] && [ ! -f "$KL_RUN/supervisor.pid" ]'
 check "binary copied to run" '[ -x "$KL_RUN/kl-launcher" ]'
+teardown
+
+echo "test: settings writes hold a short storage lease while Launcher stays open"
+setup
+printf 'settings-write\n' > "$STATE/codes"
+run_sup
+check "Launcher used the existing storage handshake" 'grep -qx "settings write had the lease" "$STATE/calls"'
+check "volumd resumed before Launcher exited" 'grep -qx "settings released the lease while open" "$STATE/calls"'
+check "no stale lease records" '[ ! -f "$KL_RUN/launcher-usb/held" ] && [ ! -f "$KL_RUN/launcher-usb/store-storage-request" ]'
 teardown
 
 echo "test: the holder runs while the framework is stopped, and stops before the UI returns"
@@ -515,6 +550,21 @@ EOF
 printf 'store\nopen-refused\n' > "$STATE/codes"
 run_sup
 check "a fresh grid heartbeat releases the inherited pause" 'grep -q "launcher grid restored USB" "$STATE/calls"'
+teardown
+
+echo "test: Apps settings passes the Installed destination only to its Store launch"
+setup
+cat > "$KL_DOCUMENTS/Store.sh" <<'EOF'
+printf 'store destination [%s]\n' "$KL_STORE_START_TAB" >> "$STATE/calls"
+EOF
+cat > "$STATE/app.sh" <<'EOF'
+printf 'other destination [%s]\n' "$KL_STORE_START_TAB" >> "$STATE/calls"
+EOF
+printf 'store-installed\nstore\nother-installed\n0\n' > "$STATE/codes"
+run_sup
+check "canonical Store receives the installed destination" 'grep -Fqx "store destination [installed]" "$STATE/calls"'
+check "ordinary Store launch still starts without a destination" 'grep -Fqx "store destination []" "$STATE/calls"'
+check "another app receives no Store destination" 'grep -Fqx "other destination []" "$STATE/calls"'
 teardown
 
 echo "test: another app's Store request is cleared"

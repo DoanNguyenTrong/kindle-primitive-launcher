@@ -44,6 +44,7 @@ STORE_CHILD=$RUN/store-child.pid
 STORE_STORAGE_REQUEST=$RUN/store-storage-request
 STORE_STORAGE_REPLY=$RUN/store-storage-reply
 STORE_USB_PROC=${KL_STORE_USB_PROC:-/proc}
+LAUNCHER_USB=$RUN/launcher-usb
 NATIVE_APP_RUN=$RUN/native-app
 
 mkdir -p "$RUN"
@@ -301,29 +302,48 @@ store_storage_release() {
     [ -f "$UPDATE_JOURNAL" ] || volumd_resume
 }
 
+storage_request() {
+    storage_request_path=$2/store-storage-request
+    storage_reply_path=$2/store-storage-reply
+    [ -f "$storage_request_path" ] || return 0
+    read -r store_request_pid store_seq store_state store_extra < "$storage_request_path"
+    case "$store_seq" in ''|*[!0-9]*|??????????*) return 0 ;; esac
+    [ "$store_request_pid" = "$1" ] && [ -z "$store_extra" ] && [ "$store_seq" -gt "$store_seq_seen" ] || return 0
+    if [ "$3" = launcher ]; then
+        mkdir "$LAUNCHER_USB/handling" 2>/dev/null || return 0
+        if [ "$(cat "$LAUNCHER_PID" 2>/dev/null)" != "$1" ]; then
+            rmdir "$LAUNCHER_USB/handling"
+            return 0
+        fi
+    fi
+    store_seq_seen=$store_seq
+    case "$store_state" in
+        idle)
+            if [ "$3" != launcher ] || [ -f "$LAUNCHER_USB/held" ]; then
+                store_storage_release
+                [ "$3" != launcher ] || rm -f "$LAUNCHER_USB/held"
+            fi
+            ;;
+        write)
+            [ "$3" != launcher ] || : > "$LAUNCHER_USB/held"
+            if store_storage_pause; then
+                store_reply=paused
+            else
+                store_storage_release
+                [ "$3" != launcher ] || rm -f "$LAUNCHER_USB/held"
+                store_reply=unavailable
+            fi
+            printf '%s %s %s\n' "$1" "$store_seq" "$store_reply" > "$storage_reply_path.tmp" &&
+                mv "$storage_reply_path.tmp" "$storage_reply_path"
+            ;;
+    esac
+    [ "$3" != launcher ] || rmdir "$LAUNCHER_USB/handling"
+}
+
 store_storage_watch() {
     store_seq_seen=0
     while store_child_alive "$1"; do
-        if [ -f "$STORE_STORAGE_REQUEST" ]; then
-            read -r store_request_pid store_seq store_state store_extra < "$STORE_STORAGE_REQUEST"
-            case "$store_seq" in ''|*[!0-9]*|??????????*) store_seq=0 ;; esac
-            if [ "$store_request_pid" = "$1" ] && [ -z "$store_extra" ] && [ "$store_seq" -gt "$store_seq_seen" ]; then
-                store_seq_seen=$store_seq
-                case "$store_state" in
-                    idle) store_storage_release ;;
-                    write)
-                        if store_storage_pause; then
-                            store_reply=paused
-                        else
-                            store_storage_release
-                            store_reply=unavailable
-                        fi
-                        printf '%s %s %s\n' "$1" "$store_seq" "$store_reply" > "$STORE_STORAGE_REPLY.tmp" &&
-                            mv "$STORE_STORAGE_REPLY.tmp" "$STORE_STORAGE_REPLY"
-                        ;;
-                esac
-            fi
-        fi
+        storage_request "$1" "$RUN" "$2"
         if [ "$2" = native ]; then
             pause_us 100000
         else
@@ -523,6 +543,8 @@ update_accept() {
 # them changes. It is the record for a launcher that disappears during a USB session.
 usb_watch() {
     last=""
+    previous_lp=""
+    store_seq_seen=0
     while kill -0 "$1" 2>/dev/null; do
         cable=$(cat /sys/class/power_supply/max77796-charger/online 2>/dev/null)
         mounted=$(grep -c " /mnt/base-us " /proc/mounts 2>/dev/null)
@@ -530,6 +552,11 @@ usb_watch() {
         lp=$(cat "$LAUNCHER_PID" 2>/dev/null)
         lalive=no
         [ -n "$lp" ] && kill -0 "$lp" 2>/dev/null && lalive=yes
+        if [ "$lp" != "$previous_lp" ]; then
+            previous_lp=$lp
+            store_seq_seen=0
+        fi
+        [ "$lalive" != yes ] || storage_request "$lp" "$LAUNCHER_USB" launcher
         now="cable=$cable userstore=${mounted:-?} volumd=${vstate:-none} launcher=${lp:-none}/$lalive supervisor=$1"
         if [ "$now" != "$last" ]; then
             log "usb: $now"
@@ -537,6 +564,29 @@ usb_watch() {
         fi
         sleep 1
     done
+}
+
+launcher_storage_end() {
+    # The Launcher PID was removed. Let a request already being serviced finish before a
+    # separately supervised app can take over user storage.
+    launcher_usb_wait=0
+    while [ -d "$LAUNCHER_USB/handling" ] && [ "$launcher_usb_wait" -lt 10 ]; do
+        pause_us 100000
+        launcher_usb_wait=$((launcher_usb_wait + 1))
+    done
+    if [ -d "$LAUNCHER_USB/handling" ]; then
+        kill "$USB_MONITOR" 2>/dev/null
+        wait "$USB_MONITOR" 2>/dev/null
+        rmdir "$LAUNCHER_USB/handling"
+        usb_watch "$$" &
+        USB_MONITOR=$!
+    fi
+    if [ -f "$LAUNCHER_USB/held" ]; then
+        store_storage_release
+        rm -f "$LAUNCHER_USB/held"
+    fi
+    rm -f "$LAUNCHER_USB/store-storage-request" "$LAUNCHER_USB/store-storage-request.tmp" \
+        "$LAUNCHER_USB/store-storage-reply" "$LAUNCHER_USB/store-storage-reply.tmp"
 }
 
 watchdog() {
@@ -571,6 +621,7 @@ watchdog() {
 }
 
 finish() {
+    [ -z "${USB_MONITOR:-}" ] || kill "$USB_MONITOR" 2>/dev/null
     restore
     wait_screen_stop
     logger_stop
@@ -594,17 +645,22 @@ run_app() {
         store_storage_release
         return
     fi
-    { read -r adir; read -r kind; read -r arg; } < "$RUN/next"
+    # A fourth line may open a specific screen in the standalone Store.
+    { read -r adir; read -r kind; read -r arg; IFS= read -r start_tab || :; } < "$RUN/next"
     rm -f "$RUN/next" "$STORE_OPEN" "$STORE_OPEN.tmp"
     store_storage_clear
     store_can_open=0
     store_can_lease=0
+    store_start_tab=
     native_can_lease=0
     app_log=$LOG
     # Keep volumd paused through launch, and until a storage-aware app reports it is idle.
     volumd_pause
     if [ "$kind" = script ] && [ "$arg" = "$DOCUMENTS/Store.sh" ]; then
         store_can_open=1
+        if [ "$start_tab" = installed ] && [ -f "$arg" ] && [ ! -L "$arg" ]; then
+            store_start_tab=installed
+        fi
         # Only advertise idle USB when the Store cannot retain a descriptor on the flash log.
         if [ -p "$LOG_OUT" ]; then
             store_can_lease=1
@@ -628,6 +684,7 @@ run_app() {
         cd "$adir" 2>/dev/null || cd /mnt/us 2>/dev/null || cd /
         export PRIMITIVE_LAUNCHER=1 PRIMITIVE_FRAMEWORK=stopped KL_STORE_OPEN_APP="$store_can_open"
         export KL_STORE_USB_LEASE="$store_can_lease"
+        export KL_STORE_START_TAB="$store_start_tab"
         unset KL_NATIVE_APP_RUN
         if [ "$native_can_lease" -eq 1 ]; then
             export KL_NATIVE_APP_RUN="$NATIVE_APP_RUN"
@@ -687,7 +744,13 @@ else
 fi
 [ -f "$UPDATE_JOURNAL" ] || volumd_resume
 watchdog $$ &
+mkdir -p "$LAUNCHER_USB"
+rmdir "$LAUNCHER_USB/handling" 2>/dev/null
+rm -f "$LAUNCHER_USB/held"
+launcher_can_lease=0
+[ -d "$LAUNCHER_USB" ] && [ -p "$LOG_OUT" ] && launcher_can_lease=1
 usb_watch $$ &
+USB_MONITOR=$!
 trap 'log "supervisor exit (status $?)"' EXIT
 
 crashes=""
@@ -708,7 +771,7 @@ while :; do
     launch_started=$(date +%s)
     echo "$launch_started" > "$RUN/heartbeat"
     rm -f "$RUN/next" "$UPDATE_READY"
-    KL_LAUNCHER_UPDATE_TRIAL=$trial "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
+    KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
     lp=$!
     echo "$lp" > "$LAUNCHER_PID"
     if [ "$store_open_pending" = yes ]; then
@@ -739,6 +802,7 @@ while :; do
     wait "$lp"
     rc=$?
     rm -f "$LAUNCHER_PID"
+    launcher_storage_end
     if [ "$store_open_pending" = yes ]; then
         store_open_pending=no
         [ "$rc" -eq 10 ] || store_storage_release

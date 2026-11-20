@@ -32,11 +32,21 @@ fn fonts(dir: &str) -> Vec<String> {
 }
 
 fn demo_status() -> Status {
+    use kl_core::battery::{Reading, Sample, Source};
+    let now = 1_800_000_000;
     Status {
         clock: "10:42".into(),
         date: "Tue 17 Nov".into(),
         battery: Some(78),
         charging: false,
+        power: Reading { percent: Some(78), source: Source::OnBattery },
+        battery_now: now,
+        battery_history: [(19, 91, Source::OnBattery, true), (15, 74, Source::OnBattery, false),
+            (10, 67, Source::Charging, true), (8, 91, Source::Charging, false),
+            (4, 86, Source::OnBattery, false), (0, 78, Source::OnBattery, false)]
+            .into_iter().map(|(hours, percent, source, gap_before)| Sample {
+                observed_at: now - hours * 3600, percent, source, gap_before,
+            }).collect(),
         wifi_on: true,
         wifi_state: "connected".into(),
         wifi_signal: Some((4, 5)),
@@ -55,8 +65,9 @@ fn demo_status() -> Status {
         rotation: Rotation::Upright,
         memory: "MemAvailable 312 MB".into(),
         ip: "192.0.2.28".into(),
-        storage: "2.1 GB free".into(),
+        storage: "5.0 GB free".into(),
         system: primitive_quick::Stats { cpu: Some(12), ram: Some((180, 512)), storage: Some((1_100_000_000, 6_100_000_000)) },
+        ..Status::default()
     }
 }
 
@@ -91,6 +102,9 @@ fn main() {
     }
     let mut ui = Ui::new(apps, layout);
     ui.version = env!("CARGO_PKG_VERSION").to_string();
+    ui.firmware = Some("5.18.2".into());
+    ui.device_profile = Some("Kindle Oasis 3".into());
+    ui.managed_count = Some(ui.apps().iter().filter(|app| matches!(app.launch, kl_core::Launch::Script { .. })).count());
     ui.set_extensions(extensions);
     let status = demo_status();
     let shot = |r: &mut Renderer, ui: &Ui, name: &str| {
@@ -185,6 +199,14 @@ fn main() {
     ui.wifi_hidden = false;
     ui.network_name = primitive_keyboard::Editor::new(32);
     ui.screen = kl_core::Screen::Settings;
+    assert_eq!(ui.settings_index, 0);
+    let page_next = ui.layout.settings_nav()[1];
+    ui.handle(Input::Tap((page_next.x + 24) as f32, (page_next.y + 24) as f32));
+    assert_eq!(ui.settings_index, 1);
+    shot(&mut renderer, &ui, "settings-apps-and-system");
+    let page_prev = ui.layout.settings_nav()[0];
+    ui.handle(Input::Tap((page_prev.x + 24) as f32, (page_prev.y + 24) as f32));
+    assert_eq!(ui.settings_index, 0);
     for page in kl_core::layout::Page::ALL {
         ui.screen = kl_core::Screen::Page(page);
         if page == kl_core::layout::Page::Wifi {
@@ -207,6 +229,17 @@ fn main() {
     write_png(&out.join("dark-settings-about.png"), W, H, &renderer.draw(&ui, &dark));
     let turned = kl_render::for_panel(renderer.draw(&ui, &status), Rotation::UpsideDown, 0);
     write_png(&out.join("settings-about-turned.png"), W, H, &turned);
+    ui.screen = kl_core::Screen::Page(kl_core::layout::Page::Battery);
+    let no_battery = Status { power: Default::default(), battery_history: Vec::new(), ..demo_status() };
+    write_png(&out.join("settings-battery-unavailable.png"), W, H, &renderer.draw(&ui, &no_battery));
+    write_png(&out.join("dark-settings-battery.png"), W, H, &renderer.draw(&ui, &Status { low_power: true, ..dark.clone() }));
+    ui.screen = kl_core::Screen::Page(kl_core::layout::Page::Accessibility);
+    write_png(&out.join("settings-accessibility-larger.png"), W, H, &renderer.draw(&ui, &Status {
+        large_text: true, high_contrast: true, ..demo_status()
+    }));
+    ui.screen = kl_core::Screen::Page(kl_core::layout::Page::Display);
+    let display_support = kl_core::ui::DisplaySupport { front_light: true, warmth: false, auto_rotation: false };
+    write_png(&out.join("settings-display-no-warmth.png"), W, H, &renderer.draw(&ui, &Status { display_support, ..demo_status() }));
     ui.screen = kl_core::Screen::Home;
     let first = ui.layout.cell(0);
     ui.handle(Input::LongTap(first.x as f32 + 5.0, first.y as f32 + 5.0));

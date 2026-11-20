@@ -3,6 +3,14 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.5.0
+
+- Add Battery with charge state, local 24-hour history, and an opt-in Low power mode.
+- Share direct front-light and warmth adjustment between Display and Quick Settings.
+- Add Accessibility for larger text, higher contrast, and opening animation.
+- Add Storage and expand Device information with the firmware, device profile, and USB state.
+- Manage home-screen visibility and grid size from Apps. Open Store's installed list from Apps or Storage.
+
 ## 0.4.10
 
 - Keep an uninstalled app's saved grid preferences without showing a missing-app warning. Reinstalling the app restores its preferences.

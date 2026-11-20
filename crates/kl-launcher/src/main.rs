@@ -9,6 +9,8 @@
 //!   KL_DOCUMENTS  /mnt/us/documents   scriptlets
 
 mod bootstrap;
+mod management;
+mod power;
 mod transfer;
 
 use std::{
@@ -224,7 +226,7 @@ fn main() {
     log(&format!("start v{} dir {} run {}", env!("CARGO_PKG_VERSION"), dir.display(), run.display()));
 
     let mut settings_path = dir.join("settings.txt");
-    let mut settings = Settings::parse(&fs::read_to_string(&settings_path).unwrap_or_default());
+    let mut settings = Settings::load(&settings_path);
     if settings.sleep_screen_launcher {
         device::unload_stock_screensaver();
     }
@@ -273,6 +275,12 @@ fn main() {
     let mut ui = Ui::new(apps, layout);
 
     ui.version = env!("CARGO_PKG_VERSION").to_string();
+    // The profile is the build target. Firmware comes from the device itself.
+    ui.device_profile = Some(profile::ACTIVE.name.split(" (").next().unwrap_or(profile::ACTIVE.name).into());
+    ui.firmware = device::store_device().map(|device| {
+        device.firmware.nums.iter().map(u64::to_string).collect::<Vec<_>>().join(".")
+    });
+    ui.managed_count = if from_mirror { None } else { management::installed_count(&dir) };
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_extensions(extensions);
     ui.store_update_count = bootstrap::available_updates(&dir);
@@ -284,6 +292,11 @@ fn main() {
     let mut display = Display::open();
     let mut status = device::status(&settings);
     ui.set_battery(status.battery, status.charging);
+    let now = now_secs();
+    let mut power = power::Runtime::new(&run, &dir, now, !from_mirror && status.usb != kl_core::Usb::Drive);
+    power.observe(now, status.power);
+    power.observe_light(&status);
+    power.populate(&mut status, now);
 
     let update_trial = std::env::var("KL_LAUNCHER_UPDATE_TRIAL").as_deref() == Ok("1");
     match store_open::take_request(&run) {
@@ -349,7 +362,7 @@ fn main() {
             }
         });
     }
-    {
+    if status.display_support.auto_rotation {
         let t = tx.clone();
         let start = settings.rotation;
         thread::spawn(move || device::orientation_loop(t, start));
@@ -367,7 +380,7 @@ fn main() {
     display.show(renderer.draw(&ui, &status), &settings, true);
     log(&format!("first screen after {} ms", started.elapsed().as_millis()));
     let mut sleep_picture = 0usize;
-    let mut bootstrapping_store = false;
+    let mut bootstrapping_store = None;
     let mut mark_trial_ready = update_trial;
     let mut transfer_session = None;
 
@@ -382,6 +395,7 @@ fn main() {
         let Ok(ev) = rx.recv() else { break };
         let previous_screen = ui.screen;
         let previous_usb = ui.usb;
+        let mut open_installed_apps = false;
         let action = match ev {
             Ev::Wifi(info) => {
                 ui.set_wifi(info);
@@ -395,7 +409,7 @@ fn main() {
                 Action::Redraw { full: false }
             }
             Ev::StoreBootstrapped(result) => {
-                bootstrapping_store = false;
+                let requested_from = bootstrapping_store.take();
                 match result {
                     Err(error) => {
                         log(&format!("Store bootstrap failed: {error}"));
@@ -404,7 +418,7 @@ fn main() {
                     }
                     Ok(()) => {
                         let (_, apps, extensions, _) = load_library(&dir, &documents);
-                        let app = apps.iter().find(|app| app.id == bootstrap::ENTRY && !app.hidden && !app.background).cloned();
+                        let app = apps.iter().find(|app| app.id == bootstrap::ENTRY && !app.background).cloned();
                         ui.set_apps(apps);
                         ui.set_extensions(extensions);
                         ui.store_update_count = bootstrap::available_updates(&dir);
@@ -412,8 +426,14 @@ fn main() {
                             log(&format!("problem: {problem}"));
                         }
                         ui.notice = Some("Store is ready.".into());
-                        match app {
-                            Some(app) if ui.screen == Screen::Home && ui.usb != kl_core::Usb::Drive => Action::Launch(app),
+                        match (requested_from, app) {
+                            (Some((screen, installed)), Some(app))
+                                if ui.screen == screen && ui.usb != kl_core::Usb::Drive
+                                    && (installed || !app.hidden) =>
+                            {
+                                open_installed_apps = installed;
+                                Action::Launch(app)
+                            }
                             _ => Action::Redraw { full: false },
                         }
                     }
@@ -449,27 +469,28 @@ fn main() {
                 }
             }
             Ev::Tick => {
-                let _ = write_atomic(&run.join("heartbeat"), &now_secs().to_string());
+                let now = now_secs();
+                let _ = write_atomic(&run.join("heartbeat"), &now.to_string());
                 // Screens with the status bar re-read battery, charging, Wi-Fi and the clock every tick (5 s) and
                 // redraw only when the bar would show something new.
                 let shown = matches!(ui.screen, Screen::Home | Screen::QuickSettings | Screen::AppMenu | Screen::ConfirmKindle);
-                if shown {
+                let settings_shown = matches!(ui.screen, Screen::Settings | Screen::Page(_) | Screen::NetworkDetail | Screen::Password | Screen::NetworkName | Screen::SshPassword);
+                if shown || settings_shown {
                     let fresh = device::status(&settings);
+                    let history_changed = power.observe(now, fresh.power);
+                    power.observe_light(&fresh);
+                    power.save_if_due(&dir, !from_mirror && fresh.usb != kl_core::Usb::Drive && bootstrapping_store.is_none());
                     // Quick settings also shows CPU, memory and storage: redraw it when those change.
-                    let changed = status.bar_differs(&fresh) || (ui.screen == Screen::QuickSettings && status.system != fresh.system);
+                    let changed = if shown {
+                        status.bar_differs(&fresh) || (ui.screen == Screen::QuickSettings
+                            && (status.system != fresh.system || status.display_differs(&fresh)))
+                    } else {
+                        status.settings_differs(&fresh) || (ui.screen == Screen::Page(kl_core::layout::Page::Battery)
+                            && (status.power != fresh.power || history_changed))
+                    };
                     let warned = ui.set_battery(fresh.battery, fresh.charging);
                     status = fresh;
                     if changed || warned {
-                        Action::Redraw { full: false }
-                    } else {
-                        Action::None
-                    }
-                } else if matches!(ui.screen, Screen::Settings | Screen::Page(_) | Screen::NetworkDetail | Screen::Password | Screen::NetworkName | Screen::SshPassword) {
-                    // The Settings screens show Wi-Fi, SSH and the start-up switch: redraw when those change.
-                    let fresh = device::status(&settings);
-                    let changed = status.settings_differs(&fresh);
-                    status = fresh;
-                    if changed {
                         Action::Redraw { full: false }
                     } else {
                         Action::None
@@ -495,17 +516,27 @@ fn main() {
                         dir = PathBuf::from("/mnt/us/launcher");
                         settings_path = dir.join("settings.txt");
                         from_mirror = false;
-                        settings = Settings::parse(&fs::read_to_string(&settings_path).unwrap_or_default());
+                        settings = Settings::load(&settings_path);
+                        power.merge_after_eject(&dir, now_secs());
                         ui.store_daily_check = settings.store_daily_check;
-                        let (_config, apps, extensions, problems) = load_library(&dir, &documents);
+                        let (config, apps, extensions, problems) = load_library(&dir, &documents);
                         ui.set_apps(apps);
                         ui.set_extensions(extensions);
+                        ui.set_grid(config.columns, config.rows);
                         ui.store_update_count = bootstrap::available_updates(&dir);
                         ui.notice = problems.first().cloned();
-                        for problem in kl_render::load_icons(&mut renderer, ui.apps(), &layout, Some(&dir.join("cache"))) {
+                        for problem in kl_render::load_icons(&mut renderer, ui.apps(), &ui.layout, Some(&dir.join("cache"))) {
                             log(&format!("problem: {problem}"));
                         }
                         log(&format!("the user storage is back: {} apps read from {}", ui.apps().len(), documents.display()));
+                    }
+                    if ui.usb == kl_core::Usb::Drive && usb != kl_core::Usb::Drive && !from_mirror {
+                        ui.managed_count = management::installed_count(&dir);
+                    }
+                    if ui.screen != Screen::Sleep {
+                        status = device::status(&settings);
+                        power.observe(now_secs(), status.power);
+                        ui.set_battery(status.battery, status.charging);
                     }
                     ui.usb = usb;
                     status.usb = usb;
@@ -515,6 +546,9 @@ fn main() {
             Ev::Input(input) => {
                 if !matches!(input, Input::Sleep | Input::Wake) {
                     log(&format!("input {input:?}"));
+                }
+                if input == Input::Sleep && ui.screen != Screen::Sleep {
+                    power.break_history();
                 }
                 // The launcher's own sleep screen: the next picture from the screensavers folder, if any.
                 if input == Input::Sleep && settings.sleep_screen_launcher && ui.screen != Screen::Sleep {
@@ -539,10 +573,13 @@ fn main() {
                     display.show(renderer.draw(&ui, &status), &settings, false);
                 }
                 let before = ui.screen;
+                ui.display_support = status.display_support;
                 let action = ui.handle(input);
                 // A Settings page opens with a fresh status: the About text shows the current address and storage.
-                if matches!(ui.screen, Screen::Page(_)) && ui.screen != before {
+                if input == Input::Wake || (matches!(ui.screen, Screen::Page(_)) && ui.screen != before) {
                     status = device::status(&settings);
+                    power.observe(now_secs(), status.power);
+                    ui.set_battery(status.battery, status.charging);
                 }
                 // The Wi-Fi page scans when it opens.
                 if ui.screen == Screen::Page(kl_core::layout::Page::Wifi) && ui.screen != before {
@@ -551,6 +588,21 @@ fn main() {
                 }
                 action
             }
+        };
+        power.populate(&mut status, now_secs());
+        let action = if action == Action::Device(DeviceCmd::OpenInstalledApps) {
+            if from_mirror || device::usb_state() == kl_core::Usb::Drive {
+                ui.notice = Some("Eject the Kindle drive to manage installed apps.".into());
+                Action::Redraw { full: false }
+            } else if let Some(app) = management::store_app(ui.apps()) {
+                open_installed_apps = true;
+                Action::Launch(app)
+            } else {
+                ui.notice = Some("Store is unavailable. Reopen Launcher and try again.".into());
+                Action::Redraw { full: false }
+            }
+        } else {
+            action
         };
         let transfer_screen = Screen::Page(kl_core::layout::Page::FileTransfer);
         if ui.screen != transfer_screen || ui.usb == kl_core::Usb::Drive {
@@ -585,7 +637,7 @@ fn main() {
                 display.show(renderer.draw(&ui, &status), &settings, full);
             }
             Action::Launch(mut app) => {
-                if bootstrapping_store {
+                if bootstrapping_store.is_some() {
                     ui.pressed = None;
                     ui.notice = Some("Store is being installed. Please wait.".into());
                     display.show(renderer.draw(&ui, &status), &settings, false);
@@ -602,7 +654,7 @@ fn main() {
                         } else if !status.wifi_on || status.wifi_state != "connected" {
                             "Connect to Wi-Fi to install Store.".into()
                         } else {
-                            bootstrapping_store = true;
+                            bootstrapping_store = Some((ui.screen, open_installed_apps));
                             bootstrap::start(tx.clone(), documents.clone());
                             "Preparing Store…".into()
                         });
@@ -612,7 +664,7 @@ fn main() {
                 }
                 let pressed = renderer.draw(&ui, &status);
                 display.show(pressed.clone(), &settings, false);
-                let Some(next) = app.next_file() else {
+                let Some(next) = management::launch_descriptor(&app, &documents, open_installed_apps) else {
                     ui.pressed = None;
                     ui.notice = Some(format!("{}: cannot be started", app.name));
                     display.show(renderer.draw(&ui, &status), &settings, false);
@@ -640,11 +692,33 @@ fn main() {
                 std::process::exit(EXIT_LAUNCH);
             }
             Action::SetHidden(changes) => {
-                save_apps_toml(&dir, &mut ui, "hidden apps", |c| {
-                    for (id, hidden) in &changes {
-                        c.set_hidden(id, *hidden);
-                    }
+                let change = || update_apps_toml(&dir, |config| {
+                    for (id, hidden) in &changes { config.set_hidden(id, *hidden); }
                 });
+                match save_library_setting(from_mirror, &mut power, change) {
+                    Ok(()) if ui.screen == Screen::Page(kl_core::layout::Page::AppVisibility) => ui.notice = None,
+                    Ok(()) => {}
+                    Err(error) => {
+                        ui.restore_visibility(&changes);
+                        ui.notice = Some(format!("Could not save app visibility. {error}"));
+                    }
+                }
+                display.show(renderer.draw(&ui, &status), &settings, false);
+            }
+            Action::SetGrid { columns, rows } => {
+                let change = || update_apps_toml(&dir, |config| {
+                    config.columns = columns;
+                    config.rows = rows;
+                });
+                match save_library_setting(from_mirror, &mut power, change) {
+                    Ok(()) => {
+                        ui.set_grid(columns, rows);
+                        for problem in kl_render::load_icons(&mut renderer, ui.apps(), &ui.layout, Some(&dir.join("cache"))) {
+                            log(&format!("icon: {problem}"));
+                        }
+                    }
+                    Err(error) => ui.notice = Some(format!("Could not save the home screen layout. {error}")),
+                }
                 display.show(renderer.draw(&ui, &status), &settings, false);
             }
             Action::RunBackground(app) => {
@@ -705,7 +779,7 @@ fn main() {
                 if matches!(cmd, DeviceCmd::StoreToggleDailyCheck | DeviceCmd::StoreClearCache) {
                     ui.notice = if from_mirror || device::usb_state() == kl_core::Usb::Drive {
                         Some("Eject the Kindle drive before changing Store settings.".into())
-                    } else if bootstrapping_store {
+                    } else if bootstrapping_store.is_some() {
                         Some("Wait for the Store to finish installing.".into())
                     } else {
                         match apply_store_setting(cmd, &dir, &settings_path, &mut settings) {
@@ -724,6 +798,68 @@ fn main() {
                     display.show(renderer.draw(&ui, &status), &settings, cmd == DeviceCmd::StoreClearCache);
                     continue;
                 }
+                if cmd == DeviceCmd::ToggleLowPower {
+                    let mut updated = settings.clone();
+                    updated.low_power = !updated.low_power;
+                    ui.notice = if from_mirror || ui.usb == kl_core::Usb::Drive {
+                        Some("Eject the Kindle drive before changing Low power mode.".into())
+                    } else if bootstrapping_store.is_some() {
+                        Some("Wait for the Store to finish installing.".into())
+                    } else {
+                        match power.write_leased(&Settings::preferences_path(&settings_path), &updated.preferences_text()) {
+                            Ok(()) => {
+                                settings = updated;
+                                if settings.low_power && !status.display_support.front_light {
+                                    None
+                                } else {
+                                    power.set_light_mode(settings.low_power).err().map(|error| {
+                                        let mode = if settings.low_power { "on" } else { "off" };
+                                        format!("Low power mode is {mode}. {error}")
+                                    })
+                                }
+                            }
+                            Err(error) => Some(format!("Could not save Low power mode. {error}")),
+                        }
+                    };
+                    status = device::status(&settings);
+                    power.populate(&mut status, now_secs());
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
+                }
+                if matches!(cmd, DeviceCmd::ToggleLargeText | DeviceCmd::ToggleHighContrast | DeviceCmd::ToggleAnimation | DeviceCmd::ToggleDarkMode) {
+                    let mut updated = settings.clone();
+                    match cmd {
+                        DeviceCmd::ToggleLargeText => updated.large_text = !updated.large_text,
+                        DeviceCmd::ToggleHighContrast => updated.high_contrast = !updated.high_contrast,
+                        DeviceCmd::ToggleAnimation => updated.animation = !updated.animation,
+                        DeviceCmd::ToggleDarkMode => updated.dark_mode = !updated.dark_mode,
+                        _ => unreachable!(),
+                    }
+                    ui.notice = if from_mirror {
+                        Some("Eject the Kindle drive before changing appearance settings.".into())
+                    } else if bootstrapping_store.is_some() {
+                        Some("Wait for the Store to finish installing.".into())
+                    } else {
+                        let result = if matches!(cmd, DeviceCmd::ToggleLargeText | DeviceCmd::ToggleHighContrast) {
+                            power.write_leased(&Settings::preferences_path(&settings_path), &updated.preferences_text())
+                        } else {
+                            power.write_leased(&settings_path, &updated.base_text())
+                        };
+                        match result {
+                            Ok(()) => {
+                                settings = updated;
+                                status.large_text = settings.large_text;
+                                status.high_contrast = settings.high_contrast;
+                                status.animation = settings.animation;
+                                status.dark_mode = settings.dark_mode;
+                                None
+                            }
+                            Err(error) => Some(format!("Could not save appearance settings. {error}")),
+                        }
+                    };
+                    display.show(renderer.draw(&ui, &status), &settings, cmd != DeviceCmd::ToggleAnimation);
+                    continue;
+                }
                 // Power off: the screen says so, and stays that way once the Kindle is off (e-ink keeps its picture).
                 if cmd == DeviceCmd::PowerOff {
                     let frame = renderer.message("Powered Off", "Press the power button to turn the Kindle on again.");
@@ -731,7 +867,12 @@ fn main() {
                     // Let the screen finish its refresh before the system halts.
                     std::thread::sleep(std::time::Duration::from_secs(3));
                 }
+                let previous_rotation = settings.rotation;
+                if matches!(cmd, DeviceCmd::Light(_) | DeviceCmd::SetLight(_)) && status.display_support.front_light {
+                    power.manually_changed_light();
+                }
                 run_device(cmd, &mut status, &mut settings, &dir, &run, &settings_path);
+                power.populate(&mut status, now_secs());
                 // The Kindle is going off: keep the "Powered Off" picture, do not draw the screen again.
                 if cmd == DeviceCmd::PowerOff {
                     continue;
@@ -741,7 +882,7 @@ fn main() {
                     ui.wifi_scanning = true;
                     start_wifi_scan_after(tx.clone(), 4);
                 }
-                let full = matches!(cmd, DeviceCmd::ToggleRotation | DeviceCmd::AutoRotation | DeviceCmd::ToggleDarkMode);
+                let full = settings.rotation != previous_rotation;
                 display.show(renderer.draw(&ui, &status), &settings, full);
             }
         }
@@ -800,21 +941,35 @@ fn run_background(app: App, tx: Sender<Ev>) {
 
 /// Apply `change` to apps.toml and write it back. A file that is not valid TOML is never overwritten.
 fn save_apps_toml(dir: &Path, ui: &mut Ui, what: &str, change: impl FnOnce(&mut Config)) {
-    let path = dir.join("apps.toml");
-    let text = fs::read_to_string(&path).unwrap_or_default();
-    match Config::load(&text) {
-        Ok(mut config) => {
-            change(&mut config);
-            match write_atomic(&path, &config.to_toml()) {
-                Ok(()) => log(&format!("apps.toml: {what} saved")),
-                Err(e) => ui.notice = Some(format!("cannot save apps.toml: {e}")),
-            }
-        }
-        Err(e) => {
-            log(&format!("apps.toml is not valid TOML; not saved: {e}"));
-            ui.notice = Some("apps.toml has an error, so the change was not saved".into());
-        }
+    match update_apps_toml(dir, change) {
+        Ok(()) => log(&format!("apps.toml: {what} saved")),
+        Err(error) => ui.notice = Some(format!("Could not save {what}. {error}")),
     }
+}
+
+fn update_apps_toml(dir: &Path, change: impl FnOnce(&mut Config)) -> std::io::Result<()> {
+    let path = dir.join("apps.toml");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
+    let mut config = Config::load(&text).map_err(|_| std::io::Error::new(
+        std::io::ErrorKind::InvalidData, "There is an error in apps.toml.",
+    ))?;
+    change(&mut config);
+    write_atomic(&path, &config.to_toml())
+}
+
+fn save_library_setting(
+    from_mirror: bool,
+    power: &mut power::Runtime,
+    change: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if from_mirror {
+        return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "Eject the Kindle drive and try again."));
+    }
+    power.with_storage(change)
 }
 
 /// The PNG files in a folder, sorted: icons for the app menu, pictures for the sleep screen.
@@ -837,7 +992,7 @@ fn apply_store_setting(cmd: DeviceCmd, launcher: &Path, settings_path: &Path, se
     }
     let mut updated = settings.clone();
     updated.store_daily_check = !settings.store_daily_check;
-    write_atomic(settings_path, &updated.to_text())?;
+    write_atomic(settings_path, &updated.base_text())?;
     *settings = updated;
     Ok(())
 }
@@ -855,32 +1010,27 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         DeviceCmd::StoreRefresh
         | DeviceCmd::StoreRemove(_)
         | DeviceCmd::StoreOpen(_)
+        | DeviceCmd::OpenInstalledApps
         | DeviceCmd::StoreInstall(_)
         | DeviceCmd::StoreUpdateAll
         | DeviceCmd::StoreToggleDailyCheck
-        | DeviceCmd::StoreClearCache => {}
+        | DeviceCmd::ToggleLowPower
+        | DeviceCmd::StoreClearCache
+        | DeviceCmd::ToggleLargeText
+        | DeviceCmd::ToggleHighContrast
+        | DeviceCmd::ToggleAnimation
+        | DeviceCmd::ToggleDarkMode => {}
         DeviceCmd::ToggleAutostart => device::set_autostart(&dir.to_string_lossy(), !status.autostart),
         DeviceCmd::ToggleSleepScreen => {
             settings.sleep_screen_launcher = !settings.sleep_screen_launcher;
             status.sleep_launcher = settings.sleep_screen_launcher;
-            if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
+            if let Err(e) = write_atomic(settings_path, &settings.base_text()) {
                 log(&format!("settings: {e}"));
             }
             if settings.sleep_screen_launcher {
                 device::unload_stock_screensaver();
             } else {
                 log("sleep screen: the Kindle's; it returns after Kindle mode or a reboot");
-            }
-        }
-        DeviceCmd::AutoRotation => {
-            settings.auto_rotation = true;
-            if let Some(turn) = device::accelerometer_turn() {
-                settings.rotation = turn;
-                input::TURN.store(turn.turn(), Ordering::Relaxed);
-                let _ = write_atomic(&run.join("orientation"), turn.letter());
-            }
-            if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
-                log(&format!("settings: {e}"));
             }
         }
         DeviceCmd::SetLight(level) => device::set_light(level),
@@ -895,17 +1045,7 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
                     let _ = write_atomic(&run.join("orientation"), turn.letter());
                 }
             }
-            if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
-                log(&format!("settings: {e}"));
-            }
-        }
-        DeviceCmd::ToggleDarkMode | DeviceCmd::ToggleAnimation => {
-            if cmd == DeviceCmd::ToggleDarkMode {
-                settings.dark_mode = !settings.dark_mode;
-            } else {
-                settings.animation = !settings.animation;
-            }
-            if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
+            if let Err(e) = write_atomic(settings_path, &settings.base_text()) {
                 log(&format!("settings: {e}"));
             }
         }
@@ -913,7 +1053,7 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
             settings.auto_rotation = false;
             settings.rotation = settings.rotation.flipped();
             input::TURN.store(settings.rotation.turn(), Ordering::Relaxed);
-            if let Err(e) = write_atomic(settings_path, &settings.to_text()) {
+            if let Err(e) = write_atomic(settings_path, &settings.base_text()) {
                 log(&format!("settings: {e}"));
             }
             let _ = write_atomic(&run.join("orientation"), settings.rotation.letter());
