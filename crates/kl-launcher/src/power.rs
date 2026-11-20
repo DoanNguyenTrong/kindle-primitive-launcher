@@ -206,6 +206,14 @@ impl Runtime {
         write
     }
 
+    pub fn take_storage_lease(&mut self) -> Option<StorageLease> {
+        self.lease.take()
+    }
+
+    pub fn return_storage_lease(&mut self, lease: StorageLease) {
+        self.lease = Some(lease);
+    }
+
     /// The prior level lives only as long as this supervisor run. Compare the current setting
     /// before restoring so manual changes made in a separate app win.
     pub fn set_light_mode(&self, on: bool) -> io::Result<()> {

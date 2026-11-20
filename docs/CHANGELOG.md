@@ -3,6 +3,12 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.5.9
+
+- Uninstall apps directly from Settings › Apps › Installed apps, including offline. The list also opens from Settings › Storage.
+- Refresh Home and the installed list after removal. App data outside the installation record is preserved.
+- Save Wi-Fi profiles using the current Kindle firmware's saved-network commands and refresh the Launcher boot copy after updates.
+
 ## 0.5.5
 
 - Preview Home, Sleep, and Startup wallpapers before applying them. Each screen saves its own opacity.

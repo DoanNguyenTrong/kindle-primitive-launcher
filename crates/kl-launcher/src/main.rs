@@ -288,6 +288,8 @@ fn main() {
     }
     log(&format!("{} apps; ready in {} ms", apps.len(), started.elapsed().as_millis()));
 
+    let installed_apps = (!from_mirror && device::usb_state() != kl_core::Usb::Drive)
+        .then(|| management::installed_apps(&dir, &apps)).flatten();
     let mut ui = Ui::new(apps, layout);
 
     ui.version = env!("CARGO_PKG_VERSION").to_string();
@@ -296,7 +298,7 @@ fn main() {
     ui.firmware = device::store_device().map(|device| {
         device.firmware.nums.iter().map(u64::to_string).collect::<Vec<_>>().join(".")
     });
-    ui.managed_count = if from_mirror { None } else { management::installed_count(&dir) };
+    ui.set_installed_apps(installed_apps);
     ui.set_icon_choices(png_files(&dir.join("icons")));
     ui.set_wallpapers(wallpapers);
     ui.set_extensions(extensions);
@@ -417,7 +419,6 @@ fn main() {
         let Ok(ev) = rx.recv() else { break };
         let previous_screen = ui.screen;
         let previous_usb = ui.usb;
-        let mut open_installed_apps = false;
         let action = match ev {
             Ev::Wifi(info) => {
                 ui.set_wifi(info);
@@ -441,6 +442,7 @@ fn main() {
                     Ok(()) => {
                         let (_, apps, extensions, _) = load_library(&dir, &documents);
                         let app = apps.iter().find(|app| app.id == bootstrap::ENTRY && !app.background).cloned();
+                        ui.set_installed_apps(management::installed_apps(&dir, &apps));
                         ui.set_apps(apps);
                         ui.set_extensions(extensions);
                         ui.store_update_count = bootstrap::available_updates(&dir);
@@ -449,11 +451,9 @@ fn main() {
                         }
                         ui.notice = Some("Store is ready.".into());
                         match (requested_from, app) {
-                            (Some((screen, installed)), Some(app))
-                                if ui.screen == screen && ui.usb != kl_core::Usb::Drive
-                                    && (installed || !app.hidden) =>
+                            (Some(screen), Some(app))
+                                if ui.screen == screen && ui.usb != kl_core::Usb::Drive && !app.hidden =>
                             {
-                                open_installed_apps = installed;
                                 Action::Launch(app)
                             }
                             _ => Action::Redraw { full: false },
@@ -462,6 +462,25 @@ fn main() {
                 }
             }
             Ev::StoreInstalled { .. } | Ev::StoreRefreshed { .. } | Ev::StoreProgress { .. } => Action::None,
+            Ev::ManagedAppsChanged { mut lease, storage_held, message } => {
+                ui.installed_busy = false;
+                if storage_held {
+                    let (_, apps, extensions, _) = load_library(&dir, &documents);
+                    ui.set_installed_apps(management::installed_apps(&dir, &apps));
+                    ui.set_apps(apps);
+                    ui.set_extensions(extensions);
+                    ui.store_update_count = bootstrap::available_updates(&dir);
+                    for problem in kl_render::load_icons(&mut renderer, ui.apps(), &ui.layout, Some(&dir.join("cache"))) {
+                        log(&format!("problem: {problem}"));
+                    }
+                    if let Err(error) = lease.release() {
+                        log(&format!("launcher storage release: {error}"));
+                    }
+                }
+                power.return_storage_lease(lease);
+                ui.notice = message;
+                Action::Redraw { full: false }
+            }
             Ev::Notice(message) => {
                 ui.notice = Some(message);
                 status = device::status(&settings);
@@ -564,6 +583,7 @@ fn main() {
                         power.merge_after_eject(&dir, now_secs());
                         ui.store_daily_check = settings.store_daily_check;
                         let (config, apps, extensions, problems) = load_library(&dir, &documents);
+                        ui.set_installed_apps(management::installed_apps(&dir, &apps));
                         ui.set_apps(apps);
                         ui.set_extensions(extensions);
                         ui.set_grid(config.columns, config.rows);
@@ -575,7 +595,6 @@ fn main() {
                         log(&format!("the user storage is back: {} apps read from {}", ui.apps().len(), documents.display()));
                     }
                     if ui.usb == kl_core::Usb::Drive && usb != kl_core::Usb::Drive && !from_mirror {
-                        ui.managed_count = management::installed_count(&dir);
                         let legacy_sleep = Settings::load(&settings_path).sleep_screen_launcher;
                         let wallpapers = wallpaper::load(&dir, legacy_sleep);
                         settings.sleep_screen_launcher = wallpapers.sleep != WallpaperChoice::Default;
@@ -632,28 +651,52 @@ fn main() {
             }
         };
         power.populate(&mut status, now_secs());
-        let action = if action == Action::Device(DeviceCmd::OpenInstalledApps) {
-            if from_mirror || device::usb_state() == kl_core::Usb::Drive {
-                ui.notice = Some("Eject the Kindle drive to manage installed apps.".into());
-                Action::Redraw { full: false }
-            } else if let Some(app) = management::store_app(ui.apps()) {
-                open_installed_apps = true;
-                Action::Launch(app)
-            } else {
-                ui.notice = Some("Store is unavailable. Reopen Launcher and try again.".into());
-                Action::Redraw { full: false }
+        let action = match action {
+            Action::Device(cmd @ (DeviceCmd::OpenInstalledApps | DeviceCmd::RemoveInstalledApp(_))) => {
+                let app = match cmd {
+                    DeviceCmd::RemoveInstalledApp(index) => ui.installed_app(index).filter(|app| app.can_remove).cloned(),
+                    _ => None,
+                };
+                let root = documents.parent().filter(|_| !from_mirror && device::usb_state() != kl_core::Usb::Drive);
+                ui.notice = match root {
+                    None => {
+                        ui.set_installed_apps(None);
+                        Some("Eject the Kindle drive to manage installed apps.".into())
+                    }
+                    Some(_) if matches!(cmd, DeviceCmd::RemoveInstalledApp(_)) && app.is_none() => {
+                        Some("This app cannot be removed.".into())
+                    }
+                    Some(root) if app.is_some() || kl_store::install::Paths::under(root).journal.is_file() => {
+                        if bootstrapping_store.is_some() || (update_trial && run.join("launcher-update-driver").exists()) {
+                            Some("Wait for the current installation to finish.".into())
+                        } else if let Some(lease) = power.take_storage_lease() {
+                            ui.installed_busy = true;
+                            let message = app.as_ref().map_or_else(|| "Checking installed apps…".into(), |app| format!("Removing {}…", app.name));
+                            management::start(tx.clone(), root.to_path_buf(), lease, app);
+                            Some(message)
+                        } else {
+                            Some("Open Launcher from the Kindle Library to manage installed apps.".into())
+                        }
+                    }
+                    Some(_) => {
+                        let (_, apps, _, _) = load_library(&dir, &documents);
+                        ui.set_installed_apps(management::installed_apps(&dir, &apps));
+                        None
+                    }
+                };
+                Action::Redraw { full: cmd == DeviceCmd::OpenInstalledApps }
             }
-        } else if action == Action::Device(DeviceCmd::ToggleSleepScreen) {
-            let choice = if ui.wallpapers.sleep == WallpaperChoice::Default {
-                WallpaperChoice::Rotate
-            } else {
-                WallpaperChoice::Default
-            };
-            Action::SetWallpaper {
-                target: WallpaperTarget::Sleep, choice, opacity: ui.wallpapers.opacity(WallpaperTarget::Sleep),
+            Action::Device(DeviceCmd::ToggleSleepScreen) => {
+                let choice = if ui.wallpapers.sleep == WallpaperChoice::Default {
+                    WallpaperChoice::Rotate
+                } else {
+                    WallpaperChoice::Default
+                };
+                Action::SetWallpaper {
+                    target: WallpaperTarget::Sleep, choice, opacity: ui.wallpapers.opacity(WallpaperTarget::Sleep),
+                }
             }
-        } else {
-            action
+            action => action,
         };
         if ui.wallpaper_preview.is_none() {
             renderer.set_wallpaper_preview(None);
@@ -708,7 +751,7 @@ fn main() {
                         } else if !status.wifi_on || status.wifi_state != "connected" {
                             "Connect to Wi-Fi to install Store.".into()
                         } else {
-                            bootstrapping_store = Some((ui.screen, open_installed_apps));
+                            bootstrapping_store = Some(ui.screen);
                             bootstrap::start(tx.clone(), documents.clone());
                             "Preparing Store…".into()
                         });
@@ -718,7 +761,7 @@ fn main() {
                 }
                 let pressed = renderer.draw(&ui, &status);
                 display.show(pressed.clone(), &settings, false);
-                let Some(next) = management::launch_descriptor(&app, &documents, open_installed_apps) else {
+                let Some(next) = app.next_file() else {
                     ui.pressed = None;
                     ui.notice = Some(format!("{}: cannot be started", app.name));
                     display.show(renderer.draw(&ui, &status), &settings, false);
@@ -1160,6 +1203,7 @@ fn run_device(cmd: DeviceCmd, status: &mut Status, settings: &mut Settings, dir:
         | DeviceCmd::StoreRemove(_)
         | DeviceCmd::StoreOpen(_)
         | DeviceCmd::OpenInstalledApps
+        | DeviceCmd::RemoveInstalledApp(_)
         | DeviceCmd::StoreInstall(_)
         | DeviceCmd::StoreUpdateAll
         | DeviceCmd::StoreToggleDailyCheck

@@ -192,8 +192,10 @@ The milestones and their checklists are in the [plan](docs/03-plan.md).
   behind the top and bottom bars while keeping app labels readable. Sleep and Startup fit the whole image.
   Startup appears when Launcher starts automatically after the Kindle's own startup screen.
   [Wallpaper preview](docs/images/settings-wallpaper-preview.png) · [Full-screen Home](docs/images/home-wallpaper-full-screen.png)
-- **Manage apps.** From **Settings › Apps**, choose grid dimensions, change app visibility, or open the installed
-  list in Store. **Settings › Storage** shows user-space usage and links to app management and Store settings.
+- **Manage apps.** Open **Settings › Apps › Installed apps** to see versions and uninstall an app. Tap
+  **Uninstall** and confirm. The app disappears from Home, and files outside its installation record stay on the
+  Kindle. You can do this offline. **Settings › Storage** also links to Installed apps.
+  Use **App visibility** and the grid controls to organise Home. [Installed apps preview](docs/images/settings-installed-apps.png)
 - **Kindle UI.** Tap its icon and confirm. To come back, open *Launcher* in the Kindle library.
 - **Sleep.** The power button and the cover work as usual. Choose **Rotate sleep pictures** under
   **Display › Wallpaper › Sleep Screen** to show PNGs from `launcher/screensavers/` in turn while Launcher is open.

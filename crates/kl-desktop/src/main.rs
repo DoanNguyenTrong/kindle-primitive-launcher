@@ -227,7 +227,17 @@ fn main() {
     ui.version = env!("CARGO_PKG_VERSION").to_string();
     ui.firmware = Some("5.18.2".into());
     ui.device_profile = Some("Kindle Oasis 3".into());
-    ui.managed_count = Some(ui.apps().iter().filter(|app| matches!(app.launch, kl_core::Launch::Script { .. })).count());
+    ui.set_installed_apps(Some([
+        ("primitive-files", "Files", "0.1.2", true),
+        ("primitive-notes", "Notes", "0.1.1", true),
+        ("primitive-reader", "Reader", "0.1.0", true),
+        ("primitive-store", "Store", "0.1.7", false),
+    ].into_iter().map(|(id, name, version, can_remove)| kl_core::ui::InstalledApp {
+        id: id.into(),
+        name: name.into(),
+        version: version.into(),
+        can_remove,
+    }).collect()));
     ui.set_extensions(extensions);
     let wallpaper_path = arg(&args, "--wallpaper").map(PathBuf::from);
     let status = Status { sleep_launcher: wallpaper_path.is_some(), ..demo_status() };
