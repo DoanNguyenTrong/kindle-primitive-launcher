@@ -7,13 +7,13 @@
 **A home screen for jailbroken Kindle e-readers.**
 Written in Rust. It replaces the stock Kindle home with a grid of your apps, on grayscale e-ink.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/DoanNguyenTrong/kindle-primitive-launcher/ci.yml?branch=main&label=CI)](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/DoanNguyenTrong/kindle-primitive-launcher?label=release)](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases)
-[![Tag](https://img.shields.io/github/v/tag/DoanNguyenTrong/kindle-primitive-launcher?label=tag)](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/tags)
+[![CI](https://img.shields.io/github/actions/workflow/status/PrimitiveOS/kindle-primitive-launcher/ci.yml?branch=main&label=CI)](https://github.com/PrimitiveOS/kindle-primitive-launcher/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/PrimitiveOS/kindle-primitive-launcher?label=release)](https://github.com/PrimitiveOS/kindle-primitive-launcher/releases)
+[![Tag](https://img.shields.io/github/v/tag/PrimitiveOS/kindle-primitive-launcher?label=tag)](https://github.com/PrimitiveOS/kindle-primitive-launcher/tags)
 [![Licence: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/licence-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/DoanNguyenTrong/kindle-primitive-launcher?style=social)](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/stargazers)
+[![Stars](https://img.shields.io/github/stars/PrimitiveOS/kindle-primitive-launcher?style=social)](https://github.com/PrimitiveOS/kindle-primitive-launcher/stargazers)
 
-[**Download**](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases/latest) ·
+[**Download**](https://github.com/PrimitiveOS/kindle-primitive-launcher/releases/latest) ·
 [**Install guide**](docs/INSTALL.md) ·
 [**Plan**](docs/03-plan.md) ·
 [**Changelog**](docs/CHANGELOG.md)
@@ -22,9 +22,9 @@ Written in Rust. It replaces the stock Kindle home with a grid of your apps, on 
 
 ---
 
-Primitive Launcher is the home screen for [PrimitiveOS](https://github.com/DoanNguyenTrong/kindle-primitive),
+Primitive Launcher is the home screen for [PrimitiveOS](https://github.com/PrimitiveOS/kindle-primitive),
 the app suite for jailbroken Kindles. Open KOReader, browse with
-[Primitive Browser](https://github.com/DoanNguyenTrong/kindle-primitive-browser), or run KUAL extensions. Every
+[Primitive Browser](https://github.com/PrimitiveOS/kindle-primitive-browser), or run KUAL extensions. Every
 app is an icon on one grid. While the launcher runs, the stock Kindle framework is stopped, which leaves the
 apps about 140 MB more memory. The stock Kindle UI stays installed and unchanged, one tap away, and it is what
 every failure falls back to.
@@ -67,7 +67,7 @@ is used only when you ask for it, or when something goes wrong.
 
 Primitive Launcher is the one app you copy by hand to set up PrimitiveOS.
 
-1. **Download** `primitive-launcher-<version>.zip` from the [latest release](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases/latest) and extract it.
+1. **Download** `primitive-launcher-<version>.zip` from the [latest release](https://github.com/PrimitiveOS/kindle-primitive-launcher/releases/latest) and extract it.
 2. With the stock Kindle UI open, connect your jailbroken Kindle over USB. Copy `launcher/` to the root of the Kindle
    drive and `Launcher.sh` from the archive's `documents/` into the Kindle's existing `documents/` folder. Eject and
    unplug the Kindle.
@@ -142,7 +142,7 @@ The screenshots are from the desktop build of the same code, with demo values. T
 
 Launcher **0.5.3** includes vertical Settings navigation, separate wallpaper choices, Clock and time zone,
 and expanded device and app settings. Earlier Oasis 3 results are recorded in the [device notes](docs/device-notes.md).
-[Launcher 0.5.3 release](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases/tag/v0.5.3)
+[Launcher 0.5.3 release](https://github.com/PrimitiveOS/kindle-primitive-launcher/releases/tag/v0.5.3)
 
 ## Limits
 
@@ -280,7 +280,7 @@ Copyright (C) 2026 Doan Nguyen.
   License v3.0 (AGPL-3.0), and those releases stay available under it. The new licences apply from the next version.
 
 The e-ink, input and device code in `crates/kl-kindle` and some icon paths are copied from
-[Primitive Browser](https://github.com/DoanNguyenTrong/kindle-primitive-browser), the same author's work, where they
+[Primitive Browser](https://github.com/PrimitiveOS/kindle-primitive-browser), the same author's work, where they
 remain under AGPL-3.0; each copied file says so at the top. The e-ink update structure follows the Kindle driver's
 interface as described in FBInk's `eink/mxcfb-kindle.h`.
 

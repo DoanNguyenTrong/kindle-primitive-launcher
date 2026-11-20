@@ -13,7 +13,7 @@ Kindle Oasis 3 (firmware 5.18.2). It requires an existing jailbreak and keeps th
 Launcher is the only app you copy by hand to get started.
 
 1. Download `primitive-launcher-<version>.zip` from the
-   [latest release](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases/latest) and unzip it.
+   [latest release](https://github.com/PrimitiveOS/kindle-primitive-launcher/releases/latest) and unzip it.
    You can also use a `primitive-launcher-<version>-armhf.zip` package when one is available.
 2. Connect the Kindle to the computer **while the stock Kindle UI is on the screen**.
 3. Copy the `launcher/` folder to the root of the Kindle drive. Copy `Launcher.sh` from the archive's `documents/`

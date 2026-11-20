@@ -37,7 +37,7 @@ jobs:
       - name: Check out catalog preview data
         uses: actions/checkout@v5
         with:
-          repository: DoanNguyenTrong/kindle-primitive-catalog
+          repository: PrimitiveOS/kindle-primitive-catalog
           ref: b812933a17cd4ff4abb0155bf303f7ee6fbe2cc6
           path: .catalog-preview
           persist-credentials: false
