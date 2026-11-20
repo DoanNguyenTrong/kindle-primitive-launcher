@@ -30,6 +30,11 @@ LAUNCHER_PID=$RUN/launcher.pid
 APP_PID=$RUN/app.pid
 HOLDER_PID=$RUN/holder.pid
 WAIT_PID=$RUN/wait.pid
+APP_WATCH=$RUN/app-watch.pid
+APP_REQUEST=$RUN/app-request
+APP_RESTART=$RUN/app-restart
+# Starts an app in its own process group (so a signal reaches the app itself), when the system has setsid.
+APP_GROUP=$(command -v setsid 2>/dev/null || true)
 MAX_CRASHES=${KL_MAX_CRASHES:-3}
 CRASH_WINDOW=60
 HEARTBEAT_LIMIT=${KL_HEARTBEAT_LIMIT:-30}
@@ -639,6 +644,37 @@ on_signal() {
     exit 0
 }
 
+# An app that redraws itself on wake declares it: a line "# Wake: redraw" in the first ten lines of its entry. The
+# supervisor then sends SIGUSR1 to the app's process group. Other apps are restarted on wake, so the screen is never
+# left blank.
+app_redraws_on_wake() {
+    [ -f "$1" ] && [ ! -L "$1" ] && head -n 10 "$1" | grep -Fxq '# Wake: redraw'
+}
+
+# While an app runs the launcher is not, so the supervisor keeps the sleep and wake behaviour: it draws the sleep
+# picture when the Kindle goes to sleep, and redraws or restarts the app when it wakes.
+app_power_watch() {
+    pgid=$1
+    redraw=$2
+    command -v lipc-wait-event >/dev/null 2>&1 || return 0
+    lipc-wait-event -m com.lab126.powerd goingToScreenSaver,outOfScreenSaver 2>/dev/null |
+    while IFS= read -r event; do
+        case "$event" in
+            goingToScreenSaver*)
+                [ -x "$RUN/kl-launcher" ] && "$RUN/kl-launcher" --sleep-screen >> "$LOG_OUT" 2>&1
+                ;;
+            outOfScreenSaver*)
+                if [ "$redraw" = yes ]; then
+                    kill -USR1 -- "-$pgid" 2>/dev/null || kill -USR1 "$pgid" 2>/dev/null
+                else
+                    : > "$APP_RESTART"
+                    kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pgid" 2>/dev/null
+                fi
+                ;;
+        esac
+    done
+}
+
 run_app() {
     if [ ! -f "$RUN/next" ]; then
         log "launch requested but $RUN/next is missing"
@@ -647,6 +683,8 @@ run_app() {
     fi
     # A fourth line may open a specific screen in the standalone Store.
     { read -r adir; read -r kind; read -r arg; IFS= read -r start_tab || :; } < "$RUN/next"
+    # Kept so a restart after wake can open the same app again.
+    printf '%s\n%s\n%s\n%s\n' "$adir" "$kind" "$arg" "$start_tab" > "$APP_REQUEST.tmp" && mv "$APP_REQUEST.tmp" "$APP_REQUEST"
     rm -f "$RUN/next" "$STORE_OPEN" "$STORE_OPEN.tmp"
     store_storage_clear
     store_can_open=0
@@ -689,17 +727,21 @@ run_app() {
         if [ "$native_can_lease" -eq 1 ]; then
             export KL_NATIVE_APP_RUN="$NATIVE_APP_RUN"
             cd / || exit 1
-            exec /bin/sh "$NATIVE_APP_RUN/launch"
+            exec $APP_GROUP /bin/sh "$NATIVE_APP_RUN/launch"
         fi
         case "$kind" in
-            script) exec /bin/sh "$arg" ;;
-            hooks) exec /bin/sh -c '. "$1"; on_run' sh "$arg" ;;
-            shell) exec /bin/sh -c "$arg" ;;
+            script) exec $APP_GROUP /bin/sh "$arg" ;;
+            hooks) exec $APP_GROUP /bin/sh -c '. "$1"; on_run' sh "$arg" ;;
+            shell) exec $APP_GROUP /bin/sh -c "$arg" ;;
             *) echo "unknown kind: $kind"; exit 1 ;;
         esac
     ) >> "$app_log" 2>&1 &
     apid=$!
     echo "$apid" > "$APP_PID"
+    app_redraw=no
+    [ "$kind" = script ] && app_redraws_on_wake "$arg" && app_redraw=yes
+    app_power_watch "$apid" "$app_redraw" &
+    echo $! > "$APP_WATCH"
     if [ "$store_can_open" -eq 1 ] || [ "$native_can_lease" -eq 1 ]; then
         printf '%s %s\n' "$apid" "$(store_child_started_at "$apid")" > "$STORE_CHILD"
         if [ "$native_can_lease" -eq 1 ]; then
@@ -711,6 +753,16 @@ run_app() {
     wait "$apid"
     rc=$?
     rm -f "$APP_PID"
+    watch=$(cat "$APP_WATCH" 2>/dev/null)
+    [ -n "$watch" ] && kill "$watch" 2>/dev/null
+    rm -f "$APP_WATCH"
+    if [ -f "$APP_RESTART" ]; then
+        rm -f "$APP_RESTART"
+        store_storage_clear
+        log "app restarted after wake: $arg"
+        cp "$APP_REQUEST" "$RUN/next" && run_app
+        return
+    fi
     store_storage_clear
     log "app exit: rc=$rc after $(( $(date +%s) - t0 ))s"
     # Only the installed Store may pass a request on exit 11. The launcher reads
@@ -733,6 +785,8 @@ run_app() {
 store_child_stop
 logger_start
 install_traps
+# The power daemon must not prevent the screensaver, or the power button does not put the Kindle to sleep.
+command -v lipc-set-prop >/dev/null 2>&1 && lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
 if framework_running; then
     framework_stop verify
 else

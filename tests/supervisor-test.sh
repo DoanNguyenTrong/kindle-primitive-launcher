@@ -241,7 +241,8 @@ echo "test: launch an app, then ask for the Kindle UI"
 setup
 printf '10\n0\n' > "$STATE/codes"
 run_sup
-check "framework stopped first" 'head -n 1 "$STATE/calls" | grep -q "stop lab126_gui"'
+check "framework stopped first" 'grep -v "^lipc-set-prop" "$STATE/calls" | head -n 1 | grep -q "stop lab126_gui"'
+check "power daemon does not prevent the screensaver" 'grep -q "^lipc-set-prop com.lab126.powerd preventScreenSaver 0" "$STATE/calls"'
 check "volumd paused" 'grep -q "killall -STOP volumd" "$STATE/calls"'
 check "app ran with the env" 'grep -q "app ran: PRIMITIVE_LAUNCHER=1 pwd=$STATE" "$STATE/calls"'
 check "launcher ran twice" '[ "$(grep -c "launcher run" "$STATE/calls")" = 2 ]'

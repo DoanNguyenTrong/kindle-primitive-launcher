@@ -245,6 +245,11 @@ fn main() {
         return;
     }
 
+    if std::env::args().any(|a| a == "--sleep-screen") {
+        sleep_screen(&dir, &settings);
+        return;
+    }
+
     let wallpapers = wallpaper::load(&dir, settings.sleep_screen_launcher);
     settings.sleep_screen_launcher = wallpapers.sleep != WallpaperChoice::Default;
     let mut startup_wallpaper_until = None;
@@ -323,7 +328,6 @@ fn main() {
             {
                 Ok(()) => {
                     log(&format!("opening {id} from the Store"));
-                    wallpaper::use_launcher_sleep(&run, false);
                     std::process::exit(EXIT_LAUNCH);
                 }
                 Err(error) => ui.notice = Some(format!("Could not open the app from the Store. {error}")),
@@ -743,7 +747,6 @@ fn main() {
                         thread::sleep(Duration::from_millis(70));
                     }
                 }
-                wallpaper::use_launcher_sleep(&run, false);
                 std::process::exit(EXIT_LAUNCH);
             }
             Action::SetHidden(changes) => {
@@ -1056,6 +1059,18 @@ fn wait_screen(dir: &Path, run: &Path, settings: &Settings) {
         thread::sleep(Duration::from_millis(1500));
         step += 1;
     }
+}
+
+/// Draw the launcher's sleep picture once and return. The supervisor runs this when the Kindle goes to sleep while an
+/// app is open: the picture stays on the screen after the power goes off.
+fn sleep_screen(dir: &Path, settings: &Settings) {
+    let wallpapers = wallpaper::load(dir, settings.sleep_screen_launcher);
+    let Some(image) = wallpaper::saved_picture(dir, WallpaperTarget::Sleep, &wallpapers, &mut 0) else {
+        return log("sleep screen: no picture chosen");
+    };
+    log("sleep screen");
+    let mut display = Display::open();
+    display.show(image.pixels, settings, true);
 }
 
 /// Run an app without leaving the launcher (apps.toml `mode = "background"`, KUAL `exitmenu: false`), with the
