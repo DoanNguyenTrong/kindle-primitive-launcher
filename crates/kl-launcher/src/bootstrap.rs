@@ -13,7 +13,7 @@ use kl_store::catalog::{Asset, Listing};
 use kl_store::signatures::TrustedKey;
 use kl_store::{install::Paths, pipeline, refresh, resolve};
 
-const CATALOG: &str = "https://doannguyentrong.github.io/kindle-primitive-catalog/v1";
+const CATALOG: &str = "https://primitiveos.github.io/kindle-primitive-catalog/v1";
 const ID: &str = kl_core::store::STORE_ID;
 const DIR: &str = "store";
 

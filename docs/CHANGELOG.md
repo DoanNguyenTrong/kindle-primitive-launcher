@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.5.4
+
+- Use the PrimitiveOS organization’s Store catalog for bootstrap and update checks.
+
 ## 0.5.3
 
 - Add Display › Wallpaper with separate PNG choices for the Home Screen, Sleep Screen, and automatic Launcher startup.
