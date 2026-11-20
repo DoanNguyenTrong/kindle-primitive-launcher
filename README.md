@@ -140,8 +140,9 @@ The screenshots are from the desktop build of the same code, with demo values. T
 | Kindle Oasis 3 (1264 × 1680, firmware 5.18.2) | ✅ Verified on hardware |
 | Other Kindle models | 🛠️ Not supported yet |
 
-The published Launcher version is **0.4.10**. This branch contains the **0.5.3** settings update. Earlier Oasis 3
-results are recorded in the [device notes](docs/device-notes.md). The new settings are ready for desktop review.
+Launcher **0.5.3** includes vertical Settings navigation, separate wallpaper choices, Clock and time zone,
+and expanded device and app settings. Earlier Oasis 3 results are recorded in the [device notes](docs/device-notes.md).
+[Launcher 0.5.3 release](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/releases/tag/v0.5.3)
 
 ## Limits
 

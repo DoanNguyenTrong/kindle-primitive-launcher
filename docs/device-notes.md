@@ -259,3 +259,10 @@ was open, and the running Launcher logged gestures after a supervised restart. T
 when the stock Kindle Library became active. A normal Kindle restart restored the Library, and the owner
 verified that touch also opened Settings from the existing Launcher. The cause of the stale frame remains
 unconfirmed. Normal sleep was enabled before the device restart.
+
+## Launcher 0.5.3 in-place update on Oasis 3 (20 November 2026)
+
+The Kindle was running firmware 5.18.2. The Store installer staged the published Launcher package against the
+existing installation. When the owner exited Primitive Browser, the supervisor ran the Launcher trial and
+accepted it at 08:08 ICT. The log records `launcher update: healthy, boot copy refreshed` and `start v0.5.3`.
+The existing library script matched the package, and the Kindle remained on normal sleep settings.
