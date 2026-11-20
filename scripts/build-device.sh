@@ -33,8 +33,12 @@ cd "$ROOT"
 cargo test --offline -j 4 --workspace --quiet
 sh tests/supervisor-test.sh > /dev/null
 sh tests/setup-boot-test.sh > /dev/null
-cargo zigbuild --offline -j 4 --release -p kl-kindle --target armv7-unknown-linux-musleabihf 2>&1 | grep -E "^(error|warning: unused)" && false || true
-[ -f target/armv7-unknown-linux-musleabihf/release/kl-launcher ]
+# Build the launcher binary itself (kl-launcher). The old file is removed first, and the new one must carry the
+# version being deployed: a stale binary once passed this check.
+BIN=target/armv7-unknown-linux-musleabihf/release/kl-launcher
+rm -f "$BIN"
+cargo zigbuild --offline -j 4 --release -p kl-launcher --target armv7-unknown-linux-musleabihf 2>&1 | grep -E "^(error|warning: unused)" && false || true
+[ -f "$BIN" ] && grep -a -q "$next" "$BIN"
 sh deploy/install-ssh.sh target/armv7-unknown-linux-musleabihf/release/kl-launcher
 trap - ERR INT
 echo "deployed Primitive Launcher v$next"
