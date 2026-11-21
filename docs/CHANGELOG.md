@@ -3,6 +3,11 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.6.17
+
+- Settings has its gear as an icon like the other apps', in light and dark mode.
+- The launcher's shared kit (tools) moved to the commit that fixes the test casts, so the launcher's clippy check passes in CI.
+
 ## 0.5.9
 
 - Uninstall apps directly from Settings › Apps › Installed apps, including offline. The list also opens from Settings › Storage.
