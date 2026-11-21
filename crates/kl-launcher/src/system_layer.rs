@@ -45,6 +45,12 @@ pub fn enabled() -> bool {
     std::env::var("KL_SYSTEM_LAYER").as_deref() == Ok("1")
 }
 
+/// The supervisor started the launcher again while an app runs (the launcher before it ended): the launcher follows
+/// that app at once, with its drawing paused, instead of drawing the home screen over it.
+pub fn attaching(run: &Path) -> bool {
+    enabled() && std::env::var("KL_ATTACH_APP").as_deref() == Ok("1") && app_running(run)
+}
+
 /// Ask the supervisor to run the app described in `run/next`. False when the supervisor cannot be reached.
 pub fn request_launch(run: &Path) -> bool {
     let Some(pid) = read_pid(&run.join("supervisor.pid")) else {

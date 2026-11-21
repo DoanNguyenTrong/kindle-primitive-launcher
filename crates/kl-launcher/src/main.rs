@@ -322,7 +322,10 @@ fn main() {
     power.populate(&mut status, now);
 
     let update_trial = std::env::var("KL_LAUNCHER_UPDATE_TRIAL").as_deref() == Ok("1");
-    match store_open::take_request(&run) {
+    // Started again over a running app: the app keeps the screen, and a Store request waits for the home screen.
+    let attach = system_layer::attaching(&run);
+    let store_request = if attach { Ok(None) } else { store_open::take_request(&run) };
+    match store_request {
         Ok(Some(id)) if !from_mirror && status.usb != kl_core::Usb::Drive && !update_trial => {
             match store_launch_descriptor(&dir, &documents, ui.apps(), &id)
                 .and_then(|next| write_atomic(&run.join("next"), &next))
@@ -400,12 +403,17 @@ fn main() {
         });
     }
 
-    let first = renderer.draw(&ui, &status);
-    if let Some(until) = startup_wallpaper_until {
-        thread::sleep(until.saturating_duration_since(Instant::now()));
+    if attach {
+        display.set_paused(true);
+        log("system layer: started again over the running app");
+    } else {
+        let first = renderer.draw(&ui, &status);
+        if let Some(until) = startup_wallpaper_until {
+            thread::sleep(until.saturating_duration_since(Instant::now()));
+        }
+        display.show(first, &settings, true);
+        log(&format!("first screen after {} ms", started.elapsed().as_millis()));
     }
-    display.show(first, &settings, true);
-    log(&format!("first screen after {} ms", started.elapsed().as_millis()));
     let mut bootstrapping_store = None;
     let mut mark_trial_ready = update_trial;
     let mut transfer_session = None;
@@ -413,6 +421,10 @@ fn main() {
     // The system layer: an app runs under the launcher, which keeps sleep, the lock screen and quick settings.
     let system_layer_on = system_layer::enabled();
     let mut app_session: Option<system_layer::AppSession> = None;
+    if attach {
+        app_session = Some(system_layer::AppSession::new());
+        system_layer::watch(run.clone(), tx.clone());
+    }
 
     loop {
         if mark_trial_ready && display.has_presented_frame() {

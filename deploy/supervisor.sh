@@ -515,8 +515,11 @@ update_begin() {
     esac
 }
 
+# The ready marker holds the launcher's own pid (not its wrapper's): from $LAUNCHER_PID while it runs, and from
+# $launcher_proc once it has ended.
 update_ready() {
-    [ "$(cat "$UPDATE_READY" 2>/dev/null)" = "$lp" ]
+    p=${launcher_proc:-$(cat "$LAUNCHER_PID" 2>/dev/null)}
+    [ -n "$p" ] && [ "$(cat "$UPDATE_READY" 2>/dev/null)" = "$p" ]
 }
 
 update_healthy() {
@@ -685,6 +688,67 @@ app_power_watch() {
     done
 }
 
+# Start the launcher (the system layer). $1 is 1 when an app already runs: the launcher follows it instead of drawing
+# the home screen. A wrapper waits for the launcher and sends USR2 when it ends, so the supervisor sees the end while
+# it waits for an app; $lp is the wrapper, and $LAUNCHER_PID holds the launcher itself.
+start_launcher() {
+    launcher_proc=
+    rm -f "$LAUNCHER_PID"
+    (
+        KL_SYSTEM_LAYER=1 KL_ATTACH_APP=$1 KL_SHOW_STARTUP_WALLPAPER=$startup_wallpaper KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
+        launcher=$!
+        echo "$launcher" > "$LAUNCHER_PID"
+        wait "$launcher"
+        status=$?
+        kill -USR2 "$SUPERVISOR" 2>/dev/null
+        exit "$status"
+    ) &
+    lp=$!
+}
+
+# Signal the launcher itself (not its wrapper).
+launcher_signal() {
+    p=$(cat "$LAUNCHER_PID" 2>/dev/null)
+    [ -n "$p" ] && kill "-$1" "$p" 2>/dev/null
+}
+
+# The launcher ended while the app ($1, a process group; $2 yes when it redraws) runs. The Kindle UI closes the app
+# first; any other end starts the launcher again over the app, so the power button, sleep and quick settings keep
+# working. A launcher that keeps crashing leaves sleep and wake to the supervisor until the app ends.
+system_layer_ended() {
+    wait "$lp"
+    lrc=$?
+    rm -f "$LAUNCHER_PID"
+    # The launcher may have ended with the app frozen under quick settings.
+    kill -CONT -- "-$1" 2>/dev/null || kill -CONT "$1" 2>/dev/null
+    if [ "$lrc" -eq 0 ]; then
+        log "the Kindle UI was requested over the app; closing the app"
+        launcher_rc=0
+        kill -TERM -- "-$1" 2>/dev/null || kill -TERM "$1" 2>/dev/null
+        return
+    fi
+    now=$(date +%s)
+    recent=""
+    for t in $crashes; do
+        [ $((now - t)) -lt "$CRASH_WINDOW" ] && recent="$recent $t"
+    done
+    crashes="$recent $now"
+    count=$(echo $crashes | wc -w)
+    log "the launcher ended over the app (rc=$lrc), $count in ${CRASH_WINDOW}s"
+    if [ "$count" -ge "$MAX_CRASHES" ]; then
+        log "too many launcher crashes; the supervisor keeps sleep and wake until the app ends"
+        launcher_rc=$lrc
+        resident_app=no
+        app_power_watch "$1" "$2" &
+        echo $! > "$APP_WATCH"
+        return
+    fi
+    # Whatever the launcher had drawn over the app goes: the app draws its whole screen again.
+    [ "$2" = yes ] && { kill -USR1 -- "-$1" 2>/dev/null || kill -USR1 "$1" 2>/dev/null; }
+    start_launcher 1
+    log "the launcher started again over the app"
+}
+
 run_app() {
     if [ ! -f "$RUN/next" ]; then
         log "launch requested but $RUN/next is missing"
@@ -771,6 +835,10 @@ run_app() {
     while :; do
         wait "$apid"
         rc=$?
+        if [ "$launcher_ended" = yes ] && [ "$resident_app" = yes ]; then
+            launcher_ended=no
+            system_layer_ended "$apid" "$app_redraw"
+        fi
         kill -0 "$apid" 2>/dev/null || break
     done
     rm -f "$APP_PID"
@@ -832,6 +900,11 @@ trap 'log "supervisor exit (status $?)"' EXIT
 launch_requested=no
 resident_app=no
 trap 'launch_requested=yes' USR1
+SUPERVISOR=$$
+# The launcher's wrapper sends USR2 when the launcher ends, so an end while an app runs is seen at once.
+launcher_ended=no
+launcher_rc=
+trap 'launcher_ended=yes' USR2
 
 crashes=""
 store_open_pending=no
@@ -854,10 +927,8 @@ while :; do
     launch_started=$(date +%s)
     echo "$launch_started" > "$RUN/heartbeat"
     rm -f "$RUN/next" "$UPDATE_READY"
-    KL_SYSTEM_LAYER=1 KL_SHOW_STARTUP_WALLPAPER=$startup_wallpaper KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
-    lp=$!
+    start_launcher 0
     startup_wallpaper=0
-    echo "$lp" > "$LAUNCHER_PID"
     if [ "$store_open_pending" = yes ]; then
         # Open either exits directly into the app runner or reaches the launcher grid and its heartbeat.
         while store_child_alive "$lp"; do
@@ -876,7 +947,7 @@ while :; do
             if update_healthy; then
                 if ! update_accept; then
                     update_failed=yes
-                    kill -KILL "$lp" 2>/dev/null
+                    launcher_signal KILL
                 fi
                 break
             fi
@@ -888,6 +959,15 @@ while :; do
     while :; do
         [ "$launch_requested" = yes ] || wait "$lp"
         rc=$?
+        if [ "$launcher_ended" = yes ]; then
+            # The wrapper reports the launcher's end just before it exits. When the report interrupted the wait, the
+            # wrapper is still there and a second wait returns the launcher's status.
+            launcher_ended=no
+            if kill -0 "$lp" 2>/dev/null; then
+                wait "$lp"
+                rc=$?
+            fi
+        fi
         if [ "$launch_requested" = yes ]; then
             launch_requested=no
             if kill -0 "$lp" 2>/dev/null; then
@@ -895,7 +975,13 @@ while :; do
                 run_app
                 resident_app=no
                 # The Store asked for another app: the launcher starts again and opens it, as before.
-                [ "$store_open_pending" = yes ] && kill -TERM "$lp" 2>/dev/null
+                [ "$store_open_pending" = yes ] && [ -z "$launcher_rc" ] && launcher_signal TERM
+                # The launcher ended while the app ran (the Kindle UI, or too many crashes): its status is kept.
+                if [ -n "$launcher_rc" ]; then
+                    rc=$launcher_rc
+                    launcher_rc=
+                    break
+                fi
                 continue
             fi
             wait "$lp"
@@ -903,6 +989,7 @@ while :; do
         fi
         break
     done
+    launcher_proc=$(cat "$LAUNCHER_PID" 2>/dev/null)
     rm -f "$LAUNCHER_PID"
     launcher_storage_end
     if [ "$store_open_pending" = yes ]; then
