@@ -40,6 +40,7 @@ impl Session {
                     match listener.accept() {
                         Ok((mut connection, _)) => {
                             let _ = handle(&mut connection, &documents, &key, &session_stop);
+                            drain(&mut connection);
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(50))
@@ -64,6 +65,21 @@ impl Drop for Session {
 
 fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &str) -> io::Result<()> {
     write!(stream, "HTTP/1.1 {status}\r\nContent-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n{body}", body.len())
+}
+
+/// After the answer, read and discard what the client still sends (up to two seconds), then close. A close with
+/// unread request bytes sends a reset, and the client can lose the answer before it reads it (a 403 for a wrong
+/// code, for one): the reset came first on Linux and failed the transfer test there.
+fn drain(stream: &mut TcpStream) {
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let mut sink = [0u8; 4096];
+    let until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < until {
+        match stream.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
 }
 
 fn handle(stream: &mut TcpStream, root: &Path, code: &str, stop: &AtomicBool) -> io::Result<()> {
