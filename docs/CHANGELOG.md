@@ -3,6 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
+## 0.6.19
+
+- The Store's updates badge is recounted when the Store closes, so an update installed or refreshed in the Store is not still counted on the Store icon.
+
 ## 0.6.18
 
 - Settings has its gear as an icon like the other apps', in light and dark mode.
