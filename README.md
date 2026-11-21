@@ -7,6 +7,7 @@
 **A home screen for jailbroken Kindle e-readers.**
 Written in Rust. It replaces the stock Kindle home with a grid of your apps, on grayscale e-ink.
 
+[![Store downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fprimitiveos.github.io%2Fkindle-primitive-catalog%2Fv1%2Fbadges%2Fprimitive-launcher.json)](https://primitiveos.github.io/kindle-primitive-catalog/v1/index.json) 
 [![CI](https://img.shields.io/github/actions/workflow/status/PrimitiveOS/kindle-primitive-launcher/ci.yml?branch=main&label=CI)](https://github.com/PrimitiveOS/kindle-primitive-launcher/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/PrimitiveOS/kindle-primitive-launcher?label=release)](https://github.com/PrimitiveOS/kindle-primitive-launcher/releases)
 [![Tag](https://img.shields.io/github/v/tag/PrimitiveOS/kindle-primitive-launcher?label=tag)](https://github.com/PrimitiveOS/kindle-primitive-launcher/tags)
@@ -273,8 +274,7 @@ docs/               Research, requirements, architecture, plan, device notes, in
 
 ## Downloads
 
-**229 downloads** from Store, as of 2026-11-21. Store shows the same count on the app page.
-The count is GitHub downloads of this app's release packages, from the [Store catalog](https://primitiveos.github.io/kindle-primitive-catalog/v1/index.json).
+The badge at the top shows the number of Store downloads. It counts GitHub downloads of this app's release packages, across all versions and architectures, and is refreshed daily from the [Store catalog](https://primitiveos.github.io/kindle-primitive-catalog/v1/index.json).
 
 ## Licence
 
