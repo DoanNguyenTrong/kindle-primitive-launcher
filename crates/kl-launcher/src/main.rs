@@ -984,7 +984,13 @@ fn main() {
                 wallpaper::use_launcher_sleep(&run, false);
                 // The dialog turns into "Opening the Kindle UI"; the wait screen fills its blocks from here.
                 let (frame, area) = renderer.waiting_dialog(&ui.layout, 0, settings.dark_mode);
-                display.show_region(frame, area, &settings);
+                if app_session.is_some() {
+                    // Over an app the rest of the screen is the app's picture, and the app is closing: the dialog
+                    // goes on a plain page, or the app would seem to stay open for the minute the Kindle UI takes.
+                    display.show(frame, &settings, true);
+                } else {
+                    display.show_region(frame, area, &settings);
+                }
                 std::process::exit(EXIT_KINDLE_UI);
             }
             Action::Device(cmd) => {
