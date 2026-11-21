@@ -348,6 +348,7 @@ storage_request() {
 store_storage_watch() {
     store_seq_seen=0
     while store_child_alive "$1"; do
+        system_layer_check
         storage_request "$1" "$RUN" "$2"
         if [ "$2" = native ]; then
             pause_us 100000
@@ -749,6 +750,15 @@ system_layer_ended() {
     log "the launcher started again over the app"
 }
 
+# Called from every loop that runs while an app does (the wait for the app, and the storage watch of an app with a
+# storage lease): the launcher's end is handled at once, whichever loop the supervisor is in.
+system_layer_check() {
+    if [ "$launcher_ended" = yes ] && [ "$resident_app" = yes ]; then
+        launcher_ended=no
+        system_layer_ended "$apid" "$app_redraw"
+    fi
+}
+
 run_app() {
     if [ ! -f "$RUN/next" ]; then
         log "launch requested but $RUN/next is missing"
@@ -835,10 +845,7 @@ run_app() {
     while :; do
         wait "$apid"
         rc=$?
-        if [ "$launcher_ended" = yes ] && [ "$resident_app" = yes ]; then
-            launcher_ended=no
-            system_layer_ended "$apid" "$app_redraw"
-        fi
+        system_layer_check
         kill -0 "$apid" 2>/dev/null || break
     done
     rm -f "$APP_PID"

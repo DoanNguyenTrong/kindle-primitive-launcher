@@ -136,8 +136,12 @@ case "$code" in
         ;;
     # The system layer: ask the supervisor for the slow app and stay; then freeze it (quick settings) and crash, or
     # leave for the Kindle UI over it.
-    resident-crash|resident-ui)
-        printf '%s\nscript\n%s\n' "$STATE" "$STATE/slow-app.sh" > "$KL_RUN/next"
+    resident-crash|resident-ui|resident-native-crash)
+        if [ "$code" = resident-native-crash ]; then
+            printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/Slow Native.sh" > "$KL_RUN/next"
+        else
+            printf '%s\nscript\n%s\n' "$STATE" "$STATE/slow-app.sh" > "$KL_RUN/next"
+        fi
         kill -USR1 "$(cat "$KL_RUN/supervisor.pid")"
         for i in 1 2 3 4 5 6 7 8 9 10; do [ -f "$KL_RUN/app.pid" ] && break; sleep 1; done
         sleep 1
@@ -356,6 +360,26 @@ check "the frozen app was resumed and finished" 'grep -qx "slow app ended" "$STA
 check "the new launcher follows the app" 'grep -qx "launcher attach: KL_ATTACH_APP=1" "$STATE/calls"'
 check "the restart is logged" 'grep -q "the launcher started again over the app" "$KL_DIR/log-launcher.txt"'
 check "framework running at the end" '[ "$(cat "$STATE/fw")" = running ]'
+teardown
+
+echo "test: a launcher crash over an app with a storage lease starts the launcher again"
+setup
+cat > "$ROOT/bin/usleep" <<'EOF'
+#!/bin/sh
+if [ "$1" -eq 100000 ]; then sleep 0.05; fi
+EOF
+cat > "$KL_DOCUMENTS/Slow Native.sh" <<'EOF'
+#!/bin/sh
+# PrimitiveUSBLease
+echo "slow native started" >> "$STATE/calls"
+i=0
+while [ $i -lt 6 ]; do sleep 1; i=$((i + 1)); done
+echo "slow native ended" >> "$STATE/calls"
+EOF
+printf 'resident-native-crash\nattach\n' > "$STATE/codes"
+run_sup
+check "the leased app ran once and finished" '[ "$(grep -c "slow native started" "$STATE/calls")" = 1 ] && grep -qx "slow native ended" "$STATE/calls"'
+check "the new launcher follows the leased app" 'grep -qx "launcher attach: KL_ATTACH_APP=1" "$STATE/calls"'
 teardown
 
 echo "test: the Kindle UI asked over an app closes the app first"
