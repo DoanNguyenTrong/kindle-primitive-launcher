@@ -649,6 +649,7 @@ fn main() {
                             .map(|s| system_layer::upright(s, settings.rotation, display.fb_turn())),
                     );
                     session.dark_mode_at_open = settings.dark_mode;
+                    session.rotation_at_open = settings.rotation;
                     display.set_paused(false);
                     log(&format!("system layer: {} over the app", if opens { "quick settings" } else { "sleep" }));
                 }
@@ -718,7 +719,9 @@ fn main() {
         let action = match app_session.as_mut() {
             Some(session) if !session.in_front() && ui.screen == Screen::Home => {
                 let saved = session.saved.take().unwrap_or_default();
-                let theme_changed = settings.dark_mode != session.dark_mode_at_open;
+                // A turn (in Settings) is handled like a theme change: the saved screen no longer fits.
+                let theme_changed =
+                    settings.dark_mode != session.dark_mode_at_open || settings.rotation != session.rotation_at_open;
                 let app_redraws = system_layer::can_redraw(&run);
                 // After a theme change an app that redraws draws itself in the new theme: putting its old screen back
                 // first would be one more full update, showing the wrong theme.
@@ -781,7 +784,12 @@ fn main() {
                 if system_layer_on && system_layer::app_running(&run) {
                     log(&format!("system layer: {} not opened, an app is still running", app.name));
                     ui.pressed = None;
-                    ui.notice = Some("An app is still closing. Try again in a moment.".into());
+                    ui.notice = Some(if app_session.is_some() {
+                        // Settings over an open app: one app runs at a time.
+                        format!("Close the open app first, then open {}.", app.name)
+                    } else {
+                        "An app is still closing. Try again in a moment.".into()
+                    });
                     display.show(renderer.draw(&ui, &status), &settings, false);
                     continue;
                 }

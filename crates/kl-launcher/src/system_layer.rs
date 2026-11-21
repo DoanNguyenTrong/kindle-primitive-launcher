@@ -27,11 +27,13 @@ pub struct AppSession {
     pub saved: Option<Vec<u8>>,
     /// The theme when the system screen opened: a change asks the app to redraw when it comes back.
     pub dark_mode_at_open: bool,
+    /// The rotation when the system screen opened: after a turn (in Settings) the saved screen is the wrong way up.
+    pub rotation_at_open: Rotation,
 }
 
 impl AppSession {
     pub fn new() -> AppSession {
-        AppSession { saved: None, dark_mode_at_open: false }
+        AppSession { saved: None, dark_mode_at_open: false, rotation_at_open: Rotation::Upright }
     }
 
     /// The app is in front: no system screen is up.
