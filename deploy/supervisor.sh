@@ -964,17 +964,18 @@ while :; do
     # The launcher stays while its app runs: a launch request (SIGUSR1) interrupts the wait, the app runs, and the
     # wait goes on. A request that came before the wait started is handled first.
     while :; do
-        [ "$launch_requested" = yes ] || wait "$lp"
-        rc=$?
-        if [ "$launcher_ended" = yes ]; then
-            # The wrapper reports the launcher's end just before it exits. When the report interrupted the wait, the
-            # wrapper is still there and a second wait returns the launcher's status.
-            launcher_ended=no
-            if kill -0 "$lp" 2>/dev/null; then
+        if [ "$launch_requested" != yes ]; then
+            # A signal interrupts wait and makes it return early (busybox: 128 + the signal number, for instance 140
+            # for USR2) while the wrapper still runs. That is not the launcher's exit status: wait again until the
+            # wrapper has really ended, or a launch request arrives.
+            wait "$lp"
+            rc=$?
+            while [ "$launch_requested" != yes ] && kill -0 "$lp" 2>/dev/null; do
                 wait "$lp"
                 rc=$?
-            fi
+            done
         fi
+        launcher_ended=no
         if [ "$launch_requested" = yes ]; then
             launch_requested=no
             if kill -0 "$lp" 2>/dev/null; then

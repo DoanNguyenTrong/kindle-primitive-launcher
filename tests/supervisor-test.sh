@@ -154,6 +154,12 @@ case "$code" in
         while [ -f "$KL_RUN/app.pid" ]; do sleep 1; done
         exit 0
         ;;
+    usr2-interrupt)
+        # The signal the wrapper sends when a launcher ends can interrupt the supervisor's wait while this one still runs.
+        kill -USR2 "$(cat "$KL_RUN/supervisor.pid")"
+        sleep 2
+        exit 0
+        ;;
     term) kill -TERM $$ ;;
     hang) while :; do sleep 1; done ;;
     "") exit 0 ;;
@@ -390,6 +396,15 @@ check "the app was closed" 'grep -qx "slow app got TERM" "$STATE/calls" && ! gre
 check "the launcher ran once" '[ "$(grep -c "launcher run" "$STATE/calls")" = 1 ]'
 check "the request is logged" 'grep -q "the Kindle UI was requested over the app" "$KL_DIR/log-launcher.txt"'
 check "framework running at the end" '[ "$(cat "$STATE/fw")" = running ]'
+teardown
+
+echo "test: a signal that interrupts the supervisor's wait is not taken for the launcher's exit status"
+setup
+printf 'usr2-interrupt\n' > "$STATE/codes"
+run_sup
+check "one launcher run" '[ "$(grep -c "launcher run" "$STATE/calls")" = 1 ]'
+check "the Kindle UI was requested normally" 'grep -q "the Kindle UI was requested" "$KL_DIR/log-launcher.txt"'
+check "no crash was logged" '! grep -q "launcher crashed" "$KL_DIR/log-launcher.txt"'
 teardown
 
 echo "test: TERM restarts without counting as a crash"
