@@ -718,16 +718,27 @@ fn main() {
         // Quick settings or the sleep screen closed over an app: put the app's screen back and let it run.
         let action = match app_session.as_mut() {
             Some(session) if !session.in_front() && ui.screen == Screen::Home => {
-                let saved = session.saved.take().unwrap_or_default();
+                let mut picture = session.saved.take().unwrap_or_default();
+                let theme_changed = settings.dark_mode != session.dark_mode_at_open;
                 // A turn (in Settings) is handled like a theme change: the saved screen no longer fits.
-                let theme_changed =
-                    settings.dark_mode != session.dark_mode_at_open || settings.rotation != session.rotation_at_open;
+                let turned = settings.rotation != session.rotation_at_open;
                 let app_redraws = system_layer::can_redraw(&run);
-                // After a theme change an app that redraws draws itself in the new theme: putting its old screen back
-                // first would be one more full update, showing the wrong theme.
-                let restored = !saved.is_empty() && !(theme_changed && app_redraws);
+                // An app that redraws gets its screen back as it will look (dark mode is the screen inverted; a half
+                // turn is the panel's memory reversed), so its own redraw, which does not flash, lands on a matching
+                // picture. From quick settings only the panel's box changes (a calm update); from Settings, a full
+                // page, it is one full update. An app that cannot redraw gets its screen back as it was.
+                if app_redraws && !picture.is_empty() {
+                    if theme_changed {
+                        system_layer::in_other_theme(&mut picture);
+                    }
+                    if turned {
+                        picture.reverse();
+                    }
+                }
+                let theme_changed = theme_changed || turned;
+                let restored = !picture.is_empty();
                 if restored {
-                    display.restore(saved);
+                    display.restore(picture);
                 }
                 display.set_paused(true);
                 input::grab_touch(false);
