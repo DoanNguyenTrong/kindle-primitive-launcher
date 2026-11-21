@@ -27,6 +27,7 @@ MARK=$RUN/framework-stopped
 VOLUMD_MARK=$RUN/volumd-paused
 PIDFILE=$RUN/supervisor.pid
 LAUNCHER_PID=$RUN/launcher.pid
+LAUNCHER_STATUS=$RUN/launcher.status
 APP_PID=$RUN/app.pid
 HOLDER_PID=$RUN/holder.pid
 WAIT_PID=$RUN/wait.pid
@@ -694,13 +695,19 @@ app_power_watch() {
 # it waits for an app; $lp is the wrapper, and $LAUNCHER_PID holds the launcher itself.
 start_launcher() {
     launcher_proc=
-    rm -f "$LAUNCHER_PID"
+    rm -f "$LAUNCHER_PID" "$LAUNCHER_STATUS" "$LAUNCHER_STATUS.tmp"
     (
         KL_SYSTEM_LAYER=1 KL_ATTACH_APP=$1 KL_SHOW_STARTUP_WALLPAPER=$startup_wallpaper KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
         launcher=$!
         echo "$launcher" > "$LAUNCHER_PID"
+        # A signal can make wait return early, so wait again until the launcher has really ended.
         wait "$launcher"
         status=$?
+        while kill -0 "$launcher" 2>/dev/null; do
+            wait "$launcher"
+            status=$?
+        done
+        echo "$status" > "$LAUNCHER_STATUS.tmp" && mv -f "$LAUNCHER_STATUS.tmp" "$LAUNCHER_STATUS"
         kill -USR2 "$SUPERVISOR" 2>/dev/null
         exit "$status"
     ) &
@@ -717,9 +724,11 @@ launcher_signal() {
 # first; any other end starts the launcher again over the app, so the power button, sleep and quick settings keep
 # working. A launcher that keeps crashing leaves sleep and wake to the supervisor until the app ends.
 system_layer_ended() {
-    wait "$lp"
-    lrc=$?
-    rm -f "$LAUNCHER_PID"
+    while kill -0 "$lp" 2>/dev/null; do
+        wait "$lp" 2>/dev/null
+    done
+    lrc=$(cat "$LAUNCHER_STATUS" 2>/dev/null || echo 1)
+    rm -f "$LAUNCHER_PID" "$LAUNCHER_STATUS"
     # The launcher may have ended with the app frozen under quick settings.
     kill -CONT -- "-$1" 2>/dev/null || kill -CONT "$1" 2>/dev/null
     if [ "$lrc" -eq 0 ]; then
@@ -962,19 +971,13 @@ while :; do
         done
     fi
     # The launcher stays while its app runs: a launch request (SIGUSR1) interrupts the wait, the app runs, and the
-    # wait goes on. A request that came before the wait started is handled first.
+    # wait goes on. A request that came before the wait started is handled first. The launcher's status comes from
+    # the file its wrapper writes: a signal can make wait return early with a number that is not the status (busybox:
+    # 128 + the signal number, for instance 140 for USR2).
     while :; do
-        if [ "$launch_requested" != yes ]; then
-            # A signal interrupts wait and makes it return early (busybox: 128 + the signal number, for instance 140
-            # for USR2) while the wrapper still runs. That is not the launcher's exit status: wait again until the
-            # wrapper has really ended, or a launch request arrives.
-            wait "$lp"
-            rc=$?
-            while [ "$launch_requested" != yes ] && kill -0 "$lp" 2>/dev/null; do
-                wait "$lp"
-                rc=$?
-            done
-        fi
+        while [ "$launch_requested" != yes ] && [ ! -f "$LAUNCHER_STATUS" ] && kill -0 "$lp" 2>/dev/null; do
+            wait "$lp" 2>/dev/null
+        done
         launcher_ended=no
         if [ "$launch_requested" = yes ]; then
             launch_requested=no
@@ -986,19 +989,27 @@ while :; do
                 [ "$store_open_pending" = yes ] && [ -z "$launcher_rc" ] && launcher_signal TERM
                 # The launcher ended while the app ran (the Kindle UI, or too many crashes): its status is kept.
                 if [ -n "$launcher_rc" ]; then
-                    rc=$launcher_rc
-                    launcher_rc=
                     break
                 fi
                 continue
             fi
-            wait "$lp"
-            rc=$?
         fi
         break
     done
+    # Reap the wrapper (it may still be finishing), then take the launcher's status from the file it wrote.
+    while kill -0 "$lp" 2>/dev/null; do
+        wait "$lp" 2>/dev/null
+    done
+    if [ -n "$launcher_rc" ]; then
+        rc=$launcher_rc
+        launcher_rc=
+    elif [ -f "$LAUNCHER_STATUS" ]; then
+        rc=$(cat "$LAUNCHER_STATUS" 2>/dev/null)
+    else
+        rc=1
+    fi
     launcher_proc=$(cat "$LAUNCHER_PID" 2>/dev/null)
-    rm -f "$LAUNCHER_PID"
+    rm -f "$LAUNCHER_PID" "$LAUNCHER_STATUS" "$LAUNCHER_STATUS.tmp"
     launcher_storage_end
     if [ "$store_open_pending" = yes ]; then
         store_open_pending=no
