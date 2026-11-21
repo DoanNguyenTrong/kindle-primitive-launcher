@@ -233,7 +233,7 @@ mode = "background"
         let home_store = |expected_id| {
             let (_, apps, _, problems) = crate::load_library(&launcher, &documents);
             assert!(problems.is_empty(), "{problems:?}");
-            assert_eq!(apps.len(), 4);
+            assert_eq!(apps.len(), 3, "Settings, the Store and Inventory (the Kindle UI is in the power menu)");
             assert!(apps.iter().any(|app| app.id == "Inventory.sh"));
             let index = apps.iter().position(|app| app.id == expected_id).unwrap();
             let mut ui = Ui::new(apps, Layout::new(1264, 1680, 4, 5));

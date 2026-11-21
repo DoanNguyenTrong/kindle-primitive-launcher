@@ -30,6 +30,11 @@ LAUNCHER_PID=$RUN/launcher.pid
 APP_PID=$RUN/app.pid
 HOLDER_PID=$RUN/holder.pid
 WAIT_PID=$RUN/wait.pid
+APP_WATCH=$RUN/app-watch.pid
+APP_REQUEST=$RUN/app-request
+APP_RESTART=$RUN/app-restart
+# Starts an app in its own process group (so a signal reaches the app itself), when the system has setsid.
+APP_GROUP=$(command -v setsid 2>/dev/null || true)
 MAX_CRASHES=${KL_MAX_CRASHES:-3}
 CRASH_WINDOW=60
 HEARTBEAT_LIMIT=${KL_HEARTBEAT_LIMIT:-30}
@@ -343,6 +348,7 @@ storage_request() {
 store_storage_watch() {
     store_seq_seen=0
     while store_child_alive "$1"; do
+        system_layer_check
         storage_request "$1" "$RUN" "$2"
         if [ "$2" = native ]; then
             pause_us 100000
@@ -510,8 +516,11 @@ update_begin() {
     esac
 }
 
+# The ready marker holds the launcher's own pid (not its wrapper's): from $LAUNCHER_PID while it runs, and from
+# $launcher_proc once it has ended.
 update_ready() {
-    [ "$(cat "$UPDATE_READY" 2>/dev/null)" = "$lp" ]
+    p=${launcher_proc:-$(cat "$LAUNCHER_PID" 2>/dev/null)}
+    [ -n "$p" ] && [ "$(cat "$UPDATE_READY" 2>/dev/null)" = "$p" ]
 }
 
 update_healthy() {
@@ -639,6 +648,117 @@ on_signal() {
     exit 0
 }
 
+# An app that redraws itself on wake declares it: a line "# Wake: redraw" in the first ten lines of its entry. The
+# supervisor then sends SIGUSR1 to the app's process group. Other apps are restarted on wake, so the screen is never
+# left blank.
+# Stop a process and its children (busybox has no pkill -P).
+kill_tree() {
+    for child in $(ps -o pid,ppid 2>/dev/null | awk -v p="$1" '$2 == p { print $1 }'); do
+        kill_tree "$child"
+    done
+    kill "$1" 2>/dev/null
+}
+
+app_redraws_on_wake() {
+    [ -f "$1" ] && [ ! -L "$1" ] && head -n 10 "$1" | grep -Fxq '# Wake: redraw'
+}
+
+# While an app runs the launcher is not, so the supervisor keeps the sleep and wake behaviour: it draws the sleep
+# picture when the Kindle goes to sleep, and redraws or restarts the app when it wakes.
+app_power_watch() {
+    pgid=$1
+    redraw=$2
+    command -v lipc-wait-event >/dev/null 2>&1 || return 0
+    lipc-wait-event -m com.lab126.powerd goingToScreenSaver,outOfScreenSaver 2>/dev/null |
+    while IFS= read -r event; do
+        # A watcher acts only for its own app: one left behind by an earlier app must never restart the next.
+        [ "$(cat "$APP_PID" 2>/dev/null)" = "$pgid" ] || break
+        case "$event" in
+            goingToScreenSaver*)
+                [ -x "$RUN/kl-launcher" ] && "$RUN/kl-launcher" --sleep-screen >> "$LOG_OUT" 2>&1
+                ;;
+            outOfScreenSaver*)
+                if [ "$redraw" = yes ]; then
+                    kill -USR1 -- "-$pgid" 2>/dev/null || kill -USR1 "$pgid" 2>/dev/null
+                else
+                    : > "$APP_RESTART"
+                    kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pgid" 2>/dev/null
+                fi
+                ;;
+        esac
+    done
+}
+
+# Start the launcher (the system layer). $1 is 1 when an app already runs: the launcher follows it instead of drawing
+# the home screen. A wrapper waits for the launcher and sends USR2 when it ends, so the supervisor sees the end while
+# it waits for an app; $lp is the wrapper, and $LAUNCHER_PID holds the launcher itself.
+start_launcher() {
+    launcher_proc=
+    rm -f "$LAUNCHER_PID"
+    (
+        KL_SYSTEM_LAYER=1 KL_ATTACH_APP=$1 KL_SHOW_STARTUP_WALLPAPER=$startup_wallpaper KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
+        launcher=$!
+        echo "$launcher" > "$LAUNCHER_PID"
+        wait "$launcher"
+        status=$?
+        kill -USR2 "$SUPERVISOR" 2>/dev/null
+        exit "$status"
+    ) &
+    lp=$!
+}
+
+# Signal the launcher itself (not its wrapper).
+launcher_signal() {
+    p=$(cat "$LAUNCHER_PID" 2>/dev/null)
+    [ -n "$p" ] && kill "-$1" "$p" 2>/dev/null
+}
+
+# The launcher ended while the app ($1, a process group; $2 yes when it redraws) runs. The Kindle UI closes the app
+# first; any other end starts the launcher again over the app, so the power button, sleep and quick settings keep
+# working. A launcher that keeps crashing leaves sleep and wake to the supervisor until the app ends.
+system_layer_ended() {
+    wait "$lp"
+    lrc=$?
+    rm -f "$LAUNCHER_PID"
+    # The launcher may have ended with the app frozen under quick settings.
+    kill -CONT -- "-$1" 2>/dev/null || kill -CONT "$1" 2>/dev/null
+    if [ "$lrc" -eq 0 ]; then
+        log "the Kindle UI was requested over the app; closing the app"
+        launcher_rc=0
+        kill -TERM -- "-$1" 2>/dev/null || kill -TERM "$1" 2>/dev/null
+        return
+    fi
+    now=$(date +%s)
+    recent=""
+    for t in $crashes; do
+        [ $((now - t)) -lt "$CRASH_WINDOW" ] && recent="$recent $t"
+    done
+    crashes="$recent $now"
+    count=$(echo $crashes | wc -w)
+    log "the launcher ended over the app (rc=$lrc), $count in ${CRASH_WINDOW}s"
+    if [ "$count" -ge "$MAX_CRASHES" ]; then
+        log "too many launcher crashes; the supervisor keeps sleep and wake until the app ends"
+        launcher_rc=$lrc
+        resident_app=no
+        app_power_watch "$1" "$2" &
+        echo $! > "$APP_WATCH"
+        return
+    fi
+    # Whatever the launcher had drawn over the app goes: the app draws its whole screen again.
+    [ "$2" = yes ] && { kill -USR1 -- "-$1" 2>/dev/null || kill -USR1 "$1" 2>/dev/null; }
+    start_launcher 1
+    log "the launcher started again over the app"
+}
+
+# Called from every loop that runs while an app does (the wait for the app, and the storage watch of an app with a
+# storage lease): the launcher's end is handled at once, whichever loop the supervisor is in.
+system_layer_check() {
+    if [ "$launcher_ended" = yes ] && [ "$resident_app" = yes ]; then
+        launcher_ended=no
+        system_layer_ended "$apid" "$app_redraw"
+    fi
+}
+
 run_app() {
     if [ ! -f "$RUN/next" ]; then
         log "launch requested but $RUN/next is missing"
@@ -647,6 +767,10 @@ run_app() {
     fi
     # A fourth line may open a specific screen in the standalone Store.
     { read -r adir; read -r kind; read -r arg; IFS= read -r start_tab || :; } < "$RUN/next"
+    # A restart flag belongs to one app run: one left from an earlier run must not reopen this app.
+    rm -f "$APP_RESTART"
+    # Kept so a restart after wake can open the same app again.
+    printf '%s\n%s\n%s\n%s\n' "$adir" "$kind" "$arg" "$start_tab" > "$APP_REQUEST.tmp" && mv "$APP_REQUEST.tmp" "$APP_REQUEST"
     rm -f "$RUN/next" "$STORE_OPEN" "$STORE_OPEN.tmp"
     store_storage_clear
     store_can_open=0
@@ -689,17 +813,26 @@ run_app() {
         if [ "$native_can_lease" -eq 1 ]; then
             export KL_NATIVE_APP_RUN="$NATIVE_APP_RUN"
             cd / || exit 1
-            exec /bin/sh "$NATIVE_APP_RUN/launch"
+            exec $APP_GROUP /bin/sh "$NATIVE_APP_RUN/launch"
         fi
         case "$kind" in
-            script) exec /bin/sh "$arg" ;;
-            hooks) exec /bin/sh -c '. "$1"; on_run' sh "$arg" ;;
-            shell) exec /bin/sh -c "$arg" ;;
+            script) exec $APP_GROUP /bin/sh "$arg" ;;
+            hooks) exec $APP_GROUP /bin/sh -c '. "$1"; on_run' sh "$arg" ;;
+            shell) exec $APP_GROUP /bin/sh -c "$arg" ;;
             *) echo "unknown kind: $kind"; exit 1 ;;
         esac
     ) >> "$app_log" 2>&1 &
     apid=$!
     echo "$apid" > "$APP_PID"
+    app_redraw=no
+    [ "$kind" = script ] && app_redraws_on_wake "$arg" && app_redraw=yes
+    # The launcher reads this before it asks the app to redraw: SIGUSR1 ends an app that does not handle it.
+    if [ "$app_redraw" = yes ]; then : > "$RUN/app-redraws"; else rm -f "$RUN/app-redraws"; fi
+    # A launcher that stays (the system layer) keeps sleep and wake itself; otherwise the supervisor does.
+    if [ "$resident_app" != yes ]; then
+        app_power_watch "$apid" "$app_redraw" &
+        echo $! > "$APP_WATCH"
+    fi
     if [ "$store_can_open" -eq 1 ] || [ "$native_can_lease" -eq 1 ]; then
         printf '%s %s\n' "$apid" "$(store_child_started_at "$apid")" > "$STORE_CHILD"
         if [ "$native_can_lease" -eq 1 ]; then
@@ -708,9 +841,25 @@ run_app() {
             store_storage_watch "$apid" store
         fi
     fi
-    wait "$apid"
-    rc=$?
+    # The launcher's launch request (SIGUSR1) interrupts wait while the app still runs: wait again until it ends.
+    while :; do
+        wait "$apid"
+        rc=$?
+        system_layer_check
+        kill -0 "$apid" 2>/dev/null || break
+    done
     rm -f "$APP_PID"
+    watch=$(cat "$APP_WATCH" 2>/dev/null)
+    # Stop the watcher and its children (lipc-wait-event and the loop that reads it), or they outlive it.
+    [ -n "$watch" ] && kill_tree "$watch"
+    rm -f "$APP_WATCH"
+    if [ -f "$APP_RESTART" ]; then
+        rm -f "$APP_RESTART"
+        store_storage_clear
+        log "app restarted after wake: $arg"
+        cp "$APP_REQUEST" "$RUN/next" && run_app
+        return
+    fi
     store_storage_clear
     log "app exit: rc=$rc after $(( $(date +%s) - t0 ))s"
     # Only the installed Store may pass a request on exit 11. The launcher reads
@@ -733,6 +882,8 @@ run_app() {
 store_child_stop
 logger_start
 install_traps
+# The power daemon must not prevent the screensaver, or the power button does not put the Kindle to sleep.
+command -v lipc-set-prop >/dev/null 2>&1 && lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
 if framework_running; then
     framework_stop verify
 else
@@ -752,6 +903,15 @@ launcher_can_lease=0
 usb_watch $$ &
 USB_MONITOR=$!
 trap 'log "supervisor exit (status $?)"' EXIT
+# The system layer: the launcher asks for its app with SIGUSR1 and stays running (docs/system-architecture.md).
+launch_requested=no
+resident_app=no
+trap 'launch_requested=yes' USR1
+SUPERVISOR=$$
+# The launcher's wrapper sends USR2 when the launcher ends, so an end while an app runs is seen at once.
+launcher_ended=no
+launcher_rc=
+trap 'launcher_ended=yes' USR2
 
 crashes=""
 store_open_pending=no
@@ -774,10 +934,8 @@ while :; do
     launch_started=$(date +%s)
     echo "$launch_started" > "$RUN/heartbeat"
     rm -f "$RUN/next" "$UPDATE_READY"
-    KL_SHOW_STARTUP_WALLPAPER=$startup_wallpaper KL_LAUNCHER_UPDATE_TRIAL=$trial KL_LAUNCHER_USB_LEASE=$launcher_can_lease "$RUN/kl-launcher" >> "$LOG_OUT" 2>&1 &
-    lp=$!
+    start_launcher 0
     startup_wallpaper=0
-    echo "$lp" > "$LAUNCHER_PID"
     if [ "$store_open_pending" = yes ]; then
         # Open either exits directly into the app runner or reaches the launcher grid and its heartbeat.
         while store_child_alive "$lp"; do
@@ -796,15 +954,49 @@ while :; do
             if update_healthy; then
                 if ! update_accept; then
                     update_failed=yes
-                    kill -KILL "$lp" 2>/dev/null
+                    launcher_signal KILL
                 fi
                 break
             fi
             sleep 1
         done
     fi
-    wait "$lp"
-    rc=$?
+    # The launcher stays while its app runs: a launch request (SIGUSR1) interrupts the wait, the app runs, and the
+    # wait goes on. A request that came before the wait started is handled first.
+    while :; do
+        [ "$launch_requested" = yes ] || wait "$lp"
+        rc=$?
+        if [ "$launcher_ended" = yes ]; then
+            # The wrapper reports the launcher's end just before it exits. When the report interrupted the wait, the
+            # wrapper is still there and a second wait returns the launcher's status.
+            launcher_ended=no
+            if kill -0 "$lp" 2>/dev/null; then
+                wait "$lp"
+                rc=$?
+            fi
+        fi
+        if [ "$launch_requested" = yes ]; then
+            launch_requested=no
+            if kill -0 "$lp" 2>/dev/null; then
+                resident_app=yes
+                run_app
+                resident_app=no
+                # The Store asked for another app: the launcher starts again and opens it, as before.
+                [ "$store_open_pending" = yes ] && [ -z "$launcher_rc" ] && launcher_signal TERM
+                # The launcher ended while the app ran (the Kindle UI, or too many crashes): its status is kept.
+                if [ -n "$launcher_rc" ]; then
+                    rc=$launcher_rc
+                    launcher_rc=
+                    break
+                fi
+                continue
+            fi
+            wait "$lp"
+            rc=$?
+        fi
+        break
+    done
+    launcher_proc=$(cat "$LAUNCHER_PID" 2>/dev/null)
     rm -f "$LAUNCHER_PID"
     launcher_storage_end
     if [ "$store_open_pending" = yes ]; then

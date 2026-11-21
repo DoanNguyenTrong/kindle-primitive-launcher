@@ -12,6 +12,7 @@ mod bootstrap;
 mod clock_sync;
 mod management;
 mod power;
+mod system_layer;
 mod transfer;
 mod wallpaper;
 
@@ -245,6 +246,11 @@ fn main() {
         return;
     }
 
+    if std::env::args().any(|a| a == "--sleep-screen") {
+        sleep_screen(&dir, &settings);
+        return;
+    }
+
     let wallpapers = wallpaper::load(&dir, settings.sleep_screen_launcher);
     settings.sleep_screen_launcher = wallpapers.sleep != WallpaperChoice::Default;
     let mut startup_wallpaper_until = None;
@@ -318,14 +324,16 @@ fn main() {
     power.populate(&mut status, now);
 
     let update_trial = std::env::var("KL_LAUNCHER_UPDATE_TRIAL").as_deref() == Ok("1");
-    match store_open::take_request(&run) {
+    // Started again over a running app: the app keeps the screen, and a Store request waits for the home screen.
+    let attach = system_layer::attaching(&run);
+    let store_request = if attach { Ok(None) } else { store_open::take_request(&run) };
+    match store_request {
         Ok(Some(id)) if !from_mirror && status.usb != kl_core::Usb::Drive && !update_trial => {
             match store_launch_descriptor(&dir, &documents, ui.apps(), &id)
                 .and_then(|next| write_atomic(&run.join("next"), &next))
             {
                 Ok(()) => {
                     log(&format!("opening {id} from the Store"));
-                    wallpaper::use_launcher_sleep(&run, false);
                     std::process::exit(EXIT_LAUNCH);
                 }
                 Err(error) => ui.notice = Some(format!("Could not open the app from the Store. {error}")),
@@ -397,16 +405,28 @@ fn main() {
         });
     }
 
-    let first = renderer.draw(&ui, &status);
-    if let Some(until) = startup_wallpaper_until {
-        thread::sleep(until.saturating_duration_since(Instant::now()));
+    if attach {
+        display.set_paused(true);
+        log("system layer: started again over the running app");
+    } else {
+        let first = renderer.draw(&ui, &status);
+        if let Some(until) = startup_wallpaper_until {
+            thread::sleep(until.saturating_duration_since(Instant::now()));
+        }
+        display.show(first, &settings, true);
+        log(&format!("first screen after {} ms", started.elapsed().as_millis()));
     }
-    display.show(first, &settings, true);
-    log(&format!("first screen after {} ms", started.elapsed().as_millis()));
     let mut bootstrapping_store = None;
     let mut mark_trial_ready = update_trial;
     let mut transfer_session = None;
     let mut clock_sync = None::<clock_sync::ClockSync>;
+    // The system layer: an app runs under the launcher, which keeps sleep, the lock screen and quick settings.
+    let system_layer_on = system_layer::enabled();
+    let mut app_session: Option<system_layer::AppSession> = None;
+    if attach {
+        app_session = Some(system_layer::AppSession::new());
+        system_layer::watch(run.clone(), tx.clone());
+    }
 
     loop {
         if mark_trial_ready && display.has_presented_frame() {
@@ -611,7 +631,47 @@ fn main() {
                     Action::Redraw { full: true }
                 }
             }
+            Ev::AppEnded => {
+                if app_session.take().is_some() {
+                    log("system layer: the app ended; the launcher takes the screen back");
+                    renderer.set_backdrop(None);
+                    input::grab_touch(false);
+                    display.set_paused(false);
+                    ui.pressed = None;
+                    if ui.screen == Screen::Sleep {
+                        Action::None
+                    } else {
+                        ui.screen = Screen::Home;
+                        status = device::status(&settings);
+                        Action::Redraw { full: true }
+                    }
+                } else {
+                    Action::None
+                }
+            }
             Ev::Input(input) => {
+                // An app is in front: its input is its own, except the swipe that opens quick settings and the power
+                // events. For those the app is frozen and its screen saved, and the launcher draws again.
+                if let Some(session) = app_session.as_mut().filter(|s| s.in_front()) {
+                    let opens = system_layer::opens_quick_settings(input, ui.layout.status().bottom());
+                    if input != Input::Sleep && !opens {
+                        continue;
+                    }
+                    system_layer::freeze(&run, true);
+                    if opens {
+                        input::grab_touch(true);
+                    }
+                    session.saved = Some(display.snapshot().unwrap_or_default());
+                    // Every system pop-up over the app is drawn over the app's screen, not the home screen.
+                    renderer.set_backdrop(
+                        session.saved.as_deref().filter(|s| !s.is_empty())
+                            .map(|s| system_layer::upright(s, settings.rotation, display.fb_turn())),
+                    );
+                    session.dark_mode_at_open = settings.dark_mode;
+                    session.rotation_at_open = settings.rotation;
+                    display.set_paused(false);
+                    log(&format!("system layer: {} over the app", if opens { "quick settings" } else { "sleep" }));
+                }
                 if !matches!(input, Input::Sleep | Input::Wake) {
                     log(&format!("input {input:?}"));
                 }
@@ -698,6 +758,46 @@ fn main() {
             }
             action => action,
         };
+        // Quick settings or the sleep screen closed over an app: put the app's screen back and let it run.
+        let action = match app_session.as_mut() {
+            Some(session) if !session.in_front() && ui.screen == Screen::Home => {
+                let mut picture = session.saved.take().unwrap_or_default();
+                let theme_changed = settings.dark_mode != session.dark_mode_at_open;
+                // A turn (in Settings) is handled like a theme change: the saved screen no longer fits.
+                let turned = settings.rotation != session.rotation_at_open;
+                let app_redraws = system_layer::can_redraw(&run);
+                // An app that redraws gets its screen back as it will look (dark mode is the screen inverted; a half
+                // turn is the panel's memory reversed), so its own redraw, which does not flash, lands on a matching
+                // picture. From quick settings only the panel's box changes (a calm update); from Settings, a full
+                // page, it is one full update. An app that cannot redraw gets its screen back as it was.
+                if app_redraws && !picture.is_empty() {
+                    if theme_changed {
+                        system_layer::in_other_theme(&mut picture);
+                    }
+                    if turned {
+                        picture.reverse();
+                    }
+                }
+                let theme_changed = theme_changed || turned;
+                let restored = !picture.is_empty();
+                if restored {
+                    display.restore(picture);
+                }
+                display.set_paused(true);
+                input::grab_touch(false);
+                ui.pressed = None;
+                renderer.set_backdrop(None);
+                // The redraw request goes first, while the app is still frozen: the signal is delivered the moment
+                // the app runs again, before anything it had queued, so nothing is drawn in the old theme.
+                if (theme_changed || !restored) && !system_layer::ask_redraw(&run) && !restored {
+                    log("system layer: the screen could not be saved and the app cannot redraw");
+                }
+                system_layer::freeze(&run, false);
+                log("system layer: back to the app");
+                Action::None
+            }
+            _ => action,
+        };
         if ui.wallpaper_preview.is_none() {
             renderer.set_wallpaper_preview(None);
         }
@@ -734,6 +834,19 @@ fn main() {
                 display.show(renderer.draw(&ui, &status), &settings, full);
             }
             Action::Launch(mut app) => {
+                // The supervisor still runs an app (one closing, or one it started again): a second must wait.
+                if system_layer_on && system_layer::app_running(&run) {
+                    log(&format!("system layer: {} not opened, an app is still running", app.name));
+                    ui.pressed = None;
+                    ui.notice = Some(if app_session.is_some() {
+                        // Settings over an open app: one app runs at a time.
+                        format!("Close the open app first, then open {}.", app.name)
+                    } else {
+                        "An app is still closing. Try again in a moment.".into()
+                    });
+                    display.show(renderer.draw(&ui, &status), &settings, false);
+                    continue;
+                }
                 if bootstrapping_store.is_some() {
                     ui.pressed = None;
                     ui.notice = Some("Store is being installed. Please wait.".into());
@@ -786,7 +899,15 @@ fn main() {
                         thread::sleep(Duration::from_millis(70));
                     }
                 }
-                wallpaper::use_launcher_sleep(&run, false);
+                // The system layer: the supervisor runs the app and the launcher stays, its drawing paused.
+                if system_layer_on && system_layer::request_launch(&run) {
+                    log("system layer: the supervisor runs the app; the launcher stays");
+                    app_session = Some(system_layer::AppSession::new());
+                    display.set_paused(true);
+                    ui.pressed = None;
+                    system_layer::watch(run.clone(), tx.clone());
+                    continue;
+                }
                 std::process::exit(EXIT_LAUNCH);
             }
             Action::SetHidden(changes) => {
@@ -925,7 +1046,13 @@ fn main() {
                 wallpaper::use_launcher_sleep(&run, false);
                 // The dialog turns into "Opening the Kindle UI"; the wait screen fills its blocks from here.
                 let (frame, area) = renderer.waiting_dialog(&ui.layout, 0, settings.dark_mode);
-                display.show_region(frame, area, &settings);
+                if app_session.is_some() {
+                    // Over an app the rest of the screen is the app's picture, and the app is closing: the dialog
+                    // goes on a plain page, or the app would seem to stay open for the minute the Kindle UI takes.
+                    display.show(frame, &settings, true);
+                } else {
+                    display.show_region(frame, area, &settings);
+                }
                 std::process::exit(EXIT_KINDLE_UI);
             }
             Action::Device(cmd) => {
@@ -1049,6 +1176,19 @@ fn main() {
                             Err(error) => Some(format!("Could not save appearance settings. {error}")),
                         }
                     };
+                    // Over an app that follows the theme, the app under the panel is shown in the new theme at once
+                    // (its picture inverted), so this one update shows the whole screen as it will be.
+                    if cmd == DeviceCmd::ToggleDarkMode {
+                        if let Some(session) = app_session.as_ref() {
+                            if let Some(saved) = session.saved.as_deref().filter(|s| !s.is_empty()) {
+                                let mut picture = system_layer::upright(saved, settings.rotation, display.fb_turn());
+                                if settings.dark_mode != session.dark_mode_at_open && system_layer::can_redraw(&run) {
+                                    system_layer::in_other_theme(&mut picture);
+                                }
+                                renderer.set_backdrop(Some(picture));
+                            }
+                        }
+                    }
                     display.show(renderer.draw(&ui, &status), &settings, cmd != DeviceCmd::ToggleAnimation);
                     continue;
                 }
@@ -1099,6 +1239,18 @@ fn wait_screen(dir: &Path, run: &Path, settings: &Settings) {
         thread::sleep(Duration::from_millis(1500));
         step += 1;
     }
+}
+
+/// Draw the launcher's sleep picture once and return. The supervisor runs this when the Kindle goes to sleep while an
+/// app is open: the picture stays on the screen after the power goes off.
+fn sleep_screen(dir: &Path, settings: &Settings) {
+    let wallpapers = wallpaper::load(dir, settings.sleep_screen_launcher);
+    let Some(image) = wallpaper::saved_picture(dir, WallpaperTarget::Sleep, &wallpapers, &mut 0) else {
+        return log("sleep screen: no picture chosen");
+    };
+    log("sleep screen");
+    let mut display = Display::open();
+    display.show(image.pixels, settings, true);
 }
 
 /// Run an app without leaving the launcher (apps.toml `mode = "background"`, KUAL `exitmenu: false`), with the

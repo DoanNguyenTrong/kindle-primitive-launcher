@@ -134,6 +134,26 @@ case "$code" in
         done
         exit 3
         ;;
+    # The system layer: ask the supervisor for the slow app and stay; then freeze it (quick settings) and crash, or
+    # leave for the Kindle UI over it.
+    resident-crash|resident-ui|resident-native-crash)
+        if [ "$code" = resident-native-crash ]; then
+            printf '%s\nscript\n%s\n' "$KL_DOCUMENTS" "$KL_DOCUMENTS/Slow Native.sh" > "$KL_RUN/next"
+        else
+            printf '%s\nscript\n%s\n' "$STATE" "$STATE/slow-app.sh" > "$KL_RUN/next"
+        fi
+        kill -USR1 "$(cat "$KL_RUN/supervisor.pid")"
+        for i in 1 2 3 4 5 6 7 8 9 10; do [ -f "$KL_RUN/app.pid" ] && break; sleep 1; done
+        sleep 1
+        [ "$code" = resident-ui ] && exit 0
+        kill -STOP "$(cat "$KL_RUN/app.pid")"
+        exit 3
+        ;;
+    attach)
+        echo "launcher attach: KL_ATTACH_APP=$KL_ATTACH_APP" >> "$STATE/calls"
+        while [ -f "$KL_RUN/app.pid" ]; do sleep 1; done
+        exit 0
+        ;;
     term) kill -TERM $$ ;;
     hang) while :; do sleep 1; done ;;
     "") exit 0 ;;
@@ -144,6 +164,13 @@ EOF
 echo "app ran: PRIMITIVE_LAUNCHER=$PRIMITIVE_LAUNCHER pwd=$(pwd)" >> "$STATE/calls"
 [ -f "$STATE/app-starts-framework" ] && start lab126_gui
 exit 3
+EOF
+    cat > "$STATE/slow-app.sh" <<'EOF'
+echo "slow app started" >> "$STATE/calls"
+trap 'echo "slow app got TERM" >> "$STATE/calls"; exit 0' TERM
+i=0
+while [ $i -lt 6 ]; do sleep 1; i=$((i + 1)); done
+echo "slow app ended" >> "$STATE/calls"
 EOF
     # The holder: a stub lua that records its start and sleeps (exec, so the pid is the sleep's pid). With
     # $STATE/holder-ignores-term it ignores TERM, as when it inherited an ignored TERM.
@@ -241,7 +268,8 @@ echo "test: launch an app, then ask for the Kindle UI"
 setup
 printf '10\n0\n' > "$STATE/codes"
 run_sup
-check "framework stopped first" 'head -n 1 "$STATE/calls" | grep -q "stop lab126_gui"'
+check "framework stopped first" 'grep -v "^lipc-set-prop" "$STATE/calls" | head -n 1 | grep -q "stop lab126_gui"'
+check "power daemon does not prevent the screensaver" 'grep -q "^lipc-set-prop com.lab126.powerd preventScreenSaver 0" "$STATE/calls"'
 check "volumd paused" 'grep -q "killall -STOP volumd" "$STATE/calls"'
 check "app ran with the env" 'grep -q "app ran: PRIMITIVE_LAUNCHER=1 pwd=$STATE" "$STATE/calls"'
 check "launcher ran twice" '[ "$(grep -c "launcher run" "$STATE/calls")" = 2 ]'
@@ -321,6 +349,47 @@ run_sup
 check "three runs" '[ "$(grep -c "launcher run" "$STATE/calls")" = 3 ]'
 check "gave up" 'grep -q "too many crashes" "$KL_DIR/log-launcher.txt"'
 check "framework restored" '[ "$(cat "$STATE/fw")" = running ]'
+teardown
+
+echo "test: a launcher crash over a frozen app starts the launcher again over the app"
+setup
+printf 'resident-crash\nattach\n' > "$STATE/codes"
+run_sup
+check "the app ran once" '[ "$(grep -c "slow app started" "$STATE/calls")" = 1 ]'
+check "the frozen app was resumed and finished" 'grep -qx "slow app ended" "$STATE/calls"'
+check "the new launcher follows the app" 'grep -qx "launcher attach: KL_ATTACH_APP=1" "$STATE/calls"'
+check "the restart is logged" 'grep -q "the launcher started again over the app" "$KL_DIR/log-launcher.txt"'
+check "framework running at the end" '[ "$(cat "$STATE/fw")" = running ]'
+teardown
+
+echo "test: a launcher crash over an app with a storage lease starts the launcher again"
+setup
+cat > "$ROOT/bin/usleep" <<'EOF'
+#!/bin/sh
+if [ "$1" -eq 100000 ]; then sleep 0.05; fi
+EOF
+cat > "$KL_DOCUMENTS/Slow Native.sh" <<'EOF'
+#!/bin/sh
+# PrimitiveUSBLease
+echo "slow native started" >> "$STATE/calls"
+i=0
+while [ $i -lt 6 ]; do sleep 1; i=$((i + 1)); done
+echo "slow native ended" >> "$STATE/calls"
+EOF
+printf 'resident-native-crash\nattach\n' > "$STATE/codes"
+run_sup
+check "the leased app ran once and finished" '[ "$(grep -c "slow native started" "$STATE/calls")" = 1 ] && grep -qx "slow native ended" "$STATE/calls"'
+check "the new launcher follows the leased app" 'grep -qx "launcher attach: KL_ATTACH_APP=1" "$STATE/calls"'
+teardown
+
+echo "test: the Kindle UI asked over an app closes the app first"
+setup
+printf 'resident-ui\n' > "$STATE/codes"
+run_sup
+check "the app was closed" 'grep -qx "slow app got TERM" "$STATE/calls" && ! grep -qx "slow app ended" "$STATE/calls"'
+check "the launcher ran once" '[ "$(grep -c "launcher run" "$STATE/calls")" = 1 ]'
+check "the request is logged" 'grep -q "the Kindle UI was requested over the app" "$KL_DIR/log-launcher.txt"'
+check "framework running at the end" '[ "$(cat "$STATE/fw")" = running ]'
 teardown
 
 echo "test: TERM restarts without counting as a crash"
