@@ -686,6 +686,12 @@ fn main() {
                 if ui.press_feedback(input) {
                     display.show(renderer.draw(&ui, &status), &settings, false);
                 }
+                // Any control under a tap is drawn reversed before its action runs (Settings, buttons, rows, tabs).
+                if let Input::Tap(x, y) = input {
+                    if let Some(frame) = renderer.press_frame(&ui, &status, x, y) {
+                        display.show(frame, &settings, false);
+                    }
+                }
                 let before = ui.screen;
                 ui.display_support = status.display_support;
                 let action = ui.handle(input);
