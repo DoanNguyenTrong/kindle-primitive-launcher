@@ -638,6 +638,8 @@ fn main() {
                     input::grab_touch(false);
                     display.set_paused(false);
                     ui.pressed = None;
+                    // The app may have been the Store: its refresh and installs change the updates badge.
+                    ui.store_update_count = bootstrap::available_updates(&dir);
                     if ui.screen == Screen::Sleep {
                         Action::None
                     } else {
