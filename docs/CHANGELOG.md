@@ -3,9 +3,10 @@
 Each device build gets a new patch version; a new phase starts a new minor version. Releases are the versions
 with a `v*` tag.
 
-## 0.6.17
+## 0.6.18
 
 - Settings has its gear as an icon like the other apps', in light and dark mode.
+- The file transfer answers a wrong code without a connection reset, so the transfer test passes on Linux (the 0.6.17 release run failed there, and was not published).
 - The launcher's shared kit (tools) moved to the commit that fixes the test casts, so the launcher's clippy check passes in CI.
 
 ## 0.5.9
